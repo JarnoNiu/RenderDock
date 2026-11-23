@@ -84,12 +84,12 @@ Not checked yet:
 
 ### 0.3 — remember, and reach beyond Blender · target January 2027
 
-- [ ] History in a local database: per-shot frame times, queue totals
-- [ ] Time-left estimates for a whole queue, based on history
-- [ ] Flag odd frames: a sudden jump in frame time, an unusually small file
+- [x] History in a local database: every shot with its duration, frames and outcome — [docs/HISTORY.md](docs/HISTORY.md) *(done 2026-11-24, unreleased)*
+- [x] Time-left estimates for a whole queue, based on history *(done 2026-11-24, unreleased)*
+- [x] Flag odd frames: a sudden jump in frame time, an unusually small file *(done 2026-11-24, unreleased)*
 - [ ] ffmpeg encodes with real progress
 - [ ] ComfyUI queues
-- [ ] Follow the log file when a render's output is redirected to one
+- [x] Follow the log file when a render's output is redirected to one *(done 2026-11-24, unreleased)*
 - [ ] Read the frame range stored in the `.blend` when it is not on the command line
 - [ ] Queue conventions as rules instead of code
 - [ ] MQTT publishing with Home Assistant discovery

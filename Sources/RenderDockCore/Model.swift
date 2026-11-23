@@ -46,6 +46,10 @@ package struct RenderItem: Identifiable, Equatable {
     /// Progress inside the current frame, when the job reports it (samples done / samples per frame).
     package var sampleDone: Int?
     package var sampleTotal: Int?
+    /// Recent frames whose file is far smaller than usual (possibly empty or black), and recent frames
+    /// that took far longer than usual (a hard frame, or the job was paused). Hints, not verdicts.
+    package var smallFrames: [Int] = []
+    package var slowFrames: [Int] = []
 
     package init(id: String, name: String, state: ItemState) {
         self.id = id
@@ -99,6 +103,8 @@ package struct RenderGroup: Identifiable, Equatable {
     package var keepAwake: Bool
     package var state: GroupState
     package var items: [RenderItem]
+    /// For a running queue: time until every shot is through. An estimate, filled in from history.
+    package var queueETA: QueueETA?
 
     package init(id: String, title: String, script: String?, scriptPath: String?, note: String?, project: String, cwd: String,
                  startedAt: Date, keepAwake: Bool, state: GroupState, items: [RenderItem]) {

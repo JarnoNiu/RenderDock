@@ -25,6 +25,8 @@ package final class TaskScanner {
         var latest: String?
         var lastAt: Date?
         var secPerFrame: Double?
+        var smallFrames: [Int] = []
+        var slowFrames: [Int] = []
     }
 
     private var cpuPrev: [Int32: (ns: UInt64, at: Date)] = [:]
@@ -35,6 +37,7 @@ package final class TaskScanner {
     /// Extra detection rules from adapters.json, reloaded when the file changes.
     private var rules = AdapterRules()
     private var rulesStamp: Date?
+    private let logs = LogFollower()
     /// Reports written by wrapped jobs, by pid, as of this scan.
     private var reports: [Int32: JobReport] = [:]
     private var previousGroups: [RenderGroup] = []
@@ -118,6 +121,7 @@ package final class TaskScanner {
             groups.append(buildGroup(root: rootProc, leaves: rootLeaves, snap: snap, now: now))
         }
         cpuPrev = cpuPrev.filter { snap.table[$0.key] != nil }
+        logs.forget(except: Set(snap.table.keys))
         let sorted = groups.sorted {
             $0.state.rawValue != $1.state.rawValue ? $0.state.rawValue < $1.state.rawValue : $0.startedAt < $1.startedAt
         }
@@ -274,6 +278,7 @@ package final class TaskScanner {
         case .blender:
             let plan = blenderPlan(a, cwd: cwd)
             let rep = report(for: p)
+            var hasProgressFile = false
             if let out = plan.outDir ?? rep?.outDir, isDirectory(out) {
                 item.outDir = out
                 let st = frameStats(out, since: p.start, now: now, only: plan.frames)
@@ -281,7 +286,10 @@ package final class TaskScanner {
                 item.latestFrame = st.latest
                 item.lastFrameAt = st.lastAt
                 item.secPerFrame = st.secPerFrame
+                item.smallFrames = st.smallFrames
+                item.slowFrames = st.slowFrames
                 if let exact = progressFile(out) {
+                    hasProgressFile = true
                     item.framesDone = exact.done
                     item.framesTotal = exact.total
                 } else if let frames = plan.frames, !frames.isEmpty {
@@ -295,6 +303,24 @@ package final class TaskScanner {
             if let rep {
                 // Started with `renderdock run`: the job's own count is exact, whatever the command line says.
                 apply(rep, to: &item)
+            } else if !hasProgressFile, let log = logs.progress(pid: p.pid, totalFromCommandLine: plan.frames?.count) {
+                // Its output goes to a log file: read Blender's own frame lines from there.
+                item.framesDone = log.done
+                if let total = log.total {
+                    item.framesTotal = total
+                    item.totalIsEstimate = false
+                }
+                item.sampleDone = log.sampleDone
+                item.sampleTotal = log.sampleTotal
+                if item.outDir == nil, let dir = log.outDir, isDirectory(dir) {
+                    let st = frameStats(dir, since: p.start, now: now)
+                    item.outDir = dir
+                    item.latestFrame = st.latest
+                    item.lastFrameAt = st.lastAt
+                    item.secPerFrame = st.secPerFrame
+                    item.smallFrames = st.smallFrames
+                    item.slowFrames = st.slowFrames
+                }
             }
             if p.stopped {
                 item.state = .paused
@@ -384,7 +410,7 @@ package final class TaskScanner {
         let files = (try? FileManager.default.contentsOfDirectory(
             at: URL(fileURLWithPath: dir), includingPropertiesForKeys: keys, options: [.skipsHiddenFiles])) ?? []
         // frame number → (time written, file used for the thumbnail, that file's rank)
-        var frames: [Int: (at: Date, path: String, rank: Int)] = [:]
+        var frames: [Int: (at: Date, path: String, rank: Int, size: Int)] = [:]
         for f in files {
             let name = f.lastPathComponent
             guard !name.hasPrefix("_"), Self.imageExts.contains(f.pathExtension.lowercased()),
@@ -396,10 +422,10 @@ package final class TaskScanner {
             let rank = (lower.contains("shadow") || lower.contains("mask") ? 0 : 1_000_000_000) + (v?.fileSize ?? 0)
             if var cur = frames[idx] {
                 if at > cur.at { cur.at = at }
-                if rank > cur.rank { cur.rank = rank; cur.path = f.path }
+                if rank > cur.rank { cur.rank = rank; cur.path = f.path; cur.size = v?.fileSize ?? 0 }
                 frames[idx] = cur
             } else {
-                frames[idx] = (at, f.path, rank)
+                frames[idx] = (at, f.path, rank, v?.fileSize ?? 0)
             }
         }
         stats.done = frames.count
@@ -413,9 +439,30 @@ package final class TaskScanner {
             let median = deltas[deltas.count / 2]
             if median > 0 { stats.secPerFrame = median }
         }
+        // Odd frames among this run's, leaving out any that may still be being written.
+        let settled = frames.filter { $0.value.at >= since.addingTimeInterval(-1) && now.timeIntervalSince($0.value.at) > 2 }
+        let odd = Self.oddFrames(settled.map { (index: $0.key, at: $0.value.at, size: $0.value.size) })
+        stats.smallFrames = odd.small
+        stats.slowFrames = odd.slow
         frameCache[cacheKey] = (now, stats)
         if frameCache.count > 64 { frameCache = frameCache.filter { now.timeIntervalSince($0.value.at) < 60 } }
         return stats
+    }
+
+    /// Frames worth a second look among the most recent ones (at most `window`). Needs a dozen frames to judge by.
+    /// small: the file is under a quarter of the usual size, where the usual size is at least 20 KB.
+    /// slow: the gap before the frame was over five times the usual gap and over 20 s.
+    package static func oddFrames(_ frames: [(index: Int, at: Date, size: Int)], window: Int = 60) -> (small: [Int], slow: [Int]) {
+        let recent = Array(frames.sorted { $0.at < $1.at }.suffix(window))
+        guard recent.count >= 12 else { return ([], []) }
+        let sizes = recent.map(\.size).sorted()
+        let usualSize = sizes[sizes.count / 2]
+        let small = usualSize >= 20_000 ? recent.filter { $0.size * 4 < usualSize }.map(\.index) : []
+        let gaps = zip(recent.dropFirst(), recent).map { (index: $0.index, gap: $0.at.timeIntervalSince($1.at)) }
+        let sortedGaps = gaps.map(\.gap).sorted()
+        let usualGap = sortedGaps[sortedGaps.count / 2]
+        let slow = usualGap > 0 ? gaps.filter { $0.gap > 5 * usualGap && $0.gap > 20 }.map(\.index) : []
+        return (Array(small.suffix(5)), Array(slow.suffix(5)))
     }
 
     private struct BlenderPlan {

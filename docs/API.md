@@ -91,6 +91,8 @@ curl -s http://127.0.0.1:47600/v1/state
 | `fraction` | 0–1. Present only when a total is known |
 | `exact` | `true` when `framesTotal` is exact (from `render-progress.json` or the command line). `false` when it is an estimate or unknown. **Show `≈` or no percentage when this is false** |
 | `etaSec` | Seconds left for this shot. Present only while it is running with a known total and a measured frame time |
+| `queueEtaSec`, `queueEtaRough` | On a job, from 0.3: seconds until every shot of a running queue is through, estimated from history ([HISTORY.md](HISTORY.md)). `queueEtaRough` is true when some shots never ran before |
+| `smallFrames`, `slowFrames` | On a shot, from 0.3: recent frames with an unusually small file, or that took unusually long. Hints only; absent when there are none |
 | `sampleDone`, `sampleTotal` | Samples of the frame in progress, when the job reports them. `fraction` already includes that part of the frame |
 | job `state` | `running`, `stalled`, `paused`, `queued` |
 | shot `state` | `rendering`, `compositing`, `finishing`, `encoding`, `starting`, `paused`, `stalled`, `pending`, `done` |
@@ -131,6 +133,26 @@ data: {"at":"2026-11-24T04:31:47Z","jobId":"g41872-1795400000","jobTitle":"Produ
 ```
 
 Up to 16 streams can be open at once. While at least one is, RenderDock scans every 3 seconds instead of every 6.
+
+## `GET /v1/history`
+
+From 0.3. The fifty shots that ended most recently, newest first.
+
+```json
+{
+  "runs": [
+    {
+      "id": 412, "jobId": "g41872-1795400000", "jobTitle": "Product film · hero shots", "project": "studio-reel",
+      "script": "render_hero.sh", "shot": "s030_macro",
+      "startedAt": 1795403120.4, "endedAt": 1795406096.9,
+      "framesDone": 480, "framesTotal": 480, "exact": true, "secPerFrame": 6.2,
+      "outcome": "done"
+    }
+  ]
+}
+```
+
+`startedAt` and `endedAt` are seconds since 1970. `outcome` is `done`, `finished`, `failed` or `ended`; `exitCode` is present when a wrapper recorded one. No paths.
 
 ## Without the app
 

@@ -30,6 +30,8 @@ struct Anchor: Equatable {
 @Observable
 final class Store {
     var groups: [RenderGroup] = []
+    /// The shots that ended most recently, newest first.
+    var recentRuns: [HistoryRun] = []
     var metrics = Metrics()
     var cpuHistory: [Double] = []
     var gpuHistory: [Double] = []
@@ -75,6 +77,8 @@ final class Store {
     var apiPort: UInt16?
     @ObservationIgnored private let api = LocalAPIServer()
     @ObservationIgnored private var detector = EventDetector()
+    /// What RenderDock remembers. Only ever touched on the scan queue. Nil if the file cannot be opened.
+    @ObservationIgnored private lazy var history: HistoryStore? = HistoryStore()
     /// Notifications on this Mac and through the channels in notify.json.
     @ObservationIgnored let notifier = Notifier()
 
@@ -127,6 +131,7 @@ final class Store {
 
     func start() {
         if apiEnabled { applyAPI() }
+        work.async { [weak self] in self?.history?.prune() }
         sampleMetrics()
         scanTasks()
         timers.append(Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.sampleMetrics() })
@@ -149,7 +154,9 @@ final class Store {
             apply(sampler.sample())
             if i == 3 { _ = scanner.scan() }
         }
-        let g = scanner.scan()
+        var g = scanner.scan()
+        for i in g.indices { g[i].queueETA = history?.queueETA(for: g[i]) }
+        recentRuns = history?.recent(limit: 4) ?? []
         groups = g
         scanned = true
         now = Date()
@@ -184,8 +191,12 @@ final class Store {
         scanning = true
         work.async { [weak self] in
             guard let self else { return }
-            let g = self.scanner.scan()
+            var g = self.scanner.scan()
             let ended = self.scanner.lastEnded   // how jobs that just disappeared ended, where a wrapper recorded it
+            // Remember what was seen, and use what is remembered: queue estimates and the recent list.
+            self.history?.record(g, outcomes: ended)
+            for i in g.indices { g[i].queueETA = self.history?.queueETA(for: g[i]) }
+            let recent = self.history?.recent(limit: 50) ?? []
             // Rebuild a thumbnail only when the latest frame has changed
             var fresh: [String: NSImage] = [:]
             var sources: [String: String] = [:]
@@ -197,6 +208,8 @@ final class Store {
             DispatchQueue.main.async {
                 self.scanning = false
                 self.groups = g
+                self.recentRuns = Array(recent.prefix(4))
+                if self.apiEnabled { self.api.publish(history: recent) }
                 self.scanned = true
                 self.now = Date()
                 var t = self.thumbs.filter { sources[$0.key] != nil }

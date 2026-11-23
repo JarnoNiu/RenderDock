@@ -212,6 +212,140 @@ events = ending.update([])
 check("no record, no claim; and the queue is announced empty", events.map(\.type) == [.jobEnded, .allEnded] && events[0].outcome == nil)
 check("an empty queue staying empty is not news", ending.update([]).isEmpty)
 
+// MARK: History
+
+section("history")
+let historyFile = FileManager.default.temporaryDirectory.appendingPathComponent("rd-checks-history-\(ProcessInfo.processInfo.processIdentifier).sqlite")
+try? FileManager.default.removeItem(at: historyFile)
+func queueShot(_ name: String, _ state: ItemState, done: Int? = nil, total: Int? = nil, spf: Double? = nil) -> RenderItem {
+    var item = RenderItem(id: "q1/stream/\(name)", name: name, state: state)
+    item.framesDone = done
+    item.framesTotal = total
+    item.secPerFrame = spf
+    item.pid = state.isActive ? 100 : nil
+    return item
+}
+func queue(_ shots: [RenderItem], state: GroupState = .running) -> RenderGroup {
+    RenderGroup(id: "q1", title: "Queue", script: "queue.sh", scriptPath: "/private/secret/queue.sh", note: nil, project: "proj",
+                cwd: "/private/secret", startedAt: Date(timeIntervalSince1970: 1_800_000_000), keepAwake: true, state: state, items: shots)
+}
+let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+if let store = HistoryStore(file: historyFile) {
+    // shot a renders for 600 s, then the queue moves on to b
+    store.record([queue([queueShot("a", .rendering, done: 0, total: 100), queueShot("b", .pending), queueShot("c", .pending)])], now: t0)
+    store.record([queue([queueShot("a", .rendering, done: 50, total: 100, spf: 6), queueShot("b", .pending), queueShot("c", .pending)])], now: t0.addingTimeInterval(300))
+    check("nothing has ended yet", store.recent().isEmpty)
+    check("a shot that never ran has no expected duration", store.expectedDuration(project: "proj", shot: "a") == nil)
+    let midQueue = queue([queueShot("a", .rendering, done: 50, total: 100, spf: 6), queueShot("b", .pending), queueShot("c", .pending)])
+    let early = store.queueETA(for: midQueue, now: t0.addingTimeInterval(300))
+    check("with nothing finished, the shot in progress stands in for the rest", early?.seconds == 300 + 600 + 600 && early?.guessed == 2 && early?.known == 1)
+    store.record([queue([queueShot("a", .done), queueShot("b", .rendering, done: 10, total: 100, spf: 6), queueShot("c", .pending)])], now: t0.addingTimeInterval(600))
+    let recent = store.recent()
+    check("the finished shot is remembered with its duration", recent.count == 1 && recent[0].shot == "a" && recent[0].duration == 600 && recent[0].outcome == "done")
+    check("a completed shot with an exact total rendered all of it, even if the last frames fell between scans", recent[0].framesDone == 100 && recent[0].framesTotal == 100 && recent[0].exact)
+    check("it now has an expected duration", store.expectedDuration(project: "proj", shot: "a") == 600)
+    let later = store.queueETA(for: queue([queueShot("a", .done), queueShot("b", .rendering, done: 10, total: 100, spf: 6), queueShot("c", .pending)]),
+                               now: t0.addingTimeInterval(660))
+    check("b by its own time left, c by the queue's average so far", later?.seconds == 540 + 600 && later?.known == 1 && later?.guessed == 1)
+    check("no estimate for a queue that is not running",
+          store.queueETA(for: queue([queueShot("a", .done), queueShot("b", .paused), queueShot("c", .pending)], state: .paused)) == nil)
+    check("no queue estimate for a single job", store.queueETA(for: job("solo", .running, [("s1", .rendering)])) == nil)
+    // the whole job disappears: the wrapper said it failed
+    store.record([], outcomes: ["q1": JobOutcome(exitCode: 3)], now: t0.addingTimeInterval(900))
+    let ended = store.recent()
+    check("a vanished shot takes the job's recorded outcome", ended.first?.shot == "b" && ended.first?.outcome == "failed" && ended.first?.exitCode == 3)
+    check("a failed run does not set expectations", store.expectedDuration(project: "proj", shot: "b") == nil)
+    check("history carries no paths", !String(decoding: (try? JSONEncoder().encode(ended)) ?? Data(), as: UTF8.self).contains("/private/secret"))
+} else {
+    check("the history file opens", false)
+}
+// a second launch: a shot left open by the first one, and gone meanwhile, is closed at its last sighting
+if let first = HistoryStore(file: historyFile) {
+    first.record([job("left-open", .running, [("s1", .rendering)])], now: t0.addingTimeInterval(1000))
+}
+if let second = HistoryStore(file: historyFile) {
+    second.record([], now: t0.addingTimeInterval(9000))
+    let closed = second.recent().first { $0.jobId == "left-open" }
+    check("a shot that ended while RenderDock was closed ends at its last sighting, not now", closed?.endedAt == t0.addingTimeInterval(1000).timeIntervalSince1970 && closed?.outcome == "ended")
+    second.prune(olderThanDays: 1, now: t0.addingTimeInterval(10 * 86_400))
+    check("old history can be pruned", second.recent().isEmpty)
+}
+for suffix in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: historyFile.path + suffix) }
+
+// two parallel streams of one queue: the longer one decides
+section("history: parallel streams")
+let parallelFile = FileManager.default.temporaryDirectory.appendingPathComponent("rd-checks-parallel-\(ProcessInfo.processInfo.processIdentifier).sqlite")
+try? FileManager.default.removeItem(at: parallelFile)
+if let store = HistoryStore(file: parallelFile) {
+    func shot(_ stream: String, _ name: String, _ state: ItemState, eta: (done: Int, total: Int, spf: Double)? = nil) -> RenderItem {
+        var item = RenderItem(id: "q2/\(stream)/\(name)", name: name, state: state)
+        if let eta { item.framesDone = eta.done; item.framesTotal = eta.total; item.secPerFrame = eta.spf }
+        return item
+    }
+    let g = RenderGroup(id: "q2", title: "Two streams", script: nil, scriptPath: nil, note: nil, project: "proj", cwd: "/", startedAt: t0,
+                        keepAwake: false, state: .running,
+                        items: [shot("A", "a1", .rendering, eta: (50, 100, 10)), shot("A", "a2", .pending),
+                                shot("B", "b1", .rendering, eta: (90, 100, 10))])
+    store.record([g], now: t0)
+    let eta = store.queueETA(for: g, now: t0.addingTimeInterval(500))
+    check("streams are summed separately and the longest counts", eta?.seconds == 500 + 1000)
+}
+for suffix in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: parallelFile.path + suffix) }
+let neverCreated = FileManager.default.temporaryDirectory.appendingPathComponent("rd-checks-readonly-\(ProcessInfo.processInfo.processIdentifier).sqlite")
+check("looking things up does not create a history file", HistoryStore(file: neverCreated, readOnly: true) == nil && !FileManager.default.fileExists(atPath: neverCreated.path))
+
+// MARK: Odd frames
+
+section("odd frames")
+func frames(_ n: Int, size: (Int) -> Int = { _ in 800_000 }, gap: (Int) -> Double = { _ in 6 }) -> [(index: Int, at: Date, size: Int)] {
+    var at = t0
+    return (0..<n).map { i in
+        at = at.addingTimeInterval(gap(i))
+        return (index: i, at: at, size: size(i))
+    }
+}
+check("nothing odd in an even run", TaskScanner.oddFrames(frames(40)).small.isEmpty && TaskScanner.oddFrames(frames(40)).slow.isEmpty)
+check("a frame a tenth the usual size is flagged", TaskScanner.oddFrames(frames(40, size: { $0 == 33 ? 60_000 : 800_000 })).small == [33])
+check("a frame half the usual size is not", TaskScanner.oddFrames(frames(40, size: { $0 == 33 ? 400_000 : 800_000 })).small.isEmpty)
+check("tiny frames are not judged when tiny is normal", TaskScanner.oddFrames(frames(40, size: { $0 == 33 ? 500 : 9_000 })).small.isEmpty)
+check("a gap far beyond the usual is flagged", TaskScanner.oddFrames(frames(40, gap: { $0 == 20 ? 300 : 6 })).slow == [20])
+check("a longer gap that is still short is not", TaskScanner.oddFrames(frames(40, gap: { $0 == 20 ? 15 : 2 })).slow.isEmpty)
+check("too few frames to judge by", TaskScanner.oddFrames(frames(8, size: { $0 == 5 ? 100 : 800_000 })).small.isEmpty)
+check("at most the five latest are listed", TaskScanner.oddFrames(frames(60, size: { $0 % 5 == 0 ? 10_000 : 800_000 })).small.count == 5)
+
+// MARK: Following a log file
+
+section("following a redirected log")
+let logFile = FileManager.default.temporaryDirectory.appendingPathComponent("rd-checks-\(ProcessInfo.processInfo.processIdentifier).log")
+FileManager.default.createFile(atPath: logFile.path, contents: nil)
+let sleeper = Process()
+sleeper.executableURL = URL(fileURLWithPath: "/bin/sleep")
+sleeper.arguments = ["30"]
+sleeper.standardOutput = FileHandle(forWritingAtPath: logFile.path)
+try? sleeper.run()
+func appendLog(_ text: String) {
+    guard let h = FileHandle(forWritingAtPath: logFile.path) else { return }
+    h.seekToEndOfFile()
+    h.write(Data(text.utf8))
+    try? h.close()
+}
+let follower = LogFollower()
+check("an empty log says nothing", follower.progress(pid: sleeper.processIdentifier, totalFromCommandLine: nil) == nil)
+appendLog("Saved: '/old/run/f_0001.png'\nSaved: '/old/run/f_0002.png'\nBlender quit\n")
+appendLog("00:00.2  render           | Rendering animation (frames 1..20)\n00:00.3  render           | Saved: '/new/run/f_0001.png'\n")
+var followed = follower.progress(pid: sleeper.processIdentifier, totalFromCommandLine: nil)
+check("an earlier render in the same log is not counted", followed?.done == 1 && followed?.total == 20 && followed?.outDir == "/new/run")
+appendLog("00:00.4  render           | Saved: '/new/run/f_0002.png'\n00:00.5  render           | Fra: 3 | Mem: 1M | Sam")
+followed = follower.progress(pid: sleeper.processIdentifier, totalFromCommandLine: nil)
+check("new lines are picked up; a half-written line waits", followed?.done == 2 && followed?.frame != 3)
+appendLog("ple 4/8\n")
+followed = follower.progress(pid: sleeper.processIdentifier, totalFromCommandLine: nil)
+check("the rest of the line completes it", followed?.frame == 3 && followed?.sampleDone == 4)
+check("a process whose output is not a file is not followed", follower.progress(pid: ProcessInfo.processInfo.processIdentifier, totalFromCommandLine: nil) == nil
+      || isatty(1) == 0)
+sleeper.terminate()
+try? FileManager.default.removeItem(at: logFile)
+
 // MARK: Adapter rules
 
 section("adapter rules")

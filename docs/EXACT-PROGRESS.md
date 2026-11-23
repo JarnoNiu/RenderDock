@@ -2,7 +2,7 @@
 
 > New in 0.2.
 
-RenderDock shows a percentage only when it knows the total. There are five ways it can know. Use whichever fits how you start renders.
+RenderDock shows a percentage only when it knows the total. There are six ways it can know. Use whichever fits how you start renders.
 
 | Way | You change | Works when |
 |---|---|---|
@@ -11,6 +11,7 @@ RenderDock shows a percentage only when it knows the total. There are five ways 
 | 3. Print `FRAME i/N` lines | one `print` in your script, plus the wrapper | your script renders frame by frame itself |
 | 4. Write `render-progress.json` | one line in your script | you would rather not wrap the command |
 | 5. Load the Blender hook | one `--python` argument, or an add-on | you render from the Blender window, or cannot wrap the command |
+| 6. Send the output to a log file (from 0.3) | nothing, if you already do | `blender -b … > render.log` |
 
 ## `renderdock run`
 
@@ -132,6 +133,21 @@ The hook writes the same kind of report as the wrapper, in the same place, and n
 
 Checked with Blender 5.2 on the command line. Not yet checked: Blender 4.x, and the add-on route in the Blender window.
 
+## A log file (from 0.3)
+
+If a render's output is redirected to a file, RenderDock reads Blender's own frame lines from that file. Nothing to install and nothing to change:
+
+```bash
+blender -b scene.blend -a > render.log 2>&1
+```
+
+It works even when the frame range and the output folder are only in the `.blend`: Blender 5.x prints the range at the start, and every saved frame names its folder.
+
+- Only a regular file counts: not a terminal, not a pipe to another program.
+- Several renders may append to one log, one after another. RenderDock counts only what follows the previous render's last line.
+- Two renders writing to the same log at the same time cannot be told apart. Give each its own file.
+- The file is only ever read.
+
 ## Which one wins
 
-When several are present for the same job: `render-progress.json`, then the wrapper's report, then the command line, then the estimate from an older clip (marked `≈`).
+When several are present for the same job: `render-progress.json`, then the wrapper's or the hook's report, then the log file, then the command line, then the estimate from an older clip (marked `≈`).

@@ -78,6 +78,16 @@ enum ProcTable {
         return (ns, ru.ri_phys_footprint)
     }
 
+    /// The path behind one of a process's file descriptors, when that is a regular file (output redirected to a log).
+    static func regularFile(pid: Int32, fd: Int32) -> String? {
+        var info = vnode_fdinfowithpath()
+        let size = Int32(MemoryLayout<vnode_fdinfowithpath>.size)
+        guard proc_pidfdinfo(pid, fd, PROC_PIDFDVNODEPATHINFO, &info, size) == size else { return nil }
+        guard UInt32(info.pvip.vip_vi.vi_stat.vst_mode) & UInt32(S_IFMT) == UInt32(S_IFREG) else { return nil }
+        let path = cString(info.pvip.vip_path)
+        return path.isEmpty ? nil : path
+    }
+
     private static func cString<T>(_ tuple: T) -> String {
         withUnsafeBytes(of: tuple) { raw in
             String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)

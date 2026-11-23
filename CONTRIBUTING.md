@@ -33,6 +33,8 @@ The checks inject synthetic clicks and drags and read the window state back. The
 | `RenderDockCore/Events.swift` | What changed between two scans: `job.started`, `shot.done`, … |
 | `RenderDockCore/APIServer.swift` | The local read-only API on `127.0.0.1` ([docs/API.md](docs/API.md)) |
 | `RenderDockCore/Progress.swift` | Reading a renderer's output for progress; the report a wrapped job keeps ([docs/EXACT-PROGRESS.md](docs/EXACT-PROGRESS.md)) |
+| `RenderDockCore/History.swift` | What is remembered (SQLite), queue estimates from it ([docs/HISTORY.md](docs/HISTORY.md)) |
+| `RenderDockCore/LogFollower.swift` | Reads the log a render's output is redirected to |
 | `RenderDockCore/Adapters.swift` | Detection rules read from `adapters.json` ([docs/ADAPTERS.md](docs/ADAPTERS.md)) |
 | `RenderDockCore/Notify.swift` | Notification wording and the request each push channel needs ([docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md)) |
 | `renderdock-cli/` | The `renderdock` command: `run` and `status`. Built as `renderdock-cli`, shipped as `Contents/Helpers/renderdock` |

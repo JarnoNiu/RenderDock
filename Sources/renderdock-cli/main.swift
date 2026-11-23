@@ -2,6 +2,7 @@
 //
 //   renderdock run [--name NAME] [--total N] -- <command…>   run a command unchanged and report its progress
 //   renderdock status [--json]                               what is rendering on this Mac right now
+//   renderdock history [--json] [--limit N]                  the shots that ended most recently
 //
 // `run` passes the command's input and output straight through and exits with the command's own status.
 // It reads the output on the way past, and keeps a small report next to RenderDock's preferences
@@ -21,6 +22,7 @@ let usage = """
 usage:
   renderdock run [--name NAME] [--total N] -- <command> [arguments…]
   renderdock status [--json]
+  renderdock history [--json] [--limit N]
   renderdock version
 """
 
@@ -168,7 +170,10 @@ func status(json: Bool) -> Never {
     let sampler = MetricsSampler()
     _ = sampler.sample()
     Thread.sleep(forTimeInterval: 1.2)   // CPU and per-process figures need two samples
-    let snapshot = StateSnapshot.make(groups: scanner.scan(), metrics: sampler.sample())
+    var groups = scanner.scan()
+    // Reading history only: the app is the one that records.
+    if let history = HistoryStore(readOnly: true) { for i in groups.indices { groups[i].queueETA = history.queueETA(for: groups[i]) } }
+    let snapshot = StateSnapshot.make(groups: groups, metrics: sampler.sample())
     if json {
         print(String(decoding: snapshot.json(pretty: true), as: UTF8.self))
         exit(0)
@@ -178,6 +183,7 @@ func status(json: Bool) -> Never {
     for job in snapshot.jobs {
         let shots = job.shotsTotal > 1 ? "  \(job.shotsDone)/\(job.shotsTotal) shots" : ""
         print("● \(job.title)  [\(job.state)]  \(job.project)\(shots)")
+        if let eta = job.queueEtaSec { print("    queue done in ~\(eta / 60)m\(job.queueEtaRough == true ? " (rough)" : "")") }
         for shot in job.shots where shot.state != "done" && shot.state != "pending" {
             var line = "    \(shot.name)  \(shot.state)"
             if let d = shot.framesDone {
@@ -191,12 +197,38 @@ func status(json: Bool) -> Never {
     exit(0)
 }
 
+// MARK: history
+
+func history(json: Bool, limit: Int) -> Never {
+    let runs = HistoryStore(readOnly: true)?.recent(limit: limit) ?? []
+    if json {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        print(String(decoding: (try? encoder.encode(["runs": runs])) ?? Data("{}".utf8), as: UTF8.self))
+        exit(0)
+    }
+    if runs.isEmpty { print("nothing recorded yet") }
+    let clock = DateFormatter()
+    clock.dateFormat = "MM-dd HH:mm"
+    for r in runs {
+        let took = r.duration.map { $0 >= 3600 ? "\(Int($0) / 3600)h \(Int($0) % 3600 / 60)m" : ($0 >= 60 ? "\(Int($0) / 60)m" : "\(Int($0))s") } ?? "-"
+        let frames = r.framesDone.map { "\($0) frames" } ?? "-"
+        let ended = r.endedAt.map { clock.string(from: Date(timeIntervalSince1970: $0)) } ?? "-"
+        let outcome = (r.outcome ?? "-") + (r.outcome == "failed" ? " (\(r.exitCode.map(String.init) ?? "?"))" : "")
+        print("\(ended)  \(outcome.padding(toLength: 12, withPad: " ", startingAt: 0))  \(took.padding(toLength: 8, withPad: " ", startingAt: 0))  \(frames.padding(toLength: 12, withPad: " ", startingAt: 0))  \(r.shot)  ·  \(r.jobTitle)")
+    }
+    exit(0)
+}
+
 // MARK: entry
 
 let arguments = Array(CommandLine.arguments.dropFirst())
 switch arguments.first {
 case "run": run(Array(arguments.dropFirst()))
 case "status": status(json: arguments.contains("--json"))
+case "history":
+    let limit = arguments.firstIndex(of: "--limit").flatMap { $0 + 1 < arguments.count ? Int(arguments[$0 + 1]) : nil } ?? 20
+    history(json: arguments.contains("--json"), limit: max(1, min(limit, 500)))
 case "version", "--version": print("renderdock \(StateSnapshot.appVersion)")
 case "help", "--help", "-h", nil: print(usage)
 default: fail("unknown command \(arguments[0])\n\(usage)")

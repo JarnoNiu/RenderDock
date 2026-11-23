@@ -183,6 +183,7 @@ struct TaskListContent: View {
                 }
             }
             if store.sleepRisk { SleepWarning() }
+            if !store.recentRuns.isEmpty { RecentRuns(runs: store.recentRuns, now: store.now) }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 10)
@@ -205,6 +206,84 @@ private struct EmptyState: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 22)
+    }
+}
+
+/// One line of hint under a shot: frames worth a second look.
+private struct OddFrames: View {
+    let symbol: String
+    let tint: Color
+    let text: String
+    let help: String
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: symbol).font(.system(size: 8.5, weight: .semibold))
+            Text(text).font(.system(size: 10, weight: .medium)).monospacedDigit().lineLimit(1)
+        }
+        .foregroundStyle(tint)
+        .help(help)
+    }
+}
+
+/// What ended most recently, from history.
+private struct RecentRuns: View {
+    let runs: [HistoryRun]
+    let now: Date
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(L("最近结束", "Recently ended"))
+                .font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.text(0.45))
+            ForEach(runs, id: \.id) { run in
+                HStack(spacing: 6) {
+                    Image(systemName: symbol(run)).font(.system(size: 9, weight: .bold)).foregroundStyle(tint(run)).frame(width: 11)
+                    Text(run.shot).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.text(0.85)).lineLimit(1)
+                    Text(run.jobTitle).font(.system(size: 10)).foregroundStyle(Theme.text(0.4)).lineLimit(1)
+                    Spacer(minLength: 4)
+                    Text(detail(run)).font(.system(size: 10, weight: .medium)).monospacedDigit().foregroundStyle(Theme.text(0.5)).fixedSize()
+                }
+                .help(tooltip(run))
+            }
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 13, style: .continuous).fill(.white.opacity(0.035)))
+    }
+
+    private func symbol(_ r: HistoryRun) -> String {
+        switch r.outcome {
+        case "failed": return "xmark"
+        case "ended": return "minus"
+        default: return "checkmark"
+        }
+    }
+
+    private func tint(_ r: HistoryRun) -> Color {
+        switch r.outcome {
+        case "failed": return Theme.coral
+        case "ended": return Theme.text(0.45)
+        default: return Theme.mint
+        }
+    }
+
+    private func detail(_ r: HistoryRun) -> String {
+        var parts: [String] = []
+        if r.outcome == "failed", let code = r.exitCode { parts.append(L("退出码 \(code)", "exit \(code)")) }
+        if let d = r.duration { parts.append(Fmt.duration(d)) }
+        if let f = r.framesDone, f > 0 { parts.append(L("\(f) 帧", "\(f) frames")) }
+        if let e = r.endedAt { parts.append(Fmt.clock(Date(timeIntervalSince1970: e))) }
+        return parts.joined(separator: " · ")
+    }
+
+    private func tooltip(_ r: HistoryRun) -> String {
+        switch r.outcome {
+        case "finished": return L("渲完了（包装命令记下的退出码是 0）", "Finished (the wrapper recorded exit status 0)")
+        case "failed": return L("失败（包装命令记下了退出码）", "Failed (the wrapper recorded the exit status)")
+        case "done": return L("队列已经渲到它后面去了", "The queue moved on past it")
+        default: return L("进程没了，分不清是渲完还是中断", "Its processes are gone; RenderDock cannot tell finished from interrupted")
+        }
     }
 }
 
@@ -275,6 +354,23 @@ private struct GroupCard: View {
                         .font(Theme.num(10.5, .medium)).foregroundStyle(Theme.text(0.6)).fixedSize()
                 }
                 .padding(.leading, 14)
+            }
+
+            if let eta = group.queueETA {
+                HStack(spacing: 5) {
+                    Image(systemName: "clock").font(.system(size: 9, weight: .semibold))
+                    Text(L("整条队列约 \(Fmt.duration(eta.seconds))后渲完，≈ \(Fmt.clock(store.now.addingTimeInterval(eta.seconds)))",
+                           "Queue done in ~\(Fmt.duration(eta.seconds)), ≈ \(Fmt.clock(store.now.addingTimeInterval(eta.seconds)))")
+                         + (eta.guessed > 0 ? L("（粗估）", " (rough)") : ""))
+                    Spacer(minLength: 0)
+                }
+                .font(.system(size: 10.5, weight: .medium)).monospacedDigit()
+                .foregroundStyle(Theme.aqua.opacity(0.9))
+                .lineLimit(1)
+                .padding(.leading, 14)
+                .help(eta.guessed > 0
+                      ? L("按历史估算。有 \(eta.guessed) 段以前没渲过，用的是这条队列已渲完各段的平均时长", "Estimated from history. \(eta.guessed) shot(s) never ran before and were given this queue's average")
+                      : L("按历史估算：在渲的段用它自己的剩余时间，没渲的段用它上一次的时长", "Estimated from history: the shot in progress by its own time left, the others by how long they took last time"))
             }
 
             ForEach(live) { item in
@@ -362,6 +458,16 @@ private struct ItemRow: View {
                 .monospacedDigit()
                 .foregroundStyle(Theme.text(0.5))
                 .lineLimit(1)
+                if !item.smallFrames.isEmpty {
+                    OddFrames(symbol: "exclamationmark.triangle.fill", tint: Theme.amber,
+                              text: L("\(item.smallFrames.count) 帧文件明显偏小：", "\(item.smallFrames.count) frame(s) with an unusually small file: ") + item.smallFrames.map { "#\($0)" }.joined(separator: " "),
+                              help: L("这几帧的文件不到平时的四分之一，可能是空帧或黑帧，值得看一眼。只是提示，不是结论", "These files are under a quarter of the usual size. They may be empty or black and are worth a look. A hint, not a verdict"))
+                }
+                if !item.slowFrames.isEmpty {
+                    OddFrames(symbol: "tortoise.fill", tint: Theme.text(0.55),
+                              text: L("\(item.slowFrames.count) 帧间隔特别长：", "\(item.slowFrames.count) frame(s) took unusually long: ") + item.slowFrames.map { "#\($0)" }.joined(separator: " "),
+                              help: L("这几帧之前的间隔是平时的五倍以上：可能是特别难渲的帧，也可能是任务中途被暂停过", "The gap before these frames was over five times the usual one: a hard frame, or the job was paused"))
+                }
             }
         }
         .contextMenu {

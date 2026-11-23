@@ -80,6 +80,7 @@ enum Demo {
         b.pid = 42610
         b.cpuCores = 13.6 + 1.5 * wave(t, 6)
         b.memBytes = UInt64(9.8 * 1_073_741_824)
+        b.smallFrames = [88, 91]
         let groupB = RenderGroup(
             id: "demo-b", title: "turntable_v3", script: nil, scriptPath: nil, note: nil, project: "lookdev", cwd: "/",
             startedAt: now.addingTimeInterval(-3960 - t), keepAwake: false, state: .running, items: [b])
@@ -108,7 +109,25 @@ enum Demo {
             id: "demo-d", title: L("夜间队列", "Night queue"), script: "queue-night.sh", scriptPath: nil, note: nil,
             project: "series-main", cwd: "/", startedAt: now.addingTimeInterval(-1260 - t), keepAwake: true, state: .waiting, items: [])
 
-        return [groupA, groupB, groupC, groupD]
+        // The queue's remaining shots, at what the finished ones took on average.
+        var queue = groupA
+        let left = a.filter { $0.state == .pending }.count
+        queue.queueETA = QueueETA(seconds: (a.first { $0.state == .rendering }?.eta ?? 0) + Double(left) * 3900, known: left + 1, guessed: 0)
+        return [queue, groupB, groupC, groupD]
+    }
+
+    static func recentRuns(now: Date) -> [HistoryRun] {
+        let t = now.timeIntervalSince1970
+        func run(_ id: Int64, _ shot: String, _ job: String, ago: Double, took: Double, frames: Int, outcome: String, code: Int32? = nil) -> HistoryRun {
+            HistoryRun(id: id, jobId: "demo", jobTitle: job, project: "studio-reel", script: nil, shot: shot, startedAt: t - ago - took,
+                       endedAt: t - ago, framesDone: frames, framesTotal: frames, exact: true, secPerFrame: took / Double(max(frames, 1)),
+                       outcome: outcome, exitCode: code)
+        }
+        return [
+            run(3, "s030_macro", L("产品片 · 主镜头", "Product film · hero shots"), ago: 2580, took: 2976, frames: 480, outcome: "done"),
+            run(2, "logo_sting", L("片尾标志", "Logo sting"), ago: 9200, took: 1310, frames: 240, outcome: "finished", code: 0),
+            run(1, "fluid_test_b", L("流体测试", "Fluid test"), ago: 15_400, took: 420, frames: 31, outcome: "failed", code: 139),
+        ]
     }
 
     /// A small procedural "rendered frame" so the demo needs no image files.
@@ -176,6 +195,7 @@ extension Store {
             }
         }
         thumbs = images
+        recentRuns = Demo.recentRuns(now: date)
         publish()
         onChange?()
     }

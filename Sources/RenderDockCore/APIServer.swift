@@ -5,6 +5,7 @@ import Network
 ///
 ///     GET /v1/state    the current StateSnapshot as JSON
 ///     GET /v1/events   server-sent events: `state` after every scan, plus `job.started`, `shot.done`, …
+///     GET /v1/history  the shots that ended most recently
 ///
 /// Safety properties, on purpose:
 /// - It listens on the loopback interface only, so nothing off this Mac can connect.
@@ -31,6 +32,7 @@ package final class LocalAPIServer {
     private var listener: NWListener?
     private var streams: [ObjectIdentifier: NWConnection] = [:]
     private var state = Data("{}".utf8)
+    private var history = Data("{\"runs\":[]}".utf8)
     private var boundPort: UInt16?
     private var wantRunning = false
     private var lastStateSent = Date.distantPast
@@ -90,6 +92,15 @@ package final class LocalAPIServer {
             guard !chunk.isEmpty else { return }
             for c in self.streams.values { c.send(content: chunk, completion: .contentProcessed { _ in }) }
         }
+    }
+
+    /// The most recently ended shots, for `GET /v1/history`.
+    package func publish(history runs: [HistoryRun]) {
+        struct Payload: Encodable { let runs: [HistoryRun] }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        guard let data = try? encoder.encode(Payload(runs: runs)) else { return }
+        queue.async { self.history = data }
     }
 
     // MARK: Listening
@@ -173,12 +184,14 @@ package final class LocalAPIServer {
         switch r.path {
         case "/v1/state":
             send(c, status: "200 OK", body: state)
+        case "/v1/history":
+            send(c, status: "200 OK", body: history)
         case "/v1/events":
             openStream(c)
         case "/", "/v1":
             let index: [String: Any] = [
                 "name": "RenderDock", "version": StateSnapshot.appVersion,
-                "endpoints": ["/v1/state", "/v1/events"],
+                "endpoints": ["/v1/state", "/v1/events", "/v1/history"],
                 "docs": "https://github.com/JarnoNiu/RenderDock/blob/main/docs/API.md",
             ]
             send(c, status: "200 OK", body: (try? JSONSerialization.data(withJSONObject: index, options: [.sortedKeys, .withoutEscapingSlashes])) ?? Data("{}".utf8))

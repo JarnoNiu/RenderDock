@@ -61,6 +61,8 @@ CPU, GPU utilisation and GPU memory, memory and memory pressure, SoC temperature
 
 Also included: a menu-bar item with a progress ring, an optional **Keep Awake While Rendering** switch, and **Launch at Login**.
 
+New in 0.2: exact progress for any render through [`renderdock run`](docs/EXACT-PROGRESS.md), [notifications](docs/NOTIFICATIONS.md) on the Mac and on your phone when a job finishes, fails or stalls, and a [local API](docs/API.md) so other displays can show the same progress.
+
 ## Quick start
 
 Requirements: macOS 14 or later, and the Swift 6 toolchain (Xcode 16+ or just the Command Line Tools: `xcode-select --install`).
@@ -101,7 +103,7 @@ RenderDock reads the process table and the output folders. It does not hook into
 | No new frame for 10× the usual frame time (5 minutes at least) | **Stalled** |
 | Image files in the output folder, de-duplicated by frame number | **Frames done**, seconds per frame, latest-frame thumbnail |
 
-The output folder comes from Blender's own `-o` / `--render-output` (including `//` paths relative to the `.blend`), or from a script argument `--out DIR` after `--`.
+The output folder comes from Blender's own `-o` / `--render-output` (including `//` paths relative to the `.blend`), or from a script argument `--out DIR` after `--`. Steps of your own pipeline that are not a plain Blender render can be described in a small [rules file](docs/ADAPTERS.md).
 
 ### Where the percentage comes from
 
@@ -111,6 +113,7 @@ RenderDock only shows a percentage when it knows the total. It does not guess.
 |---|---|
 | `render-progress.json` in the output folder (see below) | exact: `412/720 frames · 57%` and time left |
 | A frame range on the command line: `-s 1 -e 250 -a`, or `-f 1..250` | exact |
+| Started with `renderdock run --`, or with the Blender hook loaded | exact, even when nothing is on the command line. It also tells a finished job from a failed one |
 | An older clip with the same name next to the output folder | estimate, marked `≈`. Dropped as soon as the frame count passes it |
 | None of these | frame count and seconds per frame only, with an indeterminate bar |
 
@@ -136,8 +139,8 @@ Anything that can write a file can report progress this way, not just Blender.
 
 ## What it will not do
 
-- It is **read-only**. It sends no signals, writes nothing outside its own preferences, and makes no network connections.
-- Version 0.1 has no pause, resume or stop buttons. Queue scripts often manage `STOP`/`CONT` themselves, and two hands on the same switch is a bad idea.
+- It is **read-only**: it sends no signals and never writes into your render folders. It makes no network connections unless you add a notification channel, and the optional local API listens on `127.0.0.1` only.
+- There are no pause, resume or stop buttons yet. Queue scripts often manage `STOP`/`CONT` themselves, and two hands on the same switch is a bad idea.
 - If neither the output folder nor the frame range is on the command line, a job still appears, with CPU, memory and elapsed time, but without frames.
 - SoC temperature is read from IOHID sensors, a private interface available on Apple Silicon. On Intel Macs, or after a system update that moves the sensors, the tile shows `–`. Fan speed and wattage are not read.
 - Built and tested on macOS 26 with an M5 Max. It compiles for macOS 14, but 14 and 15 and Intel Macs are untested. Reports are welcome.
@@ -149,11 +152,9 @@ The full TODO list, with a timeline, is in **[ROADMAP.md](ROADMAP.md)**.
 
 In short (plans, not promises):
 
-- Exact progress out of the box: a wrapper or add-on that reads Blender's own frame output
-- More than Blender: ffmpeg encodes, ComfyUI, After Effects, and a small adapter format for anything else
-- Notifications when a job finishes, stalls or fails, on the Mac and on your phone
-- A local API, so a desk display, a status light or a Stream Deck key can show the same progress
+- More than Blender: ffmpeg encodes and ComfyUI with real progress
 - History: how long shots really took, and better time-left estimates from it
+- The first hardware displays: an LED strip as a progress bar, a Stream Deck key, a small screen with a knob
 - Optional controls: pause, resume, lower priority
 - Signed and notarised releases, Homebrew, more UI languages
 
@@ -163,13 +164,14 @@ In short (plans, not promises):
 |---|---|
 | `zsh scripts/build-app.sh` | Builds `build/RenderDock.app` (ad-hoc signed; the icon is drawn by the app itself) |
 | `zsh scripts/install.sh [--login]` | Builds, installs to `/Applications`, relaunches |
+| `swift run rd-checks` | Checks for the core: parsing, events, the API, notifications (132 checks) |
 | `.build/release/RenderDock --dump` | Prints detected jobs and metrics as text, no UI |
 | `.build/release/RenderDock --snapshot DIR [--demo]` | Renders the capsule and the panel to PNG |
 | `zsh scripts/make-demo.sh` | Regenerates the screenshots and the GIF in `assets/` |
 | `zsh scripts/fake-render.sh [frames] [sec/frame]` | A stand-in render for testing detection |
 | `python3 scripts/verify-interactions.py <binary>` | Injects clicks and drags into an instance started with `--debug` and checks expanding, collapsing and snapping (12 checks) |
 
-The code is plain Swift and SwiftUI with AppKit for the window: about 3,000 lines, no packages. See [CONTRIBUTING.md](CONTRIBUTING.md).
+The code is plain Swift and SwiftUI with AppKit for the window: about 5,000 lines, no packages. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Acknowledgements
 

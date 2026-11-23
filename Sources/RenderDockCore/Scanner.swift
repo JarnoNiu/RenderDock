@@ -6,11 +6,13 @@ package final class TaskScanner {
     package init() {}
 
     /// `reported`: a job that is not a Blender render but tells us about itself (it was started with `renderdock run`).
-    private enum LeafKind { case blender, composite, ffmpeg, reported }
+    private enum LeafKind { case blender, adapter, ffmpeg, reported }
 
     private struct Leaf {
         let proc: Proc
         let kind: LeafKind
+        /// For `.adapter`: which rule matched.
+        var rule: Int? = nil
     }
 
     private struct Stream {
@@ -30,6 +32,9 @@ package final class TaskScanner {
     private var frameCache: [String: (at: Date, stats: FrameStats)] = [:]
     private var mp4Cache: [String: (mtime: Date, seconds: Double?, fps: Double?)] = [:]
     private var anchorsCache: [String: (mtime: Date, frames: Int?)] = [:]
+    /// Extra detection rules from adapters.json, reloaded when the file changes.
+    private var rules = AdapterRules()
+    private var rulesStamp: Date?
     /// Reports written by wrapped jobs, by pid, as of this scan.
     private var reports: [Int32: JobReport] = [:]
     private var previousGroups: [RenderGroup] = []
@@ -47,28 +52,33 @@ package final class TaskScanner {
 
         // 1. Leaves: the processes doing the actual work
         var blenderLeaves: [Leaf] = []
-        var nodeCandidates: [Proc] = []
+        loadRules()
+        var adapterCandidates: [(proc: Proc, rule: Int)] = []
+        let adapterProcesses = Set(rules.adapters.map { $0.process.lowercased() })
         var ffmpegCandidates: [Proc] = []
         for p in snap.table.values {
             let lower = p.name.lowercased()
+            if adapterProcesses.contains(lower) {
+                let a = snap.args(p.pid)
+                if let i = rules.adapters.firstIndex(where: { $0.matches(process: p.name, args: a) }) { adapterCandidates.append((p, i)) }
+            }
             if lower == "blender" {
                 let a = snap.args(p.pid)
                 if a.contains("-b") || a.contains("--background") { blenderLeaves.append(Leaf(proc: p, kind: .blender)) }
-            } else if lower == "node" {
-                let a = snap.args(p.pid)
-                if a.contains("--scene"), a.contains(where: { $0.hasSuffix("render.mjs") }) { nodeCandidates.append(p) }
             } else if lower == "ffmpeg" {
                 if now.timeIntervalSince(p.start) >= 3 { ffmpegCandidates.append(p) }
             }
         }
         let blenderPids = Set(blenderLeaves.map(\.proc.pid))
         var leaves = blenderLeaves
-        var compositePids = Set<Int32>()
-        for n in nodeCandidates where blenderPids.isDisjoint(with: snap.descendants(of: n.pid)) {
-            leaves.append(Leaf(proc: n, kind: .composite))
-            compositePids.insert(n.pid)
+        var adapterPids = Set<Int32>()
+        for (p, i) in adapterCandidates where !blenderPids.contains(p.pid) {
+            if let below = rules.adapters[i].notAbove?.lowercased(),
+               snap.descendants(of: p.pid).contains(where: { snap.table[$0]?.name.lowercased() == below }) { continue }
+            leaves.append(Leaf(proc: p, kind: .adapter, rule: i))
+            adapterPids.insert(p.pid)
         }
-        for f in ffmpegCandidates where !hasAncestor(f, in: compositePids, snap) {
+        for f in ffmpegCandidates where !adapterPids.contains(f.pid) && !hasAncestor(f, in: adapterPids, snap) {
             leaves.append(Leaf(proc: f, kind: .ffmpeg))
         }
 
@@ -76,7 +86,7 @@ package final class TaskScanner {
         reports = Dictionary(ReportStore.all().map { ($0.pid, $0) }, uniquingKeysWith: { a, _ in a })
         let known = Set(leaves.map(\.proc.pid))
         for (pid, r) in reports where r.exitCode == nil && !known.contains(pid) {
-            guard let p = snap.table[pid], report(for: p) != nil, compositePids.isDisjoint(with: [pid]) else { continue }
+            guard let p = snap.table[pid], report(for: p) != nil else { continue }
             leaves.append(Leaf(proc: p, kind: .reported))
         }
 
@@ -200,8 +210,10 @@ package final class TaskScanner {
                 var firstOpen: Int?
                 for i in built.indices {
                     let spec = stream.specs[i]
-                    let mp4 = "\(scwd)/out/\(spec.scene)-\(spec.shot).mp4"
-                    if let m = mtime(mp4), m >= stream.proc.start {
+                    let doneFile = rules.queueDoneFile.flatMap {
+                        AdapterRules.expand($0, args: [], cwd: scwd, extra: ["scene": spec.scene, "shot": spec.shot])
+                    }
+                    if let doneFile, let m = mtime(doneFile), m >= stream.proc.start {
                         built[i].state = .done
                     } else if firstOpen == nil {
                         firstOpen = i
@@ -294,22 +306,23 @@ package final class TaskScanner {
                 item.state = .rendering
             }
 
-        case .composite:
-            item.state = p.stopped ? .paused : .compositing
-            let scene = spec?.scene ?? Self.argValue(a, ["--scene"]) ?? ""
-            let shot = spec?.shot ?? Self.argValue(a, ["--shot"]) ?? ""
-            let key = "\(scene)-\(shot)"
-            let framesDir = "\(cwd)/out/frames/\(key)"
-            if isDirectory(framesDir), let total = anchorsFrameCount("\(cwd)/out/blender/\(key)/anchors.json") {
-                let st = frameStats(framesDir, since: p.start, now: now)
-                // Compositing empties the directory when it starts; a directory older than the process has not been emptied yet, so count 0 frames
-                let fresh = (mtime(framesDir) ?? .distantPast) >= p.start
-                item.outDir = framesDir
-                item.framesDone = fresh ? min(st.done, total) : 0
-                item.framesTotal = total
+        case .adapter:
+            guard let index = leaf.rule, rules.adapters.indices.contains(index) else { break }
+            let rule = rules.adapters[index]
+            item.state = p.stopped ? .paused : rule.itemState
+            if let template = rule.frames, let dir = AdapterRules.expand(template, args: a, cwd: cwd), isDirectory(dir) {
+                let st = frameStats(dir, since: p.start, now: now)
+                // A step that empties its folder when it starts: until the folder is newer than the process, nothing in it is ours.
+                let fresh = rule.freshDir == true ? (mtime(dir) ?? .distantPast) >= p.start : true
+                item.outDir = dir
+                item.framesDone = fresh ? st.done : 0
                 item.latestFrame = fresh ? st.latest : nil
                 item.lastFrameAt = fresh ? st.lastAt : nil
                 item.secPerFrame = fresh ? st.secPerFrame : nil
+            }
+            if let total = adapterTotal(rule, args: a, cwd: cwd) {
+                item.framesTotal = total
+                if let done = item.framesDone { item.framesDone = min(done, total) }
             }
 
         case .reported:
@@ -326,6 +339,23 @@ package final class TaskScanner {
             item.state = p.stopped ? .paused : .encoding
             if let last = a.last, !last.hasPrefix("-") { item.outDir = (resolve(last, cwd) as NSString).deletingLastPathComponent }
         }
+    }
+
+    private func loadRules() {
+        let stamp = mtime(AdapterRules.file.path)
+        guard stamp != rulesStamp else { return }
+        rulesStamp = stamp
+        rules = stamp == nil ? AdapterRules() : AdapterRules.load()
+    }
+
+    private func adapterTotal(_ rule: LeafAdapter, args: [String], cwd: String) -> Int? {
+        guard let source = rule.total else { return nil }
+        if let arg = source.arg, let n = Self.argValue(args, [arg]).flatMap({ Int($0) }), n > 0 { return n }
+        if let template = source.jsonFile, let key = source.countOf,
+           let path = AdapterRules.expand(template, args: args, cwd: cwd) {
+            return jsonCount(path, key: key)
+        }
+        return nil
     }
 
     private func report(for p: Proc) -> JobReport? {
@@ -491,16 +521,18 @@ package final class TaskScanner {
         return nil
     }
 
-    private func anchorsFrameCount(_ path: String) -> Int? {
+    /// Number of entries under `key` (an array or an object) in a JSON file. Cached until the file changes.
+    private func jsonCount(_ path: String, key: String) -> Int? {
         guard let m = mtime(path) else { return nil }
-        if let c = anchorsCache[path], c.mtime == m { return c.frames }
+        let cacheKey = path + "|" + key
+        if let c = anchorsCache[cacheKey], c.mtime == m { return c.frames }
         var count: Int?
         if let data = FileManager.default.contents(atPath: path),
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            if let arr = obj["frames"] as? [Any] { count = arr.count }
-            else if let dict = obj["frames"] as? [String: Any] { count = dict.count }
+            if let arr = obj[key] as? [Any] { count = arr.count }
+            else if let dict = obj[key] as? [String: Any] { count = dict.count }
         }
-        anchorsCache[path] = (m, count)
+        anchorsCache[cacheKey] = (m, count)
         return count
     }
 
@@ -586,6 +618,8 @@ package final class TaskScanner {
         let a = snap.args(leaf.proc.pid)
         if let given = report(for: leaf.proc)?.name { return given }   // `renderdock run --name …`
         if leaf.kind == .reported { return leaf.proc.name }
+        if leaf.kind == .adapter, let i = leaf.rule, rules.adapters.indices.contains(i), let template = rules.adapters[i].title,
+           let title = AdapterRules.expand(template, args: a, cwd: snap.cwd(leaf.proc.pid)) { return title }
         if let sc = Self.argValue(a, ["--scene"]) {
             return Self.specName((sc, Self.argValue(a, ["--shot"]) ?? sc))
         }

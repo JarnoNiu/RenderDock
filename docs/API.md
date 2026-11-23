@@ -1,6 +1,6 @@
 # Local API
 
-> Part of 0.2, which is still in development. Off by default.
+> New in 0.2. Off by default.
 
 RenderDock can publish what it knows — every job, every shot, the machine's metrics — as JSON on `127.0.0.1`. The capsule is one reader of that state. A script, a status light, a Stream Deck key or a small display on your desk can be another.
 
@@ -52,7 +52,7 @@ curl -s http://127.0.0.1:47600/v1/state
 ```json
 {
   "version": 1,
-  "app": "RenderDock 0.2.0-dev",
+  "app": "RenderDock 0.2.0",
   "host": "studio-mac",
   "updatedAt": "2026-11-24T04:12:07Z",
   "summary": {
@@ -124,7 +124,7 @@ curl -N http://127.0.0.1:47600/v1/events
 retry: 3000
 
 event: state
-data: {"app":"RenderDock 0.2.0-dev", …}
+data: {"app":"RenderDock 0.2.0", …}
 
 event: shot.done
 data: {"at":"2026-11-24T04:31:47Z","jobId":"g41872-1795400000","jobTitle":"Product film · hero shots","project":"studio-reel","shot":"s040_explode","type":"shot.done"}

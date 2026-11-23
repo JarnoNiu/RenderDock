@@ -61,6 +61,8 @@ CPU、显卡占用与显存、内存与内存压力、芯片温度、交换区�
 
 另外还有：带进度环的菜单栏图标、可选的「渲染时保持唤醒」开关、「登录时启动」。
 
+0.2 新增：用 [`renderdock run`](../EXACT-PROGRESS.md) 给任何渲染拿到准确进度；任务渲完、失败或卡住时，在电脑和手机上[通知](../NOTIFICATIONS.md)你；以及一个[本机接口](../API.md)，让别的显示端显示同一份进度。这三份说明目前只有英文。
+
 ## 快速开始
 
 需要 macOS 14 或更高版本，以及 Swift 6 工具链（Xcode 16 以上，或者只装命令行工具：`xcode-select --install`）。
@@ -101,7 +103,7 @@ zsh scripts/fake-render.sh 60 1
 | 超过平时每帧耗时的 10 倍（至少 5 分钟）没出新帧 | **可能卡住** |
 | 输出目录里的图片文件，按帧号去重 | **已出帧数**、每帧耗时、最新一帧的缩略图 |
 
-输出目录取自 Blender 自己的 `-o` / `--render-output`（包括相对 `.blend` 的 `//` 写法），或者脚本在 `--` 之后的参数 `--out 目录`。
+输出目录取自 Blender 自己的 `-o` / `--render-output`（包括相对 `.blend` 的 `//` 写法），或者脚本在 `--` 之后的参数 `--out 目录`。你自己流水线里不是普通 Blender 渲染的步骤，可以用一个小的[规则文件](../ADAPTERS.md)来描述。
 
 ### 百分比从哪来
 
@@ -111,6 +113,7 @@ zsh scripts/fake-render.sh 60 1
 |---|---|
 | 输出目录里的 `render-progress.json`（见下） | 准数：`412/720 帧 · 57%`，外加剩余时间 |
 | 命令行里写了帧范围：`-s 1 -e 250 -a`，或 `-f 1..250` | 准数 |
+| 用 `renderdock run --` 启动，或加载了 Blender 钩子 | 准数，哪怕命令行里什么都没写。还能分清任务是渲完了还是失败了 |
 | 输出目录旁边有同名的旧片段 | 估算，标 `≈`。已出帧数一超过它，估算就撤掉 |
 | 以上都没有 | 只显示帧数和每帧耗时，进度条走流动光带 |
 
@@ -136,8 +139,8 @@ blender -b shot_010.blend -o //render/frame_#### -s 1 -e 250 -a
 
 ## 它不做什么
 
-- 它是**只读**的：不发信号，不在自己的偏好设置之外写任何东西，不联网。
-- 0.1 版没有暂停、继续、终止按钮。排队脚本常常自己在用 `STOP`／`CONT` 调度，两只手按同一个开关不是好主意。
+- 它是**只读**的：不发信号，也绝不往你的渲染目录里写东西。除非你自己添加了通知渠道，否则它不联网；可选的本机接口只监听 `127.0.0.1`。
+- 目前还没有暂停、继续、终止按钮。排队脚本常常自己在用 `STOP`／`CONT` 调度，两只手按同一个开关不是好主意。
 - 如果输出目录和帧范围都不在命令行里，任务照样会出现，有 CPU、内存和已跑时长，但没有帧数。
 - 芯片温度读的是 IOHID 传感器，这是 Apple 芯片上的私有接口。在 Intel Mac 上，或者系统更新挪了传感器之后，这一格显示 `–`。风扇转速和功耗没有读。
 - 在 macOS 26 和 M5 Max 上构建并测试。它能按 macOS 14 编译，但 14、15 和 Intel Mac 都没测过，欢迎反馈。
@@ -149,11 +152,9 @@ blender -b shot_010.blend -o //render/frame_#### -s 1 -e 250 -a
 
 简单说（是计划，不是承诺）：
 
-- 开箱即有准确进度：用包装命令或插件读 Blender 自己输出的帧信息
-- 不只是 Blender：ffmpeg 编码、ComfyUI、After Effects，以及给其他工具用的小型适配格式
-- 任务完成、卡住或失败时通知你，电脑上和手机上都行
-- 本地接口：桌面小屏、状态灯、Stream Deck 按键都能显示同一份进度
+- 不只是 Blender：ffmpeg 编码和 ComfyUI 的真实进度
 - 历史记录：每段实际渲了多久，并据此把剩余时间估得更准
+- 第一批硬件显示：把灯带当进度条、Stream Deck 按键、带旋钮的小屏
 - 可选的控制：暂停、继续、降低优先级
 - 签名并公证的发行版、Homebrew、更多界面语言
 
@@ -163,13 +164,14 @@ blender -b shot_010.blend -o //render/frame_#### -s 1 -e 250 -a
 |---|---|
 | `zsh scripts/build-app.sh` | 构建 `build/RenderDock.app`（本机临时签名；图标由应用自己画） |
 | `zsh scripts/install.sh [--login]` | 构建、装到 `/Applications`、重新启动 |
+| `swift run rd-checks` | 核心部分的检查：解析、事件、接口、通知（132 项） |
 | `.build/release/RenderDock --dump` | 不开界面，把认出的任务和指标打印成文字 |
 | `.build/release/RenderDock --snapshot 目录 [--demo]` | 把胶囊和面板渲成 PNG |
 | `zsh scripts/make-demo.sh` | 重新生成 `assets/` 里的截图和动图 |
 | `zsh scripts/fake-render.sh [帧数] [每帧秒数]` | 用来测试识别的假渲染 |
 | `python3 scripts/verify-interactions.py <可执行文件>` | 给带 `--debug` 启动的实例注入点击和拖动，检查展开、收起和吸附（12 项） |
 
-代码是纯 Swift 和 SwiftUI，窗口部分用 AppKit：约 3,000 行，不依赖任何包。见 [CONTRIBUTING.md](../../CONTRIBUTING.md)。
+代码是纯 Swift 和 SwiftUI，窗口部分用 AppKit：约 5,000 行，不依赖任何包。见 [CONTRIBUTING.md](../../CONTRIBUTING.md)。
 
 ## 致谢
 

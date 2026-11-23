@@ -61,6 +61,8 @@ CPU, uso de GPU e memória de GPU, memória e pressão de memória, temperatura 
 
 Também inclui: um item na barra de menus com um anel de progresso, uma opção **Manter ativo durante o render** (Keep Awake While Rendering) e **Abrir ao iniciar sessão** (Launch at Login).
 
+Novidades da versão 0.2: progresso exato para qualquer render com [`renderdock run`](../EXACT-PROGRESS.md), [notificações](../NOTIFICATIONS.md) no Mac e no celular quando uma tarefa termina, falha ou trava, e uma [API local](../API.md) para que outros displays mostrem o mesmo progresso. Esses três documentos estão, por enquanto, apenas em inglês.
+
 ## Início rápido
 
 Requisitos: macOS 14 ou posterior e a toolchain do Swift 6 (Xcode 16+ ou apenas as Command Line Tools: `xcode-select --install`).
@@ -101,7 +103,7 @@ O RenderDock lê a tabela de processos e as pastas de saída. Ele não se acopla
 | Nenhum quadro novo por 10 vezes o tempo habitual por quadro (no mínimo 5 minutos) | **Travado** |
 | Arquivos de imagem na pasta de saída, sem duplicatas por número de quadro | **Quadros concluídos**, segundos por quadro, miniatura do último quadro |
 
-A pasta de saída vem do `-o` / `--render-output` do próprio Blender (incluindo caminhos `//` relativos ao `.blend`) ou de um argumento de script `--out PASTA` depois de `--`.
+A pasta de saída vem do `-o` / `--render-output` do próprio Blender (incluindo caminhos `//` relativos ao `.blend`) ou de um argumento de script `--out PASTA` depois de `--`. As etapas do seu próprio pipeline que não são um simples render do Blender podem ser descritas em um pequeno [arquivo de regras](../ADAPTERS.md).
 
 ### De onde vem a porcentagem
 
@@ -111,6 +113,7 @@ O RenderDock só mostra uma porcentagem quando conhece o total. Ele não tenta a
 |---|---|
 | `render-progress.json` na pasta de saída (veja abaixo) | exato: `412/720 frames · 57%` e tempo restante |
 | Um intervalo de quadros na linha de comando: `-s 1 -e 250 -a` ou `-f 1..250` | exato |
+| Iniciado com `renderdock run --`, ou com o hook do Blender carregado | exato, mesmo quando não há nada na linha de comando. Também distingue uma tarefa concluída de uma que falhou |
 | Um clipe mais antigo com o mesmo nome ao lado da pasta de saída | estimativa, marcada com `≈`. Descartada assim que a contagem de quadros a ultrapassa |
 | Nenhuma dessas | apenas contagem de quadros e segundos por quadro, com uma barra indeterminada |
 
@@ -136,8 +139,8 @@ Qualquer coisa capaz de gravar um arquivo pode informar o progresso assim, não 
 
 ## O que ele não faz
 
-- É **somente leitura**. Não envia sinais, não grava nada fora das próprias preferências e não faz conexões de rede.
-- A versão 0.1 não tem botões de pausar, retomar ou parar. Scripts de fila costumam gerenciar `STOP`/`CONT` por conta própria, e duas mãos no mesmo interruptor é uma má ideia.
+- É **somente leitura**: não envia sinais e nunca grava nas suas pastas de render. Não faz conexões de rede, a menos que você adicione um canal de notificação, e a API local opcional escuta apenas em `127.0.0.1`.
+- Ainda não há botões de pausar, retomar ou parar. Scripts de fila costumam gerenciar `STOP`/`CONT` por conta própria, e duas mãos no mesmo interruptor é uma má ideia.
 - Se nem a pasta de saída nem o intervalo de quadros estiverem na linha de comando, a tarefa aparece mesmo assim, com CPU, memória e tempo decorrido, mas sem quadros.
 - A temperatura do SoC é lida de sensores IOHID, uma interface privada disponível no Apple Silicon. Em Macs com Intel, ou depois de uma atualização do sistema que mude os sensores de lugar, o indicador mostra `–`. A velocidade dos ventiladores e a potência consumida não são lidas.
 - Compilado e testado no macOS 26 com um M5 Max. Ele compila para o macOS 14, mas as versões 14 e 15 e os Macs com Intel não foram testados. Relatos são bem-vindos.
@@ -149,11 +152,9 @@ A lista completa de pendências, com um cronograma, está em **[ROADMAP.md](../.
 
 Em resumo (planos, não promessas):
 
-- Progresso exato sem configurar nada: um wrapper ou add-on que lê a saída de quadros do próprio Blender
-- Além do Blender: codificações com ffmpeg, ComfyUI, After Effects e um pequeno formato de adaptador para todo o resto
-- Notificações quando uma tarefa termina, trava ou falha, no Mac e no celular
-- Uma API local, para que um display de mesa, uma luz de status ou uma tecla do Stream Deck mostrem o mesmo progresso
+- Além do Blender: codificações com ffmpeg e ComfyUI, com progresso real
 - Histórico: quanto tempo os shots realmente levaram, e estimativas melhores de tempo restante a partir disso
+- Os primeiros displays de hardware: uma fita de LED como barra de progresso, uma tecla do Stream Deck, uma tela pequena com um botão giratório
 - Controles opcionais: pausar, retomar, reduzir a prioridade
 - Versões assinadas e notarizadas, Homebrew, mais idiomas de interface
 
@@ -163,13 +164,14 @@ Em resumo (planos, não promessas):
 |---|---|
 | `zsh scripts/build-app.sh` | Compila `build/RenderDock.app` (assinatura ad hoc; o ícone é desenhado pelo próprio app) |
 | `zsh scripts/install.sh [--login]` | Compila, instala em `/Applications` e reabre |
+| `swift run rd-checks` | Verifica o núcleo: parsing, eventos, API e notificações (132 verificações) |
 | `.build/release/RenderDock --dump` | Imprime as tarefas detectadas e as métricas como texto, sem interface |
 | `.build/release/RenderDock --snapshot PASTA [--demo]` | Renderiza a cápsula e o painel em PNG |
 | `zsh scripts/make-demo.sh` | Gera novamente as capturas de tela e o GIF em `assets/` |
 | `zsh scripts/fake-render.sh [quadros] [s/quadro]` | Um render simulado para testar a detecção |
 | `python3 scripts/verify-interactions.py <binário>` | Injeta cliques e arrastos em uma instância iniciada com `--debug` e verifica a expansão, o recolhimento e o encaixe (12 verificações) |
 
-O código é Swift e SwiftUI puros, com AppKit para a janela: cerca de 3.000 linhas, sem pacotes. Veja [CONTRIBUTING.md](../../CONTRIBUTING.md).
+O código é Swift e SwiftUI puros, com AppKit para a janela: cerca de 5.000 linhas, sem pacotes. Veja [CONTRIBUTING.md](../../CONTRIBUTING.md).
 
 ## Agradecimentos
 

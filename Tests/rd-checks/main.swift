@@ -212,6 +212,43 @@ events = ending.update([])
 check("no record, no claim; and the queue is announced empty", events.map(\.type) == [.jobEnded, .allEnded] && events[0].outcome == nil)
 check("an empty queue staying empty is not news", ending.update([]).isEmpty)
 
+// MARK: Adapter rules
+
+section("adapter rules")
+let rulesJSON = #"""
+{
+  "adapters": [
+    { "name": "composite", "process": "node", "args": ["render.mjs", "--scene"], "notAbove": "blender",
+      "state": "compositing", "frames": "{cwd}/out/frames/{--scene}-{--shot}",
+      "total": { "jsonFile": "{cwd}/out/blender/{--scene}-{--shot}/meta.json", "countOf": "frames" }, "freshDir": true },
+    { "name": "encoder", "process": "MyEncoder", "title": "encode {--job}", "total": { "arg": "--frames" } }
+  ],
+  "queueDoneFile": "{cwd}/out/{scene}-{shot}.mp4"
+}
+"""#
+let rules = try? JSONDecoder().decode(AdapterRules.self, from: Data(rulesJSON.utf8))
+check("the file parses", rules?.adapters.count == 2 && rules?.queueDoneFile != nil)
+if let rules {
+    let composite = rules.adapters[0], encoder = rules.adapters[1]
+    check("process name and arguments must match", composite.matches(process: "node", args: ["node", "/tools/render.mjs", "--scene", "a", "--shot", "b"]))
+    check("a script name also matches a bare argument", composite.matches(process: "node", args: ["node", "render.mjs", "--scene", "a"]))
+    check("a missing argument does not match", !composite.matches(process: "node", args: ["node", "render.mjs"]))
+    check("another process does not match", !composite.matches(process: "python3", args: ["render.mjs", "--scene", "a"]))
+    check("process names are case-insensitive", encoder.matches(process: "myencoder", args: []))
+    check("states", composite.itemState == .compositing && encoder.itemState == .rendering)
+    let args = ["node", "render.mjs", "--scene", "s040", "--shot=explode"]
+    check("templates take values from arguments, either spelling",
+          AdapterRules.expand(composite.frames!, args: args, cwd: "/proj") == "/proj/out/frames/s040-explode")
+    check("a placeholder without a value gives no path at all",
+          AdapterRules.expand(composite.frames!, args: ["node", "render.mjs", "--scene", "s040"], cwd: "/proj") == nil)
+    check("queue done-file template",
+          AdapterRules.expand(rules.queueDoneFile!, args: [], cwd: "/proj", extra: ["scene": "s040", "shot": "explode"]) == "/proj/out/s040-explode.mp4")
+    check("an unclosed placeholder is refused", AdapterRules.expand("{cwd}/x/{oops", args: [], cwd: "/proj") == nil)
+    check("text without placeholders passes through", AdapterRules.expand("/fixed/path", args: [], cwd: "") == "/fixed/path")
+}
+check("no file means no extra rules", AdapterRules.load(from: URL(fileURLWithPath: "/nonexistent/adapters.json")) == AdapterRules())
+check("an empty object is fine", (try? JSONDecoder().decode(AdapterRules.self, from: Data("{}".utf8))) == AdapterRules())
+
 // MARK: Notifications
 
 section("notification channels")

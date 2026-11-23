@@ -1,8 +1,8 @@
 # Exact progress
 
-> The wrapper described here is part of 0.2, which is still in development.
+> New in 0.2.
 
-RenderDock shows a percentage only when it knows the total. There are four ways it can know. Use whichever fits how you start renders.
+RenderDock shows a percentage only when it knows the total. There are five ways it can know. Use whichever fits how you start renders.
 
 | Way | You change | Works when |
 |---|---|---|
@@ -10,6 +10,7 @@ RenderDock shows a percentage only when it knows the total. There are four ways 
 | 2. Start the job with `renderdock run --` | one word in front of your command | the range is inside the `.blend`, or the output folder is |
 | 3. Print `FRAME i/N` lines | one `print` in your script, plus the wrapper | your script renders frame by frame itself |
 | 4. Write `render-progress.json` | one line in your script | you would rather not wrap the command |
+| 5. Load the Blender hook | one `--python` argument, or an add-on | you render from the Blender window, or cannot wrap the command |
 
 ## `renderdock run`
 
@@ -105,6 +106,31 @@ Without the wrapper: after each frame, write this file into the output folder.
 ```python
 (out_dir / "render-progress.json").write_text(json.dumps({"done": i + 1, "total": len(frames)}))
 ```
+
+## The Blender hook
+
+`blender/renderdock_hook.py` reports from inside Blender. Installed copies of the app carry it at `/Applications/RenderDock.app/Contents/Resources/renderdock_hook.py`.
+
+On the command line, load it before the render flags:
+
+```bash
+blender -b scene.blend --python /Applications/RenderDock.app/Contents/Resources/renderdock_hook.py -a
+```
+
+Or install it as an add-on (Preferences → Add-ons → Install from Disk) and enable **RenderDock Hook**: then renders started from the Blender window appear in RenderDock too.
+
+What it reports depends on how Blender was asked to render, because it only reports what it can count honestly:
+
+| How Blender renders | What the hook reports |
+|---|---|
+| `-b … -a` | The scene's frame range, including the step. Exact total |
+| `-b … -f 1,5` or `-f 1..250` | The listed frames, counted together across the `-f` flags |
+| From the Blender window | One report per render. For an animation the total is known from the second frame on |
+| `-b` with a Python script that calls the renderer itself | **Nothing.** Such a script may render several passes per frame, or frames that are not scene frames, so the hook cannot know what a frame is. Print `FRAME i/N` and use the wrapper instead |
+
+The hook writes the same kind of report as the wrapper, in the same place, and nothing anywhere else. It does not touch the scene, the render settings or the output folder.
+
+Checked with Blender 5.2 on the command line. Not yet checked: Blender 4.x, and the add-on route in the Blender window.
 
 ## Which one wins
 

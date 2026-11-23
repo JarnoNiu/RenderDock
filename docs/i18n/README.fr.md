@@ -61,6 +61,8 @@ CPU, utilisation et mémoire du GPU, mémoire et pression mémoire, température
 
 Également inclus : un élément de barre des menus avec un anneau de progression, un interrupteur facultatif **Empêcher la veille pendant le rendu** (Keep Awake While Rendering) et **Ouvrir à la connexion** (Launch at Login).
 
+Nouveautés de la version 0.2 : une progression exacte pour n'importe quel rendu grâce à [`renderdock run`](../EXACT-PROGRESS.md), des [notifications](../NOTIFICATIONS.md) sur le Mac et sur votre téléphone quand une tâche se termine, échoue ou se bloque, et une [API locale](../API.md) pour que d'autres afficheurs puissent montrer la même progression. Ces trois documents n'existent pour l'instant qu'en anglais.
+
 ## Démarrage rapide
 
 Prérequis : macOS 14 ou version ultérieure, et la chaîne d'outils Swift 6 (Xcode 16 ou version ultérieure, ou simplement les Command Line Tools : `xcode-select --install`).
@@ -101,7 +103,7 @@ RenderDock lit la table des processus et les dossiers de sortie. L'application n
 | Aucune nouvelle image depuis 10 fois le temps habituel par image (5 minutes au minimum) | **Bloqué** |
 | Les fichiers image du dossier de sortie, dédoublonnés par numéro d'image | **Images terminées**, secondes par image, vignette de la dernière image |
 
-Le dossier de sortie vient des options `-o` / `--render-output` de Blender (y compris les chemins `//` relatifs au `.blend`), ou d'un argument de script `--out DOSSIER` placé après `--`.
+Le dossier de sortie vient des options `-o` / `--render-output` de Blender (y compris les chemins `//` relatifs au `.blend`), ou d'un argument de script `--out DOSSIER` placé après `--`. Les étapes de votre propre pipeline qui ne sont pas un simple rendu Blender peuvent être décrites dans un petit [fichier de règles](../ADAPTERS.md).
 
 ### D'où vient le pourcentage
 
@@ -111,6 +113,7 @@ RenderDock n'affiche un pourcentage que si le total est connu. L'application ne 
 |---|---|
 | `render-progress.json` dans le dossier de sortie (voir ci-dessous) | exact : `412/720 frames · 57%` et le temps restant |
 | Une plage d'images sur la ligne de commande : `-s 1 -e 250 -a`, ou `-f 1..250` | exact |
+| Lancé avec `renderdock run --`, ou avec le hook Blender chargé | exact, même quand rien ne figure sur la ligne de commande. Distingue aussi une tâche terminée d'une tâche qui a échoué |
 | Un ancien clip du même nom à côté du dossier de sortie | estimation, signalée par `≈`. Abandonnée dès que le nombre d'images la dépasse |
 | Rien de tout cela | nombre d'images et secondes par image uniquement, avec une barre indéterminée |
 
@@ -136,8 +139,8 @@ Tout ce qui peut écrire un fichier peut signaler sa progression de cette façon
 
 ## Ce que RenderDock ne fait pas
 
-- L'application est en **lecture seule**. Elle n'envoie aucun signal, n'écrit rien en dehors de ses propres préférences et n'établit aucune connexion réseau.
-- La version 0.1 n'a pas de boutons pause, reprise ou arrêt. Les scripts de file d'attente gèrent souvent `STOP`/`CONT` eux-mêmes, et deux mains sur le même interrupteur, c'est une mauvaise idée.
+- L'application est en **lecture seule** : elle n'envoie aucun signal et n'écrit jamais dans vos dossiers de rendu. Elle n'établit aucune connexion réseau, sauf si vous ajoutez un canal de notification, et l'API locale facultative n'écoute que sur `127.0.0.1`.
+- Il n'y a pas encore de boutons pause, reprise ou arrêt. Les scripts de file d'attente gèrent souvent `STOP`/`CONT` eux-mêmes, et deux mains sur le même interrupteur, c'est une mauvaise idée.
 - Si ni le dossier de sortie ni la plage d'images ne figurent sur la ligne de commande, la tâche apparaît quand même, avec le CPU, la mémoire et le temps écoulé, mais sans les images.
 - La température du SoC est lue sur les capteurs IOHID, une interface privée disponible sur les puces Apple. Sur les Mac Intel, ou après une mise à jour système qui déplace les capteurs, la tuile affiche `–`. La vitesse des ventilateurs et la puissance consommée ne sont pas lues.
 - Compilée et testée sous macOS 26 avec un M5 Max. Elle compile pour macOS 14, mais les versions 14 et 15 ainsi que les Mac Intel n'ont pas été testés. Les retours sont les bienvenus.
@@ -149,11 +152,9 @@ La liste complète de ce qui reste à faire, avec un calendrier, se trouve dans 
 
 En bref (des projets, pas des promesses) :
 
-- Une progression exacte sans rien configurer : un wrapper ou un add-on qui lit la sortie d'images de Blender
-- Au-delà de Blender : encodages ffmpeg, ComfyUI, After Effects, et un petit format d'adaptateur pour tout le reste
-- Des notifications quand une tâche se termine, se bloque ou échoue, sur le Mac et sur votre téléphone
-- Une API locale, pour qu'un écran posé sur le bureau, un voyant d'état ou une touche de Stream Deck affiche la même progression
+- Au-delà de Blender : encodages ffmpeg et ComfyUI, avec une vraie progression
 - Un historique : la durée réelle des plans, et de meilleures estimations du temps restant à partir de là
+- Les premiers afficheurs matériels : un ruban LED en guise de barre de progression, une touche de Stream Deck, un petit écran à bouton rotatif
 - Des contrôles facultatifs : pause, reprise, baisse de priorité
 - Des versions signées et notarisées, Homebrew, davantage de langues d'interface
 
@@ -163,13 +164,14 @@ En bref (des projets, pas des promesses) :
 |---|---|
 | `zsh scripts/build-app.sh` | Compile `build/RenderDock.app` (signature ad hoc ; l'icône est dessinée par l'application elle-même) |
 | `zsh scripts/install.sh [--login]` | Compile, installe dans `/Applications`, relance |
+| `swift run rd-checks` | Vérifie le cœur de l'application : parsing, événements, API, notifications (132 vérifications) |
 | `.build/release/RenderDock --dump` | Affiche en texte les tâches détectées et les indicateurs, sans interface |
 | `.build/release/RenderDock --snapshot DOSSIER [--demo]` | Génère la capsule et le panneau en PNG |
 | `zsh scripts/make-demo.sh` | Régénère les captures d'écran et le GIF dans `assets/` |
 | `zsh scripts/fake-render.sh [images] [s/image]` | Un faux rendu pour tester la détection |
 | `python3 scripts/verify-interactions.py <binaire>` | Injecte des clics et des glissements dans une instance lancée avec `--debug` et vérifie le déploiement, le repli et l'aimantation (12 vérifications) |
 
-Le code est du Swift et du SwiftUI tout simples, avec AppKit pour la fenêtre : environ 3 000 lignes, aucun paquet. Voir [CONTRIBUTING.md](../../CONTRIBUTING.md).
+Le code est du Swift et du SwiftUI tout simples, avec AppKit pour la fenêtre : environ 5 000 lignes, aucun paquet. Voir [CONTRIBUTING.md](../../CONTRIBUTING.md).
 
 ## Remerciements
 

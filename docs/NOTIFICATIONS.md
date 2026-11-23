@@ -1,6 +1,6 @@
 # Notifications
 
-> Part of 0.2, which is still in development. Everything here is off until you turn it on.
+> New in 0.2. Everything here is off until you turn it on.
 
 RenderDock can tell you when a job ends, when one stalls, and when the queue is empty: on the Mac, and on your phone through a service you already use.
 

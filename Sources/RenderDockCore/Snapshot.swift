@@ -81,7 +81,7 @@ package struct StateSnapshot: Codable, Equatable {
     package var jobs: [Job]
     package var metrics: Machine
 
-    package static let appVersion = "0.2.0-dev"
+    package static let appVersion = "0.2.0"
 
     package static func make(groups: [RenderGroup], metrics m: Metrics, now: Date = Date(), host: String? = nil) -> StateSnapshot {
         let iso = ISO8601DateFormatter()

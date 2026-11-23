@@ -61,6 +61,8 @@ CPU, GPU-Auslastung und GPU-Speicher, Arbeitsspeicher und Speicherdruck, SoC-Tem
 
 Außerdem enthalten: ein Menüleisten-Symbol mit Fortschrittsring, ein optionaler Schalter **Beim Rendern wach bleiben** (Keep Awake While Rendering) und **Bei der Anmeldung starten** (Launch at Login).
 
+Neu in 0.2: exakter Fortschritt für jedes Rendering über [`renderdock run`](../EXACT-PROGRESS.md), [Benachrichtigungen](../NOTIFICATIONS.md) auf dem Mac und auf dem Smartphone, wenn ein Job fertig wird, fehlschlägt oder hängt, und eine [lokale API](../API.md), damit andere Anzeigen denselben Fortschritt zeigen können. Diese drei Dokumente gibt es bisher nur auf Englisch.
+
 ## Schnellstart
 
 Voraussetzungen: macOS 14 oder neuer und die Swift-6-Toolchain (Xcode 16+ oder nur die Command Line Tools: `xcode-select --install`).
@@ -101,7 +103,7 @@ RenderDock liest die Prozesstabelle und die Ausgabeordner. Die App klinkt sich n
 | Kein neuer Frame seit dem 10-Fachen der üblichen Frame-Zeit (mindestens 5 Minuten) | **Hängt** |
 | Bilddateien im Ausgabeordner, nach Frame-Nummer dedupliziert | **Fertige Frames**, Sekunden pro Frame, Vorschaubild des letzten Frames |
 
-Der Ausgabeordner stammt aus Blenders eigenem `-o` / `--render-output` (einschließlich `//`-Pfaden relativ zur `.blend`-Datei) oder aus einem Skript-Argument `--out ORDNER` nach `--`.
+Der Ausgabeordner stammt aus Blenders eigenem `-o` / `--render-output` (einschließlich `//`-Pfaden relativ zur `.blend`-Datei) oder aus einem Skript-Argument `--out ORDNER` nach `--`. Schritte der eigenen Pipeline, die kein einfaches Blender-Rendering sind, lassen sich in einer kleinen [Regeldatei](../ADAPTERS.md) beschreiben.
 
 ### Woher die Prozentzahl kommt
 
@@ -111,6 +113,7 @@ RenderDock zeigt nur dann eine Prozentzahl an, wenn die Gesamtzahl bekannt ist. 
 |---|---|
 | `render-progress.json` im Ausgabeordner (siehe unten) | exakt: `412/720 frames · 57%` und Restzeit |
 | Ein Frame-Bereich in der Kommandozeile: `-s 1 -e 250 -a` oder `-f 1..250` | exakt |
+| Mit `renderdock run --` gestartet oder mit geladenem Blender-Hook | exakt, auch wenn in der Kommandozeile nichts steht. Unterscheidet außerdem einen fertigen Job von einem fehlgeschlagenen |
 | Ein älterer Clip mit gleichem Namen neben dem Ausgabeordner | Schätzung, mit `≈` markiert. Wird verworfen, sobald die Frame-Anzahl darüber liegt |
 | Nichts davon | nur Frame-Anzahl und Sekunden pro Frame, mit unbestimmtem Fortschrittsbalken |
 
@@ -136,8 +139,8 @@ Alles, was eine Datei schreiben kann, kann auf diese Weise Fortschritt melden, n
 
 ## Was die App nicht tut
 
-- Sie greift **nur lesend** zu. Sie sendet keine Signale, schreibt nichts außerhalb der eigenen Einstellungen und baut keine Netzwerkverbindungen auf.
-- Version 0.1 hat keine Buttons für Pausieren, Fortsetzen oder Stoppen. Warteschlangen-Skripte verwalten `STOP`/`CONT` oft selbst, und zwei Hände am selben Schalter sind keine gute Idee.
+- Sie greift **nur lesend** zu: Sie sendet keine Signale und schreibt nie in die Render-Ordner. Netzwerkverbindungen baut sie nur auf, wenn ein Benachrichtigungskanal hinzugefügt wird, und die optionale lokale API lauscht nur auf `127.0.0.1`.
+- Buttons für Pausieren, Fortsetzen oder Stoppen gibt es noch nicht. Warteschlangen-Skripte verwalten `STOP`/`CONT` oft selbst, und zwei Hände am selben Schalter sind keine gute Idee.
 - Wenn weder der Ausgabeordner noch der Frame-Bereich in der Kommandozeile stehen, erscheint der Job trotzdem, mit CPU, Arbeitsspeicher und verstrichener Zeit, aber ohne Frames.
 - Die SoC-Temperatur wird über IOHID-Sensoren gelesen, eine private Schnittstelle, die auf Apple Silicon verfügbar ist. Auf Intel-Macs oder nach einem Systemupdate, das die Sensoren verschiebt, zeigt die Kachel `–`. Lüfterdrehzahl und Leistungsaufnahme werden nicht ausgelesen.
 - Gebaut und getestet unter macOS 26 auf einem M5 Max. Die App kompiliert für macOS 14, aber 14 und 15 sowie Intel-Macs sind ungetestet. Erfahrungsberichte sind willkommen.
@@ -149,11 +152,9 @@ Die vollständige TODO-Liste mit Zeitplan steht in **[ROADMAP.md](../../ROADMAP.
 
 Kurz gefasst (Pläne, keine Versprechen):
 
-- Exakter Fortschritt von Haus aus: ein Wrapper oder Add-on, das Blenders eigene Frame-Ausgabe liest
-- Mehr als Blender: ffmpeg-Encodes, ComfyUI, After Effects und ein kleines Adapterformat für alles andere
-- Benachrichtigungen, wenn ein Job fertig wird, hängt oder fehlschlägt, auf dem Mac und auf dem Smartphone
-- Eine lokale API, damit ein Schreibtisch-Display, eine Statusleuchte oder eine Stream-Deck-Taste denselben Fortschritt anzeigen kann
+- Mehr als Blender: ffmpeg-Encodes und ComfyUI mit echtem Fortschritt
 - Verlauf: wie lange Shots tatsächlich gedauert haben, und daraus bessere Restzeit-Schätzungen
+- Die ersten Hardware-Anzeigen: ein LED-Streifen als Fortschrittsbalken, eine Stream-Deck-Taste, ein kleiner Bildschirm mit Drehknopf
 - Optionale Steuerung: pausieren, fortsetzen, Priorität senken
 - Signierte und notarisierte Releases, Homebrew, weitere Oberflächensprachen
 
@@ -163,13 +164,14 @@ Kurz gefasst (Pläne, keine Versprechen):
 |---|---|
 | `zsh scripts/build-app.sh` | Baut `build/RenderDock.app` (ad hoc signiert; das Symbol zeichnet die App selbst) |
 | `zsh scripts/install.sh [--login]` | Baut, installiert nach `/Applications`, startet neu |
+| `swift run rd-checks` | Prüft den Kern: Parsing, Events, API, Benachrichtigungen (132 Prüfungen) |
 | `.build/release/RenderDock --dump` | Gibt erkannte Jobs und Messwerte als Text aus, ohne Oberfläche |
 | `.build/release/RenderDock --snapshot ORDNER [--demo]` | Zeichnet Kapsel und Panel als PNG |
 | `zsh scripts/make-demo.sh` | Erzeugt die Screenshots und das GIF in `assets/` neu |
 | `zsh scripts/fake-render.sh [Frames] [Sek./Frame]` | Ein Dummy-Rendering zum Testen der Erkennung |
 | `python3 scripts/verify-interactions.py <Binary>` | Schickt Klicks und Ziehbewegungen an eine mit `--debug` gestartete Instanz und prüft Aufklappen, Einklappen und Einrasten (12 Prüfungen) |
 
-Der Code ist schlichtes Swift und SwiftUI, mit AppKit für das Fenster: rund 3000 Zeilen, keine Pakete. Siehe [CONTRIBUTING.md](../../CONTRIBUTING.md).
+Der Code ist schlichtes Swift und SwiftUI, mit AppKit für das Fenster: rund 5000 Zeilen, keine Pakete. Siehe [CONTRIBUTING.md](../../CONTRIBUTING.md).
 
 ## Danksagung
 

@@ -11,6 +11,8 @@ cp .build/release/RenderDock "$APP/Contents/MacOS/RenderDock"
 # The command line lives in Helpers: on a case-insensitive disk `renderdock` cannot sit next to `RenderDock` in MacOS/.
 mkdir -p "$APP/Contents/Helpers"
 cp .build/release/renderdock-cli "$APP/Contents/Helpers/renderdock"
+# The Blender hook travels with the app, so there is a stable path to pass to --python.
+cp blender/renderdock_hook.py "$APP/Contents/Resources/renderdock_hook.py"
 # The app draws its own icon: render a 1024 px PNG, then convert it to icns
 ICON=build/AppIcon.icns
 if [ ! -f "$ICON" ]; then
@@ -37,8 +39,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleExecutable</key><string>RenderDock</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.1.0</string>
-    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleShortVersionString</key><string>0.2.0</string>
+    <key>CFBundleVersion</key><string>2</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>

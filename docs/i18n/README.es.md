@@ -61,6 +61,8 @@ CPU, uso de GPU y memoria de GPU, memoria y presión de memoria, temperatura del
 
 También incluye un elemento en la barra de menús con un anillo de progreso, un interruptor opcional **Mantener activo durante el render** (Keep Awake While Rendering) y **Abrir al iniciar sesión** (Launch at Login).
 
+Novedades de la versión 0.2: progreso exacto para cualquier render mediante [`renderdock run`](../EXACT-PROGRESS.md), [notificaciones](../NOTIFICATIONS.md) en el Mac y en el teléfono cuando un trabajo termina, falla o se atasca, y una [API local](../API.md) para que otros dispositivos puedan mostrar el mismo progreso. Estos tres documentos están, por ahora, solo en inglés.
+
 ## Inicio rápido
 
 Requisitos: macOS 14 o posterior y la cadena de herramientas de Swift 6 (Xcode 16 o posterior, o solo las Command Line Tools: `xcode-select --install`).
@@ -101,7 +103,7 @@ RenderDock lee la tabla de procesos y las carpetas de salida. No se engancha a B
 | Ningún fotograma nuevo durante 10 veces el tiempo habitual por fotograma (5 minutos como mínimo) | **Atascado** |
 | Archivos de imagen en la carpeta de salida, sin duplicados por número de fotograma | **Fotogramas terminados**, segundos por fotograma, miniatura del último fotograma |
 
-La carpeta de salida se toma del `-o` / `--render-output` del propio Blender (incluidas las rutas `//` relativas al `.blend`) o de un argumento del script `--out CARPETA` después de `--`.
+La carpeta de salida se toma del `-o` / `--render-output` del propio Blender (incluidas las rutas `//` relativas al `.blend`) o de un argumento del script `--out CARPETA` después de `--`. Los pasos de tu propio pipeline que no sean un simple render de Blender se pueden describir en un pequeño [archivo de reglas](../ADAPTERS.md).
 
 ### De dónde sale el porcentaje
 
@@ -111,6 +113,7 @@ RenderDock solo muestra un porcentaje cuando conoce el total. No adivina.
 |---|---|
 | `render-progress.json` en la carpeta de salida (ver más abajo) | exacto: `412/720 frames · 57%` y tiempo restante |
 | Un rango de fotogramas en la línea de comandos: `-s 1 -e 250 -a` o `-f 1..250` | exacto |
+| Iniciado con `renderdock run --`, o con el hook de Blender cargado | exacto, aunque no haya nada en la línea de comandos. Además, distingue un trabajo terminado de uno que ha fallado |
 | Un clip anterior con el mismo nombre junto a la carpeta de salida | estimación, marcada con `≈`. Se descarta en cuanto el número de fotogramas la supera |
 | Ninguna de las anteriores | solo número de fotogramas y segundos por fotograma, con una barra indeterminada |
 
@@ -136,8 +139,8 @@ Cualquier cosa que pueda escribir un archivo puede informar de su progreso así,
 
 ## Lo que no hace
 
-- Es de **solo lectura**. No envía señales, no escribe nada fuera de sus propias preferencias y no establece conexiones de red.
-- La versión 0.1 no tiene botones para pausar, reanudar ni detener. Los scripts de cola suelen gestionar `STOP`/`CONT` por sí mismos, y dos manos sobre el mismo interruptor son mala idea.
+- Es de **solo lectura**: no envía señales y nunca escribe en tus carpetas de render. No establece conexiones de red a menos que añadas un canal de notificaciones, y la API local opcional solo escucha en `127.0.0.1`.
+- Todavía no hay botones para pausar, reanudar ni detener. Los scripts de cola suelen gestionar `STOP`/`CONT` por sí mismos, y dos manos sobre el mismo interruptor son mala idea.
 - Si ni la carpeta de salida ni el rango de fotogramas están en la línea de comandos, el trabajo aparece igualmente, con CPU, memoria y tiempo transcurrido, pero sin fotogramas.
 - La temperatura del SoC se lee de los sensores IOHID, una interfaz privada disponible en Apple Silicon. En los Mac con Intel, o tras una actualización del sistema que cambie los sensores de sitio, el recuadro muestra `–`. No se leen la velocidad de los ventiladores ni la potencia consumida.
 - Compilada y probada en macOS 26 con un M5 Max. Compila para macOS 14, pero no se ha probado en 14, en 15 ni en Mac con Intel. Se agradecen los informes.
@@ -149,11 +152,9 @@ La lista completa de tareas pendientes, con su cronograma, está en **[ROADMAP.m
 
 En resumen (planes, no promesas):
 
-- Progreso exacto sin configurar nada: un wrapper o un add-on que lea la salida de fotogramas del propio Blender
-- Más allá de Blender: codificaciones con ffmpeg, ComfyUI, After Effects y un pequeño formato de adaptador para todo lo demás
-- Notificaciones cuando un trabajo termina, se atasca o falla, en el Mac y en el teléfono
-- Una API local, para que una pantalla de escritorio, una luz de estado o una tecla de Stream Deck muestren el mismo progreso
+- Más allá de Blender: codificaciones con ffmpeg y ComfyUI, con progreso real
 - Historial: cuánto tardaron de verdad los planos, y mejores estimaciones del tiempo restante a partir de ahí
+- Los primeros indicadores físicos: una tira LED como barra de progreso, una tecla de Stream Deck, una pantalla pequeña con un dial
 - Controles opcionales: pausar, reanudar, bajar la prioridad
 - Versiones firmadas y notarizadas, Homebrew, más idiomas de interfaz
 
@@ -163,13 +164,14 @@ En resumen (planes, no promesas):
 |---|---|
 | `zsh scripts/build-app.sh` | Compila `build/RenderDock.app` (firma ad hoc; el icono lo dibuja la propia app) |
 | `zsh scripts/install.sh [--login]` | Compila, instala en `/Applications` y vuelve a abrir la app |
+| `swift run rd-checks` | Comprueba el núcleo: el parseo, los eventos, la API y las notificaciones (132 comprobaciones) |
 | `.build/release/RenderDock --dump` | Imprime como texto los trabajos detectados y las métricas, sin interfaz |
 | `.build/release/RenderDock --snapshot CARPETA [--demo]` | Renderiza la cápsula y el panel a PNG |
 | `zsh scripts/make-demo.sh` | Regenera las capturas de pantalla y el GIF de `assets/` |
 | `zsh scripts/fake-render.sh [fotogramas] [s/fotograma]` | Un render simulado para probar la detección |
 | `python3 scripts/verify-interactions.py <binario>` | Inyecta clics y arrastres en una instancia iniciada con `--debug` y comprueba el despliegue, la contracción y el acople (12 comprobaciones) |
 
-El código es Swift y SwiftUI sin más, con AppKit para la ventana: unas 3000 líneas, sin paquetes. Consulta [CONTRIBUTING.md](../../CONTRIBUTING.md).
+El código es Swift y SwiftUI sin más, con AppKit para la ventana: unas 5000 líneas, sin paquetes. Consulta [CONTRIBUTING.md](../../CONTRIBUTING.md).
 
 ## Agradecimientos
 

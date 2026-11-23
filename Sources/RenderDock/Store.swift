@@ -2,6 +2,7 @@ import AppKit
 import ImageIO
 import Observation
 import SwiftUI
+import RenderDockCore
 
 /// Which corner of the window the panel expands from.
 struct Anchor: Equatable {
@@ -61,6 +62,46 @@ final class Store {
     @ObservationIgnored private var scanning = false
     @ObservationIgnored var onChange: (() -> Void)?
 
+    // MARK: Local API (off unless switched on in the menu, with `--api`, or `defaults write … localAPI -bool true`)
+
+    /// The local read-only API on 127.0.0.1. Off by default: nothing listens unless you ask for it.
+    var apiEnabled = UserDefaults.standard.bool(forKey: "localAPI") || CommandLine.arguments.contains("--api") {
+        didSet {
+            UserDefaults.standard.set(apiEnabled, forKey: "localAPI")
+            applyAPI()
+        }
+    }
+    /// The port the API is listening on, once it is up.
+    var apiPort: UInt16?
+    @ObservationIgnored private let api = LocalAPIServer()
+    @ObservationIgnored private var detector = EventDetector()
+
+    private func applyAPI() {
+        if apiEnabled {
+            api.onPortChange = { [weak self] port in
+                self?.apiPort = port
+                self?.onChange?()
+            }
+            // A --demo instance never overwrites the discovery file of the real one.
+            api.start(discovery: CommandLine.arguments.contains("--demo") ? nil : LocalAPIServer.discoveryFile)
+            publish()
+        } else {
+            api.stop()
+        }
+    }
+
+    /// Hand the latest state to the API. The detector runs on every scan so it always has the previous one.
+    func publish() {
+        let events = detector.update(groups, now: now)
+        guard apiEnabled else { return }
+        api.publish(state: StateSnapshot.make(groups: groups, metrics: metrics, now: now).json(), events: events)
+    }
+
+    /// Release the port and the discovery file before the app exits.
+    func shutdown() {
+        if apiEnabled { api.stop() }
+    }
+
     static let historyLength = 60
 
     /// Rescan right away (used when the panel expands).
@@ -71,6 +112,7 @@ final class Store {
 
     func startDemo() {
         demo = true
+        if apiEnabled { applyAPI() }
         let began = Date()
         loadDemo(0)
         let timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
@@ -81,13 +123,16 @@ final class Store {
     }
 
     func start() {
+        if apiEnabled { applyAPI() }
         sampleMetrics()
         scanTasks()
         timers.append(Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.sampleMetrics() })
         // Scan jobs every 3 s while expanded, every 6 s while collapsed
         timers.append(Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             guard let self else { return }
-            if Date().timeIntervalSince(self.now) >= (self.expanded ? 2.9 : 5.9) { self.scanTasks() }
+            // …and every 3 s while something is listening on the event stream
+            let lively = self.expanded || (self.apiEnabled && self.api.streamCount > 0)
+            if Date().timeIntervalSince(self.now) >= (lively ? 2.9 : 5.9) { self.scanTasks() }
         })
         timers.forEach { RunLoop.main.add($0, forMode: .common) }
     }
@@ -158,6 +203,7 @@ final class Store {
                 self.thumbSource = self.thumbSource.filter { sources[$0.key] != nil }
                 self.thumbs = t
                 self.updateAwake()
+                self.publish()
                 self.onChange?()
             }
         }

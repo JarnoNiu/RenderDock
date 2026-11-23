@@ -1,11 +1,12 @@
 # Contributing
 
-Thanks for taking a look. RenderDock is small on purpose: plain Swift and SwiftUI, no packages, one target.
+Thanks for taking a look. RenderDock is small on purpose: plain Swift and SwiftUI, no packages. `RenderDockCore` finds jobs and reads the machine and has no UI; `RenderDock` is the app on top of it.
 
 ## Build and check
 
 ```bash
 zsh scripts/build-app.sh                      # build/RenderDock.app
+swift run rd-checks                           # checks for the core (parsing, events, the API); exits non-zero on failure
 .build/release/RenderDock --dump              # what the scanner sees, as text
 .build/release/RenderDock --snapshot /tmp/rd --demo   # the UI as PNG, with demo data
 ```
@@ -25,21 +26,26 @@ The checks inject synthetic clicks and drags and read the window state back. The
 
 | File | What lives there |
 |---|---|
-| `Scanner.swift` | Process tree → job chains → shots; frame counting; where totals come from |
-| `Proc.swift` | Thin wrappers over `libproc` and `sysctl` |
-| `Metrics.swift` | CPU, GPU, memory, temperature, power, sleep assertions |
-| `Store.swift` | Observable app state and timers |
-| `Views.swift`, `Theme.swift` | The capsule, the panel and their parts |
-| `Window.swift` | The floating panel: dragging, snapping, expanding, click-through |
-| `App.swift` | Menu-bar item, app delegate, debug channel |
-| `Demo.swift` | Demo data and the reel used for the README GIF |
-| `L10n.swift` | `L(zh, en)`: UI strings live at the call site in both languages |
+| `RenderDockCore/Scanner.swift` | Process tree → job chains → shots; frame counting; where totals come from |
+| `RenderDockCore/Proc.swift` | Thin wrappers over `libproc` and `sysctl` |
+| `RenderDockCore/Metrics.swift` | CPU, GPU, memory, temperature, power, sleep assertions |
+| `RenderDockCore/Snapshot.swift` | The state document every display reads (the wire format of the API) |
+| `RenderDockCore/Events.swift` | What changed between two scans: `job.started`, `shot.done`, … |
+| `RenderDockCore/APIServer.swift` | The local read-only API on `127.0.0.1` ([docs/API.md](docs/API.md)) |
+| `RenderDockCore/L10n.swift` | `L(zh, en)`: UI strings live at the call site in both languages |
+| `RenderDock/Store.swift` | Observable app state and timers |
+| `RenderDock/Views.swift`, `Theme.swift` | The capsule, the panel and their parts |
+| `RenderDock/Window.swift` | The floating panel: dragging, snapping, expanding, click-through |
+| `RenderDock/App.swift` | Menu-bar item, app delegate, debug channel |
+| `RenderDock/Demo.swift` | Demo data and the reel used for the README GIF |
+| `Tests/rd-checks/` | The core's checks. A plain executable, so it runs with the Command Line Tools alone |
 
 ## Ground rules
 
 - **Read-only stays read-only.** The scanner must never signal a process or write into someone's render folder. Controls, if they come, will be opt-in and separate.
 - **No invented numbers.** A percentage needs a known total. An estimate must be marked `≈`. When in doubt, show less.
 - **No dependencies** without a very good reason.
+- **The API only grows.** Fields in `docs/API.md` are added, never renamed or removed, and nothing in it may carry a file-system path.
 - Screenshots and GIFs in the repo come from `scripts/make-demo.sh` (demo data only). Please do not commit captures of real projects.
 
 ## Good first contributions

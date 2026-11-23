@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import RenderDockCore
 
 enum Layout {
     /// Transparent margin around the window, left for the shadow.

@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import RenderDockCore
 
 /// Made-up jobs and metrics for `--demo`, the README screenshots and the demo reel.
 /// Nothing here reads the real machine; every name and number is fictional.
@@ -175,6 +176,7 @@ extension Store {
             }
         }
         thumbs = images
+        publish()
         onChange?()
     }
 }

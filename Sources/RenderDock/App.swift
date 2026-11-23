@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import RenderDockCore
 
 /// Menu bar item: a small progress ring plus the number of shots rendering; its menu lists the jobs and a few toggles.
 final class StatusItemController: NSObject, NSMenuDelegate {
@@ -56,6 +57,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         add(menu, L("回到右上角", "Move to Top-Right"), #selector(resetPosition))
         menu.addItem(.separator())
         add(menu, L("渲染时保持唤醒", "Keep Awake While Rendering"), #selector(toggleAwake), on: store.keepAwakeWhileRendering)
+        let where_ = store.apiPort.map { "（127.0.0.1:\($0)）" } ?? ""
+        let whereEn = store.apiPort.map { " (127.0.0.1:\($0))" } ?? ""
+        add(menu, L("本机接口\(where_)", "Local API\(whereEn)"), #selector(toggleAPI), on: store.apiEnabled)
         let login = NSMenuItem(title: LoginItem.installed ? L("登录时启动", "Launch at Login") : L("登录时启动（要先装到「应用程序」）", "Launch at Login (install to Applications first)"),
                                action: LoginItem.installed ? #selector(toggleLogin) : nil, keyEquivalent: "")
         login.target = self
@@ -85,6 +89,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     @objc private func resetPosition() { panel?.resetPosition() }
     @objc private func toggleAwake() { store.keepAwakeWhileRendering.toggle() }
+    @objc private func toggleAPI() { store.apiEnabled.toggle() }
 
     @objc private func toggleLogin() {
         do {
@@ -137,6 +142,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var status: StatusItemController!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        quitCleanlyOnSIGTERM()
         panel = PanelController(store: store)
         status = StatusItemController(store: store, panel: panel)
         store.onChange = { [weak self] in self?.status.update() }
@@ -178,6 +184,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    func applicationWillTerminate(_ notification: Notification) { store.shutdown() }
+
+    /// `kill` (which is how the install script asks a running copy to quit) would otherwise end the process
+    /// without `applicationWillTerminate`, leaving the API's discovery file behind.
+    private var termSource: DispatchSourceSignal?
+
+    private func quitCleanlyOnSIGTERM() {
+        signal(SIGTERM, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        source.setEventHandler { NSApp.terminate(nil) }
+        source.resume()
+        termSource = source
+    }
 }
 
 /// Renders a view to a PNG (for checking the UI; there is no behind-window blur).

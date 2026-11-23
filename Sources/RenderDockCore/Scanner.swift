@@ -2,7 +2,9 @@ import AVFoundation
 import Foundation
 
 /// Recognises render jobs from the process tree and the output directories. Read-only throughout: sends no signals and writes no files.
-final class TaskScanner {
+package final class TaskScanner {
+    package init() {}
+
     private enum LeafKind { case blender, composite, ffmpeg }
 
     private struct Leaf {
@@ -34,7 +36,7 @@ final class TaskScanner {
 
     // MARK: Scanning
 
-    func scan(now: Date = Date()) -> [RenderGroup] {
+    package func scan(now: Date = Date()) -> [RenderGroup] {
         let snap = ProcSnapshot()
 
         // 1. Leaves: the processes doing the actual work
@@ -118,7 +120,7 @@ final class TaskScanner {
         var streamSpecs: [String: [(scene: String, shot: String)]] = [:]
         for pid in [root.pid] + desc {
             guard let p = snap.table[pid], Self.shells.contains(p.name.lowercased()) else { continue }
-            let specs = snap.args(pid).dropFirst().compactMap(parseSpec)
+            let specs = snap.args(pid).dropFirst().compactMap(Self.parseSpec)
             guard !specs.isEmpty else { continue }
             let key = specs.map { "\($0.scene):\($0.shot)" }.joined(separator: " ")
             streamProcs[key, default: []].append(p)
@@ -143,7 +145,7 @@ final class TaskScanner {
             var current: Int?
             for (i, spec) in stream.specs.enumerated() {
                 let key = "\(spec.scene)-\(spec.shot)"
-                var item = RenderItem(id: "\(groupId)/\(stream.proc.pid)/\(key)", name: specName(spec), state: .pending)
+                var item = RenderItem(id: "\(groupId)/\(stream.proc.pid)/\(key)", name: Self.specName(spec), state: .pending)
                 if let leaf = leaves.first(where: { sdescSet.contains($0.proc.pid) && !used.contains($0.proc.pid) && matches($0.proc, spec, snap) }) {
                     used.insert(leaf.proc.pid)
                     fill(&item, leaf: leaf, spec: spec, snap: snap, now: now)
@@ -192,7 +194,7 @@ final class TaskScanner {
         }
 
         let scriptName = scriptPath.map { ($0 as NSString).lastPathComponent }
-        let title = note.map(shortTitle) ?? scriptName ?? items.first?.name ?? root.name
+        let title = note.map(Self.shortTitle) ?? scriptName ?? items.first?.name ?? root.name
         let keepAwake = ([root.pid] + desc).contains { snap.table[$0]?.name == "caffeinate" }
         let home = leaves.first.map { snap.cwd($0.proc.pid) } ?? rootCwd
         return RenderGroup(
@@ -251,8 +253,8 @@ final class TaskScanner {
 
         case .composite:
             item.state = p.stopped ? .paused : .compositing
-            let scene = spec?.scene ?? argValue(a, ["--scene"]) ?? ""
-            let shot = spec?.shot ?? argValue(a, ["--shot"]) ?? ""
+            let scene = spec?.scene ?? Self.argValue(a, ["--scene"]) ?? ""
+            let shot = spec?.shot ?? Self.argValue(a, ["--shot"]) ?? ""
             let key = "\(scene)-\(shot)"
             let framesDir = "\(cwd)/out/frames/\(key)"
             if isDirectory(framesDir), let total = anchorsFrameCount("\(cwd)/out/blender/\(key)/anchors.json") {
@@ -286,7 +288,7 @@ final class TaskScanner {
         for f in files {
             let name = f.lastPathComponent
             guard !name.hasPrefix("_"), Self.imageExts.contains(f.pathExtension.lowercased()),
-                  let idx = frameIndex(name) else { continue }
+                  let idx = Self.frameIndex(name) else { continue }
             if let only, !only.contains(idx) { continue }
             let v = try? f.resourceValues(forKeys: Set(keys))
             let at = v?.contentModificationDate ?? .distantPast
@@ -329,8 +331,8 @@ final class TaskScanner {
         let custom = Array(args[split...])
         var plan = BlenderPlan()
 
-        var out = argValue(custom, ["--out", "--output"]).map { resolve($0, cwd) }
-        if out == nil, let o = argValue(own, ["-o", "--render-output"]) {
+        var out = Self.argValue(custom, ["--out", "--output"]).map { resolve($0, cwd) }
+        if out == nil, let o = Self.argValue(own, ["-o", "--render-output"]) {
             if o.hasPrefix("//") {
                 // Blender convention: a leading // means relative to the .blend file's directory
                 if let blend = own.first(where: { $0.hasSuffix(".blend") }) {
@@ -343,19 +345,23 @@ final class TaskScanner {
         if let o = out, o.contains("#") || !isDirectory(o) { out = (o as NSString).deletingLastPathComponent }
         plan.outDir = out
 
-        if let list = argValue(own, ["-f", "--render-frame"]) {
-            plan.frames = parseFrameList(list)
-        } else if own.contains("-a") || own.contains("--render-anim"),
-                  let start = argValue(own, ["-s", "--frame-start"]).flatMap({ Int($0) }),
-                  let end = argValue(own, ["-e", "--frame-end"]).flatMap({ Int($0) }), end >= start, end - start < 2_000_000 {
-            let jump = max(1, argValue(own, ["-j", "--frame-jump"]).flatMap { Int($0) } ?? 1)
-            plan.frames = Set(stride(from: start, through: end, by: jump))
-        }
+        plan.frames = Self.blenderFrames(own)
         return plan
     }
 
+    /// The frames a Blender command line asks for (`-f 1..250`, or `-s 1 -e 250 [-j 2] -a`); nil when it does not say.
+    /// `own` is the part of the command line before `--`.
+    package static func blenderFrames(_ own: [String]) -> Set<Int>? {
+        if let list = argValue(own, ["-f", "--render-frame"]) { return parseFrameList(list) }
+        guard own.contains("-a") || own.contains("--render-anim"),
+              let start = argValue(own, ["-s", "--frame-start"]).flatMap({ Int($0) }),
+              let end = argValue(own, ["-e", "--frame-end"]).flatMap({ Int($0) }), end >= start, end - start < 2_000_000 else { return nil }
+        let jump = max(1, argValue(own, ["-j", "--frame-jump"]).flatMap { Int($0) } ?? 1)
+        return Set(stride(from: start, through: end, by: jump))
+    }
+
     /// `-f 1,5,9` or `-f 1..250`. Signed relative forms (+10, -1) can't be resolved; returns nil.
-    private func parseFrameList(_ text: String) -> Set<Int>? {
+    package static func parseFrameList(_ text: String) -> Set<Int>? {
         var frames = Set<Int>()
         for part in text.split(separator: ",") {
             if let r = part.range(of: "..") {
@@ -370,7 +376,7 @@ final class TaskScanner {
         return frames.isEmpty ? nil : frames
     }
 
-    private func frameIndex(_ name: String) -> Int? {
+    package static func frameIndex(_ name: String) -> Int? {
         let stem = (name as NSString).deletingPathExtension
         var best = "", cur = ""
         for ch in stem {
@@ -408,7 +414,7 @@ final class TaskScanner {
                 mp4Cache[path] = (m, seconds.isFinite && seconds > 0 ? seconds : nil, fps)
             }
             guard let c = mp4Cache[path], let seconds = c.seconds else { continue }
-            let fps = argValue(args, ["--fps"]).flatMap(Double.init) ?? c.fps ?? 30
+            let fps = Self.argValue(args, ["--fps"]).flatMap(Double.init) ?? c.fps ?? 30
             let total = Int((seconds * fps).rounded())
             if total > 0 { return total }
         }
@@ -474,7 +480,7 @@ final class TaskScanner {
         return false
     }
 
-    private func parseSpec(_ arg: String) -> (scene: String, shot: String)? {
+    package static func parseSpec(_ arg: String) -> (scene: String, shot: String)? {
         let parts = arg.split(separator: ":", omittingEmptySubsequences: false)
         guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
         let ok: (Substring) -> Bool = { $0.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == ".") } }
@@ -484,34 +490,34 @@ final class TaskScanner {
 
     private func matches(_ p: Proc, _ spec: (scene: String, shot: String), _ snap: ProcSnapshot) -> Bool {
         let a = snap.args(p.pid)
-        if let sc = argValue(a, ["--scene"]), let sh = argValue(a, ["--shot"]) { return sc == spec.scene && sh == spec.shot }
+        if let sc = Self.argValue(a, ["--scene"]), let sh = Self.argValue(a, ["--shot"]) { return sc == spec.scene && sh == spec.shot }
         let key = "\(spec.scene)-\(spec.shot)"
         return a.contains { $0.contains(key) }
     }
 
-    private func specName(_ spec: (scene: String, shot: String)) -> String {
+    package static func specName(_ spec: (scene: String, shot: String)) -> String {
         spec.scene == spec.shot || spec.scene.hasSuffix("-\(spec.shot)") ? spec.scene : "\(spec.scene) · \(spec.shot)"
     }
 
     private func leafName(_ leaf: Leaf, _ snap: ProcSnapshot) -> String {
         let a = snap.args(leaf.proc.pid)
-        if let sc = argValue(a, ["--scene"]) {
-            return specName((sc, argValue(a, ["--shot"]) ?? sc))
+        if let sc = Self.argValue(a, ["--scene"]) {
+            return Self.specName((sc, Self.argValue(a, ["--shot"]) ?? sc))
         }
-        if let seg = argValue(a, ["--seg", "--segment", "--name"]) { return seg }
+        if let seg = Self.argValue(a, ["--seg", "--segment", "--name"]) { return seg }
         if leaf.kind == .ffmpeg, let last = a.last, !last.hasPrefix("-") { return (last as NSString).lastPathComponent }
         if let blend = a.first(where: { $0.hasSuffix(".blend") }) { return ((blend as NSString).lastPathComponent as NSString).deletingPathExtension }
-        if let out = argValue(a, ["--out", "--output", "-o", "--render-output"]) {
+        if let out = Self.argValue(a, ["--out", "--output", "-o", "--render-output"]) {
             let o = out.contains("#") ? (out as NSString).deletingLastPathComponent : out
             return (o as NSString).lastPathComponent
         }
-        if let py = argValue(a, ["--python", "-P"]) { return (py as NSString).lastPathComponent }
+        if let py = Self.argValue(a, ["--python", "-P"]) { return (py as NSString).lastPathComponent }
         return "\(leaf.proc.name) \(leaf.proc.pid)"
     }
 
     // MARK: Helpers
 
-    private func argValue(_ args: [String], _ names: [String]) -> String? {
+    package static func argValue(_ args: [String], _ names: [String]) -> String? {
         for (i, a) in args.enumerated() {
             if names.contains(a), i + 1 < args.count { return args[i + 1] }
             for n in names where n.hasPrefix("--") && a.hasPrefix("\(n)=") { return String(a.dropFirst(n.count + 1)) }
@@ -558,7 +564,7 @@ final class TaskScanner {
     }
 
     /// The title is the comment up to the first "（", "：" or "。".
-    private func shortTitle(_ note: String) -> String {
+    package static func shortTitle(_ note: String) -> String {
         var end = note.endIndex
         var depth = 0
         for i in note.indices {

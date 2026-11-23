@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import RenderDockCore
 
 final class FloatingPanel: NSPanel {
     override var canBecomeKey: Bool { true }

@@ -1,10 +1,11 @@
 import AppKit
 import Foundation
+import RenderDockCore
 
 let cli = CommandLine.arguments
 
-if cli.contains("--dump") {
-    // Print the scan result only, without any UI: for checking the data.
+if cli.contains("--dump") || cli.contains("--status") {
+    // Print the scan result only, without any UI: `--status` as text, `--status --json` as the API's state document.
     let scanner = TaskScanner()
     _ = scanner.scan()
     let sampler = MetricsSampler()
@@ -12,6 +13,10 @@ if cli.contains("--dump") {
     Thread.sleep(forTimeInterval: 1.2)
     let groups = scanner.scan()
     let m = sampler.sample()
+    if cli.contains("--json") {
+        print(String(decoding: StateSnapshot.make(groups: groups, metrics: m).json(pretty: true), as: UTF8.self))
+        exit(0)
+    }
     for g in groups {
         print(L("■ \(g.title)  [\(g.state.label)]  \(g.project) · \(g.script ?? "-") · 已运行 \(Fmt.duration(Date().timeIntervalSince(g.startedAt)))\(g.keepAwake ? " · 防睡眠" : "")", "■ \(g.title)  [\(g.state.label)]  \(g.project) · \(g.script ?? "-") · up \(Fmt.duration(Date().timeIntervalSince(g.startedAt)))\(g.keepAwake ? " · kept awake" : "")"))
         for i in g.items {

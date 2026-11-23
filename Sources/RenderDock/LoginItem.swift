@@ -1,5 +1,6 @@
 import Foundation
 import ServiceManagement
+import RenderDockCore
 
 /// Launch at login, using the system's login items (visible and switchable in System Settings → General → Login Items & Extensions); no LaunchAgent is written.
 enum LoginItem {

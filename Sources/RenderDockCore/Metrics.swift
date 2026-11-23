@@ -4,30 +4,32 @@ import IOKit
 import IOKit.ps
 import IOKit.pwr_mgt
 
-struct Metrics: Equatable {
+package struct Metrics: Equatable {
     /// 0…1
-    var cpu: Double = 0
-    var gpu: Double?
-    var gpuMemBytes: UInt64?
-    var memUsed: UInt64 = 0
-    var memTotal: UInt64 = ProcessInfo.processInfo.physicalMemory
+    package var cpu: Double = 0
+    package var gpu: Double?
+    package var gpuMemBytes: UInt64?
+    package var memUsed: UInt64 = 0
+    package var memTotal: UInt64 = ProcessInfo.processInfo.physicalMemory
     /// 1 normal, 2 warning, 4 critical (the system's own memory pressure level)
-    var memPressure: Int = 1
-    var swapUsed: UInt64 = 0
-    var swapTotal: UInt64 = 0
+    package var memPressure: Int = 1
+    package var swapUsed: UInt64 = 0
+    package var swapTotal: UInt64 = 0
     /// Average and maximum of the chip's die temperature sensors (°C)
-    var tempC: Double?
-    var tempMaxC: Double?
-    var thermal: ProcessInfo.ThermalState = .nominal
-    var diskFree: UInt64?
-    var diskTotal: UInt64?
-    var onAC: Bool?
-    var battery: Int?
+    package var tempC: Double?
+    package var tempMaxC: Double?
+    package var thermal: ProcessInfo.ThermalState = .nominal
+    package var diskFree: UInt64?
+    package var diskTotal: UInt64?
+    package var onAC: Bool?
+    package var battery: Int?
     /// Something on the system is preventing idle sleep (caffeinate etc.)
-    var awakeHeld = false
+    package var awakeHeld = false
 
-    var memFraction: Double { memTotal > 0 ? min(1, Double(memUsed) / Double(memTotal)) : 0 }
-    var swapFraction: Double { swapTotal > 0 ? min(1, Double(swapUsed) / Double(swapTotal)) : 0 }
+    package var memFraction: Double { memTotal > 0 ? min(1, Double(memUsed) / Double(memTotal)) : 0 }
+    package var swapFraction: Double { swapTotal > 0 ? min(1, Double(swapUsed) / Double(swapTotal)) : 0 }
+
+    package init() {}
 }
 
 // IOHID temperature sensors (private API; needs no admin rights on Apple silicon).
@@ -45,14 +47,16 @@ private func IOHIDServiceClientCopyEvent(_ service: AnyObject, _ type: Int64, _ 
 private func IOHIDEventGetFloatValue(_ event: AnyObject, _ field: Int32) -> Double
 
 /// Samples system metrics. Reads system APIs only: no subprocesses, no admin rights.
-final class MetricsSampler {
+package final class MetricsSampler {
+    package init() {}
+
     private var prevTicks: (user: UInt64, system: UInt64, idle: UInt64, nice: UInt64)?
     private var hidClient: AnyObject?
     private var dieSensors: [AnyObject] = []
     private var sampleCount = 0
     private var slow = Metrics()
 
-    func sample() -> Metrics {
+    package func sample() -> Metrics {
         var m = Metrics()
         m.cpu = cpuUsage()
         readMemory(&m)
@@ -190,11 +194,13 @@ final class MetricsSampler {
 }
 
 /// "Keep Awake While Rendering": the app holds its own assertion against idle sleep, equivalent to caffeinate -i; no system settings are changed.
-final class AwakeHolder {
-    private var assertion: IOPMAssertionID = 0
-    private(set) var holding = false
+package final class AwakeHolder {
+    package init() {}
 
-    func set(_ on: Bool) {
+    private var assertion: IOPMAssertionID = 0
+    package private(set) var holding = false
+
+    package func set(_ on: Bool) {
         guard on != holding else { return }
         if on {
             let rc = IOPMAssertionCreateWithName(

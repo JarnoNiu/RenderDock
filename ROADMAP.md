@@ -2,7 +2,7 @@
 
 **English** · [简体中文](docs/i18n/ROADMAP.zh-CN.md)
 
-Where RenderDock stands, what is missing, and what comes next. Last updated: 2026-11-23.
+Where RenderDock stands, what is missing, and what comes next. Last updated: 2026-11-24.
 
 ## Timeline
 
@@ -81,10 +81,11 @@ Every gap below has a home in the plan that follows.
 - [ ] macOS notifications: shot done, queue done, stalled, failed
 - [ ] Phone notifications through services people already use (a webhook with ready-made templates)
 - [ ] Adapter rules in a file instead of in code: what a process looks like, where its output is, where the total comes from
-- [ ] A local, read-only API on `127.0.0.1`: `GET /v1/state`, an event stream, and `renderdock status --json`
-- [ ] Split the scanner from the UI and give it unit tests
+- [x] A local, read-only API on `127.0.0.1`: `GET /v1/state`, an event stream, and `--status --json` — see [docs/API.md](docs/API.md) *(done 2026-11-24, unreleased)*
+- [x] Split the scanner from the UI (`RenderDockCore`) and give it checks: `swift run rd-checks`, 74 checks *(done 2026-11-24, unreleased)*
 - [ ] Signed and notarised builds, a download and a Homebrew cask (depends on a developer account)
 - [ ] First reports from macOS 14/15 and Intel
+- [ ] Bring the README in all ten languages up to date for 0.2
 
 Done when: a plain `blender -b file.blend -a` run through the wrapper shows an exact percentage; a finished queue reaches both the Mac and a phone; `curl` returns the same state the panel shows; the 12 interaction checks still pass.
 

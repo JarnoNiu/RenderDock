@@ -24,14 +24,15 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         let groups = store.groups
         let active = groups.activeCount
         let fraction = groups.focusItem?.fraction
-        let key = "\(active)|\(fraction.map { Int($0 * 40) } ?? -1)|\(groups.pausedCount)|\(groups.stalledCount)"
+        let key = "\(active)|\(fraction.map { Int($0 * 40) } ?? -1)|\(groups.pausedCount)|\(groups.stalledCount)|\(store.agentSummary ?? "")"
         guard key != lastKey else { return }
         lastKey = key
         item.button?.image = Self.ringImage(fraction: fraction, active: active > 0, paused: active == 0 && groups.pausedCount > 0)
         item.button?.attributedTitle = NSAttributedString(
             string: active > 0 ? " \(active)" : "",
             attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)])
-        item.button?.toolTip = L("渲染坞：\(store.summary)", "RenderDock: \(store.summary)")
+        let agentLine = store.agentSummary.map { L("\nAgent：\($0)", "\nAgents: \($0)") } ?? ""
+        item.button?.toolTip = L("渲染坞：\(store.summary)\(agentLine)", "RenderDock: \(store.summary)\(agentLine)")
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -51,12 +52,29 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             mi.indentationLevel = 1
             menu.addItem(mi)
         }
+        if let agentSummary = store.agentSummary {
+            let agentHead = NSMenuItem(title: L("Agent：\(agentSummary)", "Agents: \(agentSummary)"), action: nil, keyEquivalent: "")
+            agentHead.isEnabled = false
+            menu.addItem(agentHead)
+            for s in store.agents.filter({ $0.state != .idle }).prefix(8) {
+                var line = "\(AgentTool.displayName(s.tool)) · \(s.project) — \(s.state.label)"
+                if s.state == .waiting, let what = s.waitingFor, !what.isEmpty { line += "（\(what)）" }
+                let mi = NSMenuItem(title: line, action: nil, keyEquivalent: "")
+                mi.isEnabled = false
+                mi.indentationLevel = 1
+                menu.addItem(mi)
+            }
+        }
         menu.addItem(.separator())
         add(menu, store.expanded ? L("收起面板", "Collapse Panel") : L("展开面板", "Expand Panel"), #selector(togglePanel))
         add(menu, L("显示悬浮胶囊", "Show Floating Capsule"), #selector(toggleCapsule), on: panel?.isVisible == true)
         add(menu, L("回到右上角", "Move to Top-Right"), #selector(resetPosition))
         menu.addItem(.separator())
         add(menu, L("渲染时保持唤醒", "Keep Awake While Rendering"), #selector(toggleAwake), on: store.keepAwakeWhileRendering)
+        add(menu, L("显示 Agent 任务（只读）", "Show Agents' Sessions (read-only)"), #selector(toggleAgents), on: store.agentsEnabled)
+        if store.agentsEnabled {
+            add(menu, L("显示会话标题", "Show Session Titles"), #selector(toggleAgentTitles), on: store.agentTitles)
+        }
         let where_ = store.apiPort.map { "（127.0.0.1:\($0)）" } ?? ""
         let whereEn = store.apiPort.map { " (127.0.0.1:\($0))" } ?? ""
         add(menu, L("本机接口\(where_)", "Local API\(whereEn)"), #selector(toggleAPI), on: store.apiEnabled)
@@ -110,6 +128,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc private func resetPosition() { panel?.resetPosition() }
     @objc private func toggleAwake() { store.keepAwakeWhileRendering.toggle() }
     @objc private func toggleAPI() { store.apiEnabled.toggle() }
+    @objc private func toggleAgents() { store.agentsEnabled.toggle() }
+    @objc private func toggleAgentTitles() { store.agentTitles.toggle() }
     @objc private func editPushSettings() { store.notifier.openSettings() }
     @objc private func sendTestNotification() { store.notifier.sendTest() }
 

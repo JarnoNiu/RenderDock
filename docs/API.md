@@ -76,6 +76,12 @@ curl -s http://127.0.0.1:47600/v1/state
       ]
     }
   ],
+  "agents": [
+    {"id": "claude-code:3f9a12c4", "tool": "claude-code", "project": "demo-site",
+     "state": "waiting", "waitingFor": "permission prompt", "sinceSec": 42, "source": "official"},
+    {"id": "codex:71be05aa", "tool": "codex", "project": "billing-api",
+     "state": "working", "sinceSec": 913, "source": "files"}
+  ],
   "metrics": {
     "cpu": 0.62, "gpu": 0.86, "gpuMemBytes": 11811160064,
     "memUsed": 46170898432, "memTotal": 68719476736, "memPressure": 1,
@@ -94,6 +100,11 @@ curl -s http://127.0.0.1:47600/v1/state
 | `queueEtaSec`, `queueEtaRough` | On a job, from 0.3: seconds until every shot of a running queue is through, estimated from history ([HISTORY.md](HISTORY.md)). `queueEtaRough` is true when some shots never ran before |
 | `smallFrames`, `slowFrames` | On a shot, from 0.3: recent frames with an unusually small file, or that took unusually long. Hints only; absent when there are none |
 | `sampleDone`, `sampleTotal` | Samples of the frame in progress, when the job reports them. `fraction` already includes that part of the frame |
+| `agents` | From 0.3: coding agents' sessions on this Mac, most urgent first ([AGENT-TASKS.md](AGENT-TASKS.md)). An empty list when none are found or the feature is switched off. No titles and no paths |
+| agent `state` | `error`, `waiting`, `working`, `done`, `idle`, `stale`, in that order of urgency |
+| agent `waitingFor` | What a `waiting` session waits for, in the tool's own words. Absent otherwise |
+| agent `sinceSec` | Seconds since it entered this state, when that is known |
+| agent `source` | `official`: the tool's own command reported it. `files`: read from the tool's local files, best effort |
 | job `state` | `running`, `stalled`, `paused`, `queued` |
 | shot `state` | `rendering`, `compositing`, `finishing`, `encoding`, `starting`, `paused`, `stalled`, `pending`, `done` |
 | `metrics.cpu`, `metrics.gpu` | 0–1 |
@@ -204,4 +215,4 @@ with urllib.request.urlopen("http://127.0.0.1:47600/v1/events") as stream:
 
 `version` is 1. Within version 1, fields are added and never renamed or removed. Ignore fields you do not know.
 
-Not in the API yet: access from other devices, thumbnails of the latest frame, and anything that changes a job.
+Not in the API yet: access from other devices, thumbnails of the latest frame, events for agents' sessions, and anything that changes a job or answers an agent.

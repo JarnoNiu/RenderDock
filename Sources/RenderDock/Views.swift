@@ -26,6 +26,8 @@ struct CapsuleView: View {
             .frame(maxWidth: 215, alignment: .leading)
             .fixedSize()
 
+            if !store.agentsNeedingYou.isEmpty { AgentBadge(count: store.agentsNeedingYou.count, failed: store.agents.count(.error) > 0) }
+
             Capsule().fill(.white.opacity(0.13)).frame(width: 1, height: 22)
 
             MiniStat(label: "GPU", value: store.metrics.gpu, tint: Theme.mint)
@@ -58,14 +60,22 @@ struct CapsuleView: View {
     }
 
     private func primary(_ focus: RenderItem?, _ g: [RenderGroup]) -> String {
-        guard let f = focus else { return g.waitingCount > 0 ? L("排队等待", "Queued") : L("空闲", "Idle") }
+        guard let f = focus else {
+            if g.waitingCount > 0 { return L("排队等待", "Queued") }
+            // Nothing renders: the capsule speaks for the agents instead.
+            if let top = store.agents.top { return "\(AgentTool.displayName(top.tool))  \(top.state.label)" }
+            return L("空闲", "Idle")
+        }
         if let frac = f.fraction { return "\(f.name)  \(f.totalIsEstimate ? "≈" : "")\(Fmt.percent(frac))" }
         if let d = f.framesDone, d > 0 { return L("\(f.name)  \(d) 帧", "\(f.name)  \(d) frames") }
         return "\(f.name)  \(f.state.label)"
     }
 
     private func secondary(_ focus: RenderItem?, _ g: [RenderGroup]) -> String {
-        guard focus != nil else { return g.waitingCount > 0 ? L("\(g.waitingCount) 条任务在排队", "\(g.waitingCount) jobs queued") : L("没有渲染任务", "No render jobs") }
+        guard focus != nil else {
+            if g.waitingCount > 0 { return L("\(g.waitingCount) 条任务在排队", "\(g.waitingCount) jobs queued") }
+            return store.agentSummary ?? L("没有渲染任务", "No render jobs")
+        }
         var parts: [String] = []
         if let e = focus?.eta { parts.append(L("剩约 \(Fmt.duration(e))", "~\(Fmt.duration(e)) left")) }
         if g.activeCount > 1 { parts.append(L("共 \(g.activeCount) 段在渲", "\(g.activeCount) rendering")) }
@@ -81,6 +91,25 @@ func memTint(_ m: Metrics) -> Color {
     case 4: return Theme.coral
     case 2: return Theme.amber
     default: return Theme.lilac
+    }
+}
+
+/// On the capsule while a session is waiting for the user (or failed): how many.
+private struct AgentBadge: View {
+    let count: Int
+    let failed: Bool
+
+    var body: some View {
+        let tint = failed ? Theme.coral : Theme.amber
+        HStack(spacing: 3) {
+            Image(systemName: failed ? "exclamationmark" : "hand.raised.fill").font(.system(size: 8.5, weight: .bold))
+            Text("\(count)").font(Theme.num(11))
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 6).padding(.vertical, 3)
+        .background(Capsule().fill(tint.opacity(0.18)))
+        .fixedSize()
+        .help(L("\(count) 个 agent 会话在等你", "\(count) agent session(s) need you"))
     }
 }
 
@@ -175,14 +204,17 @@ struct TaskListContent: View {
 
     var body: some View {
         VStack(spacing: 8) {
+            if !store.agentsNeedingYou.isEmpty { AgentAttention(sessions: store.agentsNeedingYou) }
             if store.groups.isEmpty {
-                EmptyState(scanned: store.scanned)
+                // With agents to show, a full-height "nothing here" would only push them down.
+                if store.agents.isEmpty { EmptyState(scanned: store.scanned) }
             } else {
                 ForEach(store.groups) { group in
                     GroupCard(group: group, store: store)
                 }
             }
             if store.sleepRisk { SleepWarning() }
+            if !store.agents.isEmpty { AgentSection(sessions: store.agents, summary: store.agentSummary, now: store.now, showTitles: store.agentTitles) }
             if !store.recentRuns.isEmpty { RecentRuns(runs: store.recentRuns, now: store.now) }
         }
         .padding(.horizontal, 10)
@@ -206,6 +238,143 @@ private struct EmptyState: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 22)
+    }
+}
+
+// MARK: Coding agents
+
+extension AgentState {
+    var tint: Color {
+        switch self {
+        case .error: return Theme.coral
+        case .waiting: return Theme.amber
+        case .working: return Theme.aqua
+        case .done: return Theme.mint
+        case .idle, .stale: return Theme.text(0.4)
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .error: return "xmark"
+        case .waiting: return "hand.raised.fill"
+        case .working: return "circle.dotted"
+        case .done: return "checkmark"
+        case .idle: return "moon.fill"
+        case .stale: return "questionmark"
+        }
+    }
+}
+
+/// The one thing worth an interruption: a session is waiting for the user.
+private struct AgentAttention: View {
+    let sessions: [AgentSession]
+
+    var body: some View {
+        let first = sessions[0]
+        let tint = first.state.tint
+        HStack(spacing: 7) {
+            Image(systemName: first.state.symbol).font(.system(size: 11, weight: .semibold)).foregroundStyle(tint)
+            Text(text(first)).font(.system(size: 10.5, weight: .medium)).foregroundStyle(tint).lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10).padding(.vertical, 7)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(tint.opacity(0.13)))
+    }
+
+    private func text(_ s: AgentSession) -> String {
+        let who = "\(AgentTool.displayName(s.tool)) · \(s.project)"
+        let more = sessions.count - 1
+        let rest = more > 0 ? L("，另有 \(more) 个", ", and \(more) more") : ""
+        if s.state == .error { return L("\(who) 出错了\(rest)", "\(who) failed\(rest)") }
+        return L("\(who) 在等你\(rest)", "\(who) needs you\(rest)")
+    }
+}
+
+/// Coding agents' sessions: the ones doing something, then one line for the idle rest.
+private struct AgentSection: View {
+    let sessions: [AgentSession]
+    let summary: String?
+    let now: Date
+    let showTitles: Bool
+
+    private static let maxRows = 8
+
+    var body: some View {
+        let live = sessions.filter { $0.state != .idle }
+        let idle = sessions.count - live.count
+        let hidden = max(0, live.count - Self.maxRows)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text(L("Agent 任务", "Agents"))
+                    .font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.text(0.45))
+                Spacer(minLength: 4)
+                if let summary {
+                    Text(summary).font(.system(size: 10, weight: .medium)).monospacedDigit().foregroundStyle(Theme.text(0.5)).lineLimit(1)
+                }
+            }
+            ForEach(live.prefix(Self.maxRows)) { session in
+                AgentRow(session: session, now: now, showTitle: showTitles)
+            }
+            if hidden > 0 || idle > 0 {
+                Text(rest(hidden: hidden, idle: idle))
+                    .font(.system(size: 10)).foregroundStyle(Theme.text(0.4))
+            }
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 13, style: .continuous).fill(.white.opacity(0.035)))
+    }
+
+    private func rest(hidden: Int, idle: Int) -> String {
+        var parts: [String] = []
+        if hidden > 0 { parts.append(L("还有 \(hidden) 个没列出", "\(hidden) more not listed")) }
+        if idle > 0 { parts.append(sessions.count == idle ? L("\(idle) 个会话，都空闲", "\(idle) session(s), all idle") : L("另有 \(idle) 个空闲", "\(idle) more idle")) }
+        return parts.joined(separator: " · ")
+    }
+}
+
+private struct AgentRow: View {
+    let session: AgentSession
+    let now: Date
+    let showTitle: Bool
+
+    var body: some View {
+        let tint = session.state.tint
+        HStack(spacing: 6) {
+            Image(systemName: session.state.symbol).font(.system(size: 9, weight: .bold)).foregroundStyle(tint).frame(width: 11)
+            Text(AgentTool.displayName(session.tool))
+                .font(.system(size: 9.5, weight: .semibold)).foregroundStyle(Theme.text(0.7))
+                .padding(.horizontal, 5).padding(.vertical, 1.5)
+                .background(Capsule().fill(.white.opacity(0.08)))
+                .fixedSize()
+            // The project name is the part to keep: the title gives way first when the row is tight.
+            Text(session.project).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.text(0.85)).lineLimit(1).layoutPriority(1)
+            if showTitle, let title = session.title, !title.isEmpty {
+                Text(title).font(.system(size: 10)).foregroundStyle(Theme.text(0.4)).lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            Text(detail).font(.system(size: 10, weight: .medium)).monospacedDigit().foregroundStyle(tint).fixedSize()
+        }
+        .help(tooltip)
+    }
+
+    private var detail: String {
+        var parts = [session.state.label]
+        if session.state == .waiting, let what = session.waitingFor, !what.isEmpty {
+            parts.append(what.count > 20 ? String(what.prefix(19)) + "…" : what)
+        }
+        if let since = session.since { parts.append(Fmt.duration(now.timeIntervalSince(since))) }
+        return parts.joined(separator: " · ")
+    }
+
+    private var tooltip: String {
+        let origin = session.source == "official"
+            ? L("来自这个工具自己的命令", "Reported by the tool's own command")
+            : L("从这个工具的本地文件读到，尽力而为；「在等批准」这样读不出来", "Read from the tool's local files, best effort; a pending approval cannot be seen this way")
+        guard session.state == .waiting, let what = session.waitingFor, !what.isEmpty else { return origin }
+        return L("在等：\(what)\n\(origin)", "Waiting for: \(what)\n\(origin)")
     }
 }
 

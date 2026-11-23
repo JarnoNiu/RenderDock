@@ -63,6 +63,22 @@ package struct StateSnapshot: Codable, Equatable {
         package var shots: [Shot]
     }
 
+    /// One session of a coding agent. No title and no path: only what a display outside this Mac may show.
+    package struct Agent: Codable, Equatable {
+        package var id: String
+        /// claude-code | codex | hermes
+        package var tool: String
+        package var project: String
+        /// error | waiting | working | done | idle | stale
+        package var state: String
+        /// What it is waiting for, in the tool's own words. Present only while waiting.
+        package var waitingFor: String?
+        /// Seconds since it entered this state, when that is known.
+        package var sinceSec: Int?
+        /// official: the tool's own command reported it. files: read from the tool's local files, best effort.
+        package var source: String
+    }
+
     package struct Machine: Codable, Equatable {
         package var cpu: Double
         package var gpu: Double?
@@ -86,11 +102,13 @@ package struct StateSnapshot: Codable, Equatable {
     package var updatedAt: String
     package var summary: Summary
     package var jobs: [Job]
+    /// Coding agents' sessions, most urgent first. Empty when none are found or the feature is off.
+    package var agents: [Agent]
     package var metrics: Machine
 
     package static let appVersion = "0.2.0"
 
-    package static func make(groups: [RenderGroup], metrics m: Metrics, now: Date = Date(), host: String? = nil) -> StateSnapshot {
+    package static func make(groups: [RenderGroup], metrics m: Metrics, agents: [AgentSession] = [], now: Date = Date(), host: String? = nil) -> StateSnapshot {
         let iso = ISO8601DateFormatter()
         func shot(_ i: RenderItem) -> Shot {
             Shot(id: i.id, name: i.name, state: i.state.wireName, framesDone: i.framesDone, framesTotal: i.framesTotal,
@@ -117,6 +135,10 @@ package struct StateSnapshot: Codable, Equatable {
             summary: Summary(rendering: groups.activeCount, paused: groups.pausedCount, stalled: groups.stalledCount,
                              queued: groups.waitingCount, focus: focus),
             jobs: jobs,
+            agents: agents.byUrgency.map { a in
+                Agent(id: a.id, tool: a.tool, project: a.project, state: a.state.rawValue, waitingFor: a.waitingFor,
+                      sinceSec: a.since.map { max(0, Int(now.timeIntervalSince($0).rounded())) }, source: a.source)
+            },
             metrics: Machine(cpu: round3(m.cpu), gpu: m.gpu.map(round3), gpuMemBytes: m.gpuMemBytes, memUsed: m.memUsed,
                              memTotal: m.memTotal, memPressure: m.memPressure, swapUsed: m.swapUsed, swapTotal: m.swapTotal,
                              tempC: m.tempC.map { ($0 * 10).rounded() / 10 }, diskFree: m.diskFree, onAC: m.onAC, awake: m.awakeHeld))

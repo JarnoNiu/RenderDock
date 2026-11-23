@@ -116,6 +116,26 @@ enum Demo {
         return [queue, groupB, groupC, groupD]
     }
 
+    /// Fictional agent sessions. One of them asks for permission for a while in every cycle.
+    static func agents(_ t: Double, now: Date) -> [AgentSession] {
+        let phase = t.truncatingRemainder(dividingBy: 40)
+        let asking = phase >= 12 && phase < 26
+        func session(_ n: Int, _ tool: String, _ project: String, _ title: String, _ state: AgentState, ago: Double,
+                     waitingFor: String? = nil, source: String = "official") -> AgentSession {
+            AgentSession(id: "\(tool):demo\(n)", tool: tool, project: project, title: title, state: state, waitingFor: waitingFor,
+                         since: now.addingTimeInterval(-ago), startedAt: now.addingTimeInterval(-ago - 1800), source: source)
+        }
+        return [
+            session(1, AgentTool.claudeCode, "demo-site", L("修登录后的跳转", "Fix the login redirect"),
+                    asking ? .waiting : .working, ago: asking ? phase - 12 : 95 + phase, waitingFor: asking ? L("批准 Bash", "approve Bash") : nil),
+            session(2, AgentTool.codex, "billing-api", L("加发票导出", "Add invoice export"), .working, ago: 912 + t, source: "files"),
+            session(3, AgentTool.claudeCode, "docs", L("更新安装说明", "Update the install guide"), .done, ago: 130 + t),
+            session(4, AgentTool.claudeCode, "playground", L("试一个想法", "Try an idea"), .idle, ago: 5400 + t),
+            session(5, AgentTool.claudeCode, "infra", L("清理旧脚本", "Tidy old scripts"), .idle, ago: 9100 + t),
+            session(6, AgentTool.hermes, "gateway", "", .idle, ago: 20_000 + t, source: "files"),
+        ].byUrgency
+    }
+
     static func recentRuns(now: Date) -> [HistoryRun] {
         let t = now.timeIntervalSince1970
         func run(_ id: Int64, _ shot: String, _ job: String, ago: Double, took: Double, frames: Int, outcome: String, code: Int32? = nil) -> HistoryRun {
@@ -196,6 +216,7 @@ extension Store {
         }
         thumbs = images
         recentRuns = Demo.recentRuns(now: date)
+        agents = agentsEnabled ? Demo.agents(t, now: date) : []
         publish()
         onChange?()
     }

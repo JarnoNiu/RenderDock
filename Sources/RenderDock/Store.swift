@@ -55,6 +55,30 @@ final class Store {
         }
     }
 
+    // MARK: Coding agents' sessions (read-only; on unless switched off in the menu)
+
+    /// Sessions of coding agents on this Mac, most urgent first.
+    var agents: [AgentSession] = []
+    var agentsEnabled = (UserDefaults.standard.object(forKey: "showAgents") as? Bool) ?? true {
+        didSet {
+            UserDefaults.standard.set(agentsEnabled, forKey: "showAgents")
+            if agentsEnabled { scanAgents() } else { agents = [] }
+            publishState()
+            onChange?()
+        }
+    }
+    /// Show each session's own name in the panel. Names stay on this Mac either way.
+    var agentTitles = (UserDefaults.standard.object(forKey: "agentTitles") as? Bool) ?? true {
+        didSet {
+            UserDefaults.standard.set(agentTitles, forKey: "agentTitles")
+            onChange?()
+        }
+    }
+    @ObservationIgnored private let agentScanner = AgentScanner()
+    @ObservationIgnored private let agentWork = DispatchQueue(label: "renderdock.agents", qos: .utility)
+    @ObservationIgnored private var scanningAgents = false
+    @ObservationIgnored private var lastAgentScan = Date.distantPast
+
     @ObservationIgnored private let scanner = TaskScanner()
     @ObservationIgnored private let sampler = MetricsSampler()
     @ObservationIgnored private let awake = AwakeHolder()
@@ -101,7 +125,13 @@ final class Store {
         let events = detector.update(groups, now: now, outcomes: outcomes)
         notifier.handle(events)
         guard apiEnabled else { return }
-        api.publish(state: StateSnapshot.make(groups: groups, metrics: metrics, now: now).json(), events: events)
+        api.publish(state: StateSnapshot.make(groups: groups, metrics: metrics, agents: agents, now: now).json(), events: events)
+    }
+
+    /// Hand the state to the API again after something other than a job scan changed it.
+    private func publishState() {
+        guard apiEnabled else { return }
+        api.publish(state: StateSnapshot.make(groups: groups, metrics: metrics, agents: agents, now: Date()).json(), events: [])
     }
 
     /// Release the port and the discovery file before the app exits.
@@ -112,7 +142,29 @@ final class Store {
     static let historyLength = 60
 
     /// Rescan right away (used when the panel expands).
-    func refreshNow() { if !demo { scanTasks() } }
+    func refreshNow() {
+        guard !demo else { return }
+        scanTasks()
+        scanAgents()
+    }
+
+    /// Look at the agents' sessions, off the main thread. They are read, never changed.
+    private func scanAgents() {
+        guard agentsEnabled, !demo, !scanningAgents else { return }
+        scanningAgents = true
+        lastAgentScan = Date()
+        agentWork.async { [weak self] in
+            guard let self else { return }
+            let found = self.agentScanner.scan()
+            DispatchQueue.main.async {
+                self.scanningAgents = false
+                guard self.agentsEnabled, found != self.agents else { return }
+                self.agents = found
+                self.publishState()
+                self.onChange?()
+            }
+        }
+    }
 
     /// Demo mode: fictional jobs and metrics, nothing is read from the machine.
     @ObservationIgnored private(set) var demo = false
@@ -134,6 +186,7 @@ final class Store {
         work.async { [weak self] in self?.history?.prune() }
         sampleMetrics()
         scanTasks()
+        scanAgents()
         timers.append(Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.sampleMetrics() })
         // Scan jobs every 3 s while expanded, every 6 s while collapsed
         timers.append(Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
@@ -141,6 +194,7 @@ final class Store {
             // …and every 3 s while something is listening on the event stream
             let lively = self.expanded || (self.apiEnabled && self.api.streamCount > 0)
             if Date().timeIntervalSince(self.now) >= (lively ? 2.9 : 5.9) { self.scanTasks() }
+            if Date().timeIntervalSince(self.lastAgentScan) >= (lively ? 2.9 : 5.9) { self.scanAgents() }
         })
         timers.forEach { RunLoop.main.add($0, forMode: .common) }
     }
@@ -158,6 +212,7 @@ final class Store {
         for i in g.indices { g[i].queueETA = history?.queueETA(for: g[i]) }
         recentRuns = history?.recent(limit: 4) ?? []
         groups = g
+        agents = agentsEnabled ? agentScanner.scan() : []
         scanned = true
         now = Date()
         for item in g.allItems {
@@ -252,6 +307,20 @@ final class Store {
         if g.waitingCount > 0 { parts.append(L("\(g.waitingCount) 条排队", "\(g.waitingCount) queued")) }
         return parts.isEmpty ? L("没有渲染任务", "No render jobs") : parts.joined(separator: " · ")
     }
+
+    /// One line about the agents' sessions, or nil when there is nothing to say.
+    var agentSummary: String? {
+        let a = agents
+        var parts: [String] = []
+        if a.count(.error) > 0 { parts.append(L("\(a.count(.error)) 个出错", "\(a.count(.error)) failed")) }
+        if a.count(.waiting) > 0 { parts.append(L("\(a.count(.waiting)) 个等你", "\(a.count(.waiting)) need you")) }
+        if a.count(.working) > 0 { parts.append(L("\(a.count(.working)) 个在干活", "\(a.count(.working)) working")) }
+        if a.count(.done) > 0 { parts.append(L("\(a.count(.done)) 个刚做完", "\(a.count(.done)) just finished")) }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// Sessions that are waiting for the user, or failed: the ones worth an interruption.
+    var agentsNeedingYou: [AgentSession] { agents.filter { $0.state == .waiting || $0.state == .error } }
 
     /// Jobs are rendering, but nothing is keeping the Mac awake.
     var sleepRisk: Bool { groups.activeCount > 0 && !metrics.awakeHeld }

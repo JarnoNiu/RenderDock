@@ -35,9 +35,10 @@ The checks inject synthetic clicks and drags and read the window state back. The
 | `RenderDockCore/Progress.swift` | Reading a renderer's output for progress; the report a wrapped job keeps ([docs/EXACT-PROGRESS.md](docs/EXACT-PROGRESS.md)) |
 | `RenderDockCore/History.swift` | What is remembered (SQLite), queue estimates from it ([docs/HISTORY.md](docs/HISTORY.md)) |
 | `RenderDockCore/LogFollower.swift` | Reads the log a render's output is redirected to |
+| `RenderDockCore/Agents.swift` | Coding agents' sessions, read-only: Claude Code, Codex, Hermes ([docs/AGENT-TASKS.md](docs/AGENT-TASKS.md)) |
 | `RenderDockCore/Adapters.swift` | Detection rules read from `adapters.json` ([docs/ADAPTERS.md](docs/ADAPTERS.md)) |
 | `RenderDockCore/Notify.swift` | Notification wording and the request each push channel needs ([docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md)) |
-| `renderdock-cli/` | The `renderdock` command: `run` and `status`. Built as `renderdock-cli`, shipped as `Contents/Helpers/renderdock` |
+| `renderdock-cli/` | The `renderdock` command: `run`, `status`, `history` and `agents`. Built as `renderdock-cli`, shipped as `Contents/Helpers/renderdock` |
 | `RenderDockCore/L10n.swift` | `L(zh, en)`: UI strings live at the call site in both languages |
 | `RenderDock/Store.swift` | Observable app state and timers |
 | `RenderDock/Views.swift`, `Theme.swift` | The capsule, the panel and their parts |

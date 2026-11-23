@@ -3,6 +3,7 @@
 //   renderdock run [--name NAME] [--total N] -- <command…>   run a command unchanged and report its progress
 //   renderdock status [--json]                               what is rendering on this Mac right now
 //   renderdock history [--json] [--limit N]                  the shots that ended most recently
+//   renderdock agents [--json]                               what coding agents' sessions are doing right now
 //
 // `run` passes the command's input and output straight through and exits with the command's own status.
 // It reads the output on the way past, and keeps a small report next to RenderDock's preferences
@@ -23,6 +24,7 @@ usage:
   renderdock run [--name NAME] [--total N] -- <command> [arguments…]
   renderdock status [--json]
   renderdock history [--json] [--limit N]
+  renderdock agents [--json]
   renderdock version
 """
 
@@ -220,6 +222,32 @@ func history(json: Bool, limit: Int) -> Never {
     exit(0)
 }
 
+// MARK: agents
+
+/// Coding agents' sessions, read-only. `--json` prints what the API's `agents` block carries: no titles, no paths.
+func agents(json: Bool) -> Never {
+    let sessions = AgentScanner().scan()
+    if json {
+        let snapshot = StateSnapshot.make(groups: [], metrics: Metrics(), agents: sessions)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        print(String(decoding: (try? encoder.encode(["agents": snapshot.agents])) ?? Data("{}".utf8), as: UTF8.self))
+        exit(0)
+    }
+    if sessions.isEmpty { print("no agent sessions found") }
+    let now = Date()
+    func pad(_ s: String, _ n: Int) -> String { s.padding(toLength: n, withPad: " ", startingAt: 0) }
+    for s in sessions {
+        let since = s.since.map { t -> String in
+            let d = Int(max(0, now.timeIntervalSince(t)))
+            return d >= 3600 ? "\(d / 3600)h \(d % 3600 / 60)m" : (d >= 60 ? "\(d / 60)m" : "\(d)s")
+        } ?? "-"
+        let waiting = s.waitingFor.map { "  (\($0))" } ?? ""
+        print("\(pad(s.state.rawValue, 8))  \(pad(AgentTool.displayName(s.tool), 12))  \(pad(since, 8))  \(s.project)\(waiting)")
+    }
+    exit(0)
+}
+
 // MARK: entry
 
 let arguments = Array(CommandLine.arguments.dropFirst())
@@ -229,6 +257,7 @@ case "status": status(json: arguments.contains("--json"))
 case "history":
     let limit = arguments.firstIndex(of: "--limit").flatMap { $0 + 1 < arguments.count ? Int(arguments[$0 + 1]) : nil } ?? 20
     history(json: arguments.contains("--json"), limit: max(1, min(limit, 500)))
+case "agents": agents(json: arguments.contains("--json"))
 case "version", "--version": print("renderdock \(StateSnapshot.appVersion)")
 case "help", "--help", "-h", nil: print(usage)
 default: fail("unknown command \(arguments[0])\n\(usage)")

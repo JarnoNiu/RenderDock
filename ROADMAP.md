@@ -87,6 +87,8 @@ Not checked yet:
 - [x] History in a local database: every shot with its duration, frames and outcome — [docs/HISTORY.md](docs/HISTORY.md) *(done 2026-11-24, unreleased)*
 - [x] Time-left estimates for a whole queue, based on history *(done 2026-11-24, unreleased)*
 - [x] Flag odd frames: a sudden jump in frame time, an unusually small file *(done 2026-11-24, unreleased)*
+- [x] Coding agents' sessions, read-only: which are working, which just finished, which need you (Claude Code, Codex, Hermes) — [docs/AGENT-TASKS.md](docs/AGENT-TASKS.md) *(done 2026-11-24, unreleased)*
+- [ ] Events and notifications when a session starts to need you or finishes; a compact summary for small displays
 - [ ] ffmpeg encodes with real progress
 - [ ] ComfyUI queues
 - [x] Follow the log file when a render's output is redirected to one *(done 2026-11-24, unreleased)*

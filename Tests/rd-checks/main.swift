@@ -1,6 +1,7 @@
 // Checks for RenderDockCore. Run with `swift run rd-checks`; exits non-zero if anything fails.
 // A plain executable rather than an XCTest bundle so it works with the Command Line Tools alone.
 import Foundation
+import SQLite3
 import RenderDockCore
 
 var total = 0
@@ -441,6 +442,212 @@ check("failed carries the exit status", Notify.message(for: ended("failed", 139)
 check("unknown ending makes no claim", Notify.message(for: ended(nil, nil))?.title == "Render job ended")
 check("the last job says the queue is empty", Notify.message(for: ended("finished", 0), lastOne: true)?.body == "Hero shots · nothing else is running")
 check("starting a job is not announced", Notify.message(for: RenderEvent(type: .jobStarted, jobId: "a", jobTitle: "x", project: "p", shot: nil, outcome: nil, exitCode: nil, at: "")) == nil)
+
+// MARK: Coding agents' sessions
+
+section("agent states")
+check("states are ordered by how much they need the user", AgentState.allCases == [.error, .waiting, .working, .done, .idle, .stale])
+check("waiting outranks working", AgentState.waiting.rank < AgentState.working.rank)
+check("busy is working", ClaudeCodeSource.state(status: "busy") == .working)
+check("idle is idle", ClaudeCodeSource.state(status: "idle") == .idle)
+check("waiting is waiting", ClaudeCodeSource.state(status: "waiting") == .waiting)
+check("an unknown status is idle, never working", ClaudeCodeSource.state(status: "some-new-word") == .idle)
+check("a blocked background session is waiting", ClaudeCodeSource.state(status: "busy", background: "blocked") == .waiting)
+check("a failed background session is an error", ClaudeCodeSource.state(status: nil, background: "failed") == .error)
+check("a finished background session is done", ClaudeCodeSource.state(status: "idle", background: "done") == .done)
+check("a stopped background session is idle", ClaudeCodeSource.state(status: nil, background: "stopped") == .idle)
+check("a working background session without a status is working", ClaudeCodeSource.state(status: nil, background: "working") == .working)
+
+let agentNow = Date(timeIntervalSince1970: 1_800_000_000)
+check("idle a moment after working is 'just finished'",
+      ClaudeCodeSource.settled(.idle, since: agentNow.addingTimeInterval(-100), startedAt: agentNow.addingTimeInterval(-5000), now: agentNow) == .done)
+check("…and plain idle once the window has passed",
+      ClaudeCodeSource.settled(.idle, since: agentNow.addingTimeInterval(-400), startedAt: agentNow.addingTimeInterval(-5000), now: agentNow) == .idle)
+check("a session that went idle right after starting has finished nothing",
+      ClaudeCodeSource.settled(.idle, since: agentNow.addingTimeInterval(-100), startedAt: agentNow.addingTimeInterval(-103), now: agentNow) == .idle)
+check("a working session is left alone",
+      ClaudeCodeSource.settled(.working, since: agentNow.addingTimeInterval(-100), startedAt: agentNow.addingTimeInterval(-5000), now: agentNow) == .working)
+
+section("Claude Code sessions")
+do {
+    let fm = FileManager.default
+    let home = fm.temporaryDirectory.appendingPathComponent("rd-claude-\(UUID().uuidString)")
+    let registryDir = home.appendingPathComponent("sessions")
+    let project = home.appendingPathComponent("work/demo-site")
+    try? fm.createDirectory(at: registryDir, withIntermediateDirectories: true)
+    try? fm.createDirectory(at: project, withIntermediateDirectories: true)
+    let me = ProcessInfo.processInfo.processIdentifier
+    func registry(pid: Int32, id: String, status: String) -> String {
+        "{\"pid\":\(pid),\"sessionId\":\"\(id)\",\"cwd\":\"\(project.path)\",\"startedAt\":1799990000000,\"name\":\"Fix the login\",\"kind\":\"interactive\",\"status\":\"\(status)\",\"statusUpdatedAt\":1799999000000}"
+    }
+    let mine = registryDir.appendingPathComponent("\(me).json")
+    try? registry(pid: me, id: "11111111-aaaa-bbbb-cccc-000000000001", status: "busy").write(to: mine, atomically: true, encoding: .utf8)
+    try? registry(pid: 999_999, id: "22222222-aaaa-bbbb-cccc-000000000002", status: "idle")
+        .write(to: registryDir.appendingPathComponent("999999.json"), atomically: true, encoding: .utf8)
+
+    let listing = """
+    [{"pid":\(me),"cwd":"\(project.path)","kind":"interactive","startedAt":1799990000000,"sessionId":"11111111-aaaa-bbbb-cccc-000000000001","name":"Fix the login","status":"waiting","waitingFor":"permission prompt"},
+     {"pid":4242,"cwd":"\(project.path)","kind":"interactive","startedAt":1799990000000,"sessionId":"33333333-aaaa-bbbb-cccc-000000000003","name":"Other","status":"busy","waitingFor":"left over"},
+     {"id":"bg1","cwd":"\(project.path)","kind":"background","startedAt":1799990000000,"sessionId":"44444444-aaaa-bbbb-cccc-000000000004","state":"failed"}]
+    """
+    var calls = 0
+    var answer: Data? = Data(listing.utf8)
+    let source = ClaudeCodeSource(home: home, binary: "/nonexistent/claude", runner: { _ in
+        calls += 1
+        return answer
+    })
+    let found = source.scan(now: agentNow)
+    let waiting = found.first { $0.state == .waiting }
+    check("every listed session is returned", found.count == 3)
+    check("what the command reports is marked official", found.allSatisfy { $0.source == "official" } && source.lastSource == "official")
+    check("a waiting session says what it waits for", waiting?.waitingFor == "permission prompt")
+    check("waitingFor is dropped unless the session is waiting", found.first { $0.state == .working }?.waitingFor == nil)
+    check("the project is a directory name, never a path", found.allSatisfy { $0.project == "demo-site" })
+    check("the id is the tool and a short id", waiting?.id == "claude-code:11111111")
+    check("the session's name is kept, for this Mac only", waiting?.title == "Fix the login")
+    check("a failed background session is an error", found.contains { $0.state == .error && $0.id == "claude-code:44444444" })
+    check("the time of the last change comes from the registry file", waiting?.since != nil)
+
+    _ = source.scan(now: agentNow.addingTimeInterval(3))
+    check("nothing changed: the command is not run again", calls == 1)
+    try? fm.setAttributes([.modificationDate: Date().addingTimeInterval(5)], ofItemAtPath: mine.path)
+    _ = source.scan(now: agentNow.addingTimeInterval(6))
+    check("a change in the registry runs it again", calls == 2)
+    _ = source.scan(now: agentNow.addingTimeInterval(120))
+    check("…and so does a while without news", calls == 3)
+
+    answer = nil
+    try? fm.setAttributes([.modificationDate: Date().addingTimeInterval(9)], ofItemAtPath: mine.path)
+    let fallback = source.scan(now: agentNow.addingTimeInterval(130))
+    check("without the command, the registry is read and dead processes are dropped",
+          fallback.count == 1 && fallback.first?.pid == me && fallback.first?.source == "files" && source.lastSource == "files")
+
+    var untouched = 0
+    let absent = ClaudeCodeSource(home: home.appendingPathComponent("nope"), binary: "/nonexistent/claude", runner: { _ in
+        untouched += 1
+        return nil
+    })
+    check("no Claude Code directory: nothing is run and nothing is found", absent.scan().isEmpty && untouched == 0)
+    try? fm.removeItem(at: home)
+}
+
+section("Codex sessions")
+do {
+    let fm = FileManager.default
+    let home = fm.temporaryDirectory.appendingPathComponent("rd-codex-\(UUID().uuidString)")
+    let day = home.appendingPathComponent("sessions/2027/01/15")
+    let cwd = home.appendingPathComponent("work/billing-api")
+    try? fm.createDirectory(at: day, withIntermediateDirectories: true)
+    try? fm.createDirectory(at: cwd, withIntermediateDirectories: true)
+    let now = Date()
+    let iso = ISO8601DateFormatter()
+    iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    func stamp(_ ago: TimeInterval) -> String { iso.string(from: now.addingTimeInterval(-ago)) }
+    func meta(_ id: String, subagent: Bool = false) -> String {
+        let source = subagent ? "{\"subagent\":{\"other\":\"review\"}}" : "\"vscode\""
+        // The real first line carries the whole base prompt, tens of kilobytes of it.
+        return "{\"timestamp\":\"\(stamp(3600))\",\"type\":\"session_meta\",\"payload\":{\"id\":\"\(id)\",\"cwd\":\"\(cwd.path)\",\"source\":\(source),\"thread_source\":\"\(subagent ? "subagent" : "user")\",\"base_instructions\":{\"text\":\"\(String(repeating: "x", count: 30_000))\"}}}"
+    }
+    func event(_ type: String, ago: TimeInterval) -> String {
+        "{\"timestamp\":\"\(stamp(ago))\",\"type\":\"event_msg\",\"payload\":{\"type\":\"\(type)\",\"turn_id\":\"t\"}}"
+    }
+    let chatter = "{\"timestamp\":\"\(stamp(1))\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"text\":\"the log said task_complete and then task_started\"}}"
+    func write(_ name: String, _ lines: [String], modifiedAgo: TimeInterval = 0) {
+        let url = day.appendingPathComponent("rollout-\(name).jsonl")
+        try? (lines.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
+        if modifiedAgo > 0 { try? fm.setAttributes([.modificationDate: now.addingTimeInterval(-modifiedAgo)], ofItemAtPath: url.path) }
+    }
+    write("working", [meta("aaaaaaaa-0000-0000-0000-000000000001"), event("task_started", ago: 300), event("task_complete", ago: 200),
+                      event("task_started", ago: 120), chatter])
+    write("done", [meta("bbbbbbbb-0000-0000-0000-000000000002"), event("task_started", ago: 400), event("task_complete", ago: 60), chatter])
+    write("old", [meta("cccccccc-0000-0000-0000-000000000003"), event("task_started", ago: 9000), event("task_complete", ago: 8000)])
+    write("aborted", [meta("dddddddd-0000-0000-0000-000000000004"), event("task_started", ago: 90), event("turn_aborted", ago: 30)])
+    write("sub", [meta("eeeeeeee-0000-0000-0000-000000000005", subagent: true), event("task_started", ago: 50)])
+    write("quiet", [meta("ffffffff-0000-0000-0000-000000000006"), event("task_started", ago: 3000)], modifiedAgo: 1500)
+    try? "{\"id\":\"aaaaaaaa-0000-0000-0000-000000000001\",\"thread_name\":\"Add invoice export\",\"updated_at\":\"x\"}\n"
+        .write(to: home.appendingPathComponent("session_index.jsonl"), atomically: true, encoding: .utf8)
+
+    let running = CodexSource(home: home, alive: { true }).scan(now: now)
+    func state(_ short: String, in list: [AgentSession]) -> AgentState? { list.first { $0.id == "codex:\(short)" }?.state }
+    check("a turn that started and has not ended is working", state("aaaaaaaa", in: running) == .working)
+    check("a turn that ended a minute ago is done; words inside a message are not events", state("bbbbbbbb", in: running) == .done)
+    check("a turn that ended hours ago is not listed", state("cccccccc", in: running) == nil)
+    check("an interrupted turn is not listed", state("dddddddd", in: running) == nil)
+    check("a subagent's thread is not listed", state("eeeeeeee", in: running) == nil)
+    check("a turn with nothing written for a long while has gone quiet", state("ffffffff", in: running) == .stale)
+    check("Codex sessions never show as waiting", !running.contains { $0.state == .waiting })
+    check("the project is a directory name and the source says files", !running.isEmpty && running.allSatisfy { $0.project == "billing-api" && $0.source == "files" })
+    check("the thread's name is picked up", running.first { $0.id == "codex:aaaaaaaa" }?.title == "Add invoice export")
+    let stopped = CodexSource(home: home, alive: { false }).scan(now: now)
+    check("with Codex not running, an unfinished turn is not shown; a finished one still is",
+          state("aaaaaaaa", in: stopped) == nil && state("ffffffff", in: stopped) == nil && state("bbbbbbbb", in: stopped) == .done)
+    check("no Codex directory: nothing", CodexSource(home: home.appendingPathComponent("nope"), alive: { true }).scan().isEmpty)
+    try? fm.removeItem(at: home)
+}
+
+section("Hermes")
+do {
+    let fm = FileManager.default
+    let home = fm.temporaryDirectory.appendingPathComponent("rd-hermes-\(UUID().uuidString)")
+    try? fm.createDirectory(at: home, withIntermediateDirectories: true)
+    let me = ProcessInfo.processInfo.processIdentifier
+    func gateway(_ state: String, pid: Int32, agents: Int) {
+        try? "{\"gateway_state\":\"\(state)\",\"pid\":\(pid),\"active_agents\":\(agents),\"updated_at\":\"2027-01-15T08:00:00.123456+00:00\",\"start_time\":1800000000}"
+            .write(to: home.appendingPathComponent("gateway_state.json"), atomically: true, encoding: .utf8)
+    }
+    let source = HermesSource(home: home)
+    check("no Hermes directory content: nothing", source.scan().isEmpty)
+    gateway("running", pid: me, agents: 0)
+    let idle = source.scan()
+    check("a running gateway with nothing active is idle", idle.count == 1 && idle[0].state == .idle && idle[0].id == "hermes:gateway")
+    check("a timestamp with microseconds is understood", idle.first?.since != nil)
+    gateway("running", pid: me, agents: 2)
+    check("active agents make it working", source.scan().first?.state == .working)
+    gateway("stopped", pid: me, agents: 0)
+    check("a gateway that says it stopped is not listed", source.scan().isEmpty)
+    gateway("running", pid: 999_999, agents: 1)
+    check("a gateway whose process is gone is not listed", source.scan().isEmpty)
+
+    var db: OpaquePointer?
+    let file = home.appendingPathComponent("kanban.db")
+    if sqlite3_open(file.path, &db) == SQLITE_OK {
+        sqlite3_exec(db, """
+            CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT, workspace_path TEXT, worker_pid INTEGER, started_at INTEGER, completed_at INTEGER);
+            INSERT INTO tasks VALUES ('t1', 'Sort the inbox', '/tmp/somewhere/inbox-tools', \(me), 1800000000, NULL);
+            INSERT INTO tasks VALUES ('t2', 'Already done', '', \(me), 1800000000, 1800000100);
+            INSERT INTO tasks VALUES ('t3', 'Worker is gone', '', 999999, 1800000000, NULL);
+            INSERT INTO tasks VALUES ('t4', 'Not started', '', NULL, NULL, NULL);
+            """, nil, nil, nil)
+        sqlite3_close(db)
+    }
+    let tasks = source.scan()
+    check("a kanban task with a live worker is working", tasks.count == 1 && tasks[0].id == "hermes:task-t1" && tasks[0].state == .working)
+    check("its project is a directory name", tasks.first?.project == "inbox-tools" && tasks.first?.title == "Sort the inbox")
+    try? fm.removeItem(at: home)
+}
+
+section("agents in the state document")
+do {
+    let sessions = [
+        AgentSession(id: "claude-code:a", tool: "claude-code", project: "demo-site", title: "A private title", state: .working,
+                     since: agentNow.addingTimeInterval(-30), pid: 4321, source: "official"),
+        AgentSession(id: "codex:b", tool: "codex", project: "billing-api", state: .idle, source: "files"),
+        AgentSession(id: "claude-code:c", tool: "claude-code", project: "docs", state: .waiting, waitingFor: "permission prompt",
+                     since: agentNow.addingTimeInterval(-5), source: "official"),
+    ]
+    let snap = StateSnapshot.make(groups: [], metrics: Metrics(), agents: sessions, now: agentNow, host: "Test Mac")
+    let text = String(decoding: snap.json(), as: UTF8.self)
+    check("most urgent first", snap.agents.map(\.state) == ["waiting", "working", "idle"])
+    check("seconds in the state, when known", snap.agents[1].sinceSec == 30 && snap.agents[2].sinceSec == nil)
+    check("what it waits for is carried", snap.agents[0].waitingFor == "permission prompt")
+    check("no title leaves this Mac", !text.contains("A private title"))
+    check("no process id for agent sessions", !text.contains("4321"))
+    check("the session that most needs attention", sessions.top?.id == "claude-code:c" && sessions.count(.working) == 1)
+    check("idle sessions alone need no attention", [sessions[1]].top == nil)
+    let empty = String(decoding: StateSnapshot.make(groups: [], metrics: Metrics(), now: agentNow, host: "Test Mac").json(), as: UTF8.self)
+    check("no agents is an empty list, not a missing field", empty.contains("\"agents\":[]"))
+    check("tool names for display", AgentTool.displayName("claude-code") == "Claude Code" && AgentTool.displayName("something-else") == "something-else")
+}
 
 // MARK: HTTP parsing and the Host check
 

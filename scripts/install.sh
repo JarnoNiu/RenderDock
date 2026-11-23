@@ -28,4 +28,5 @@ if [[ "${1:-}" == "--login" || $WAS_ON == 1 ]]; then
   "$BIN" --login on
 fi
 open "$DEST"
+echo "Command line: $DEST/Contents/Helpers/renderdock  (to use it as \`renderdock\`: ln -s \"$DEST/Contents/Helpers/renderdock\" /usr/local/bin/renderdock, or add an alias)"
 echo "Launched. Launch at Login: $("$BIN" --login status)"

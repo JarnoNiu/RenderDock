@@ -5,7 +5,8 @@ import Foundation
 package final class TaskScanner {
     package init() {}
 
-    private enum LeafKind { case blender, composite, ffmpeg }
+    /// `reported`: a job that is not a Blender render but tells us about itself (it was started with `renderdock run`).
+    private enum LeafKind { case blender, composite, ffmpeg, reported }
 
     private struct Leaf {
         let proc: Proc
@@ -29,6 +30,11 @@ package final class TaskScanner {
     private var frameCache: [String: (at: Date, stats: FrameStats)] = [:]
     private var mp4Cache: [String: (mtime: Date, seconds: Double?, fps: Double?)] = [:]
     private var anchorsCache: [String: (mtime: Date, frames: Int?)] = [:]
+    /// Reports written by wrapped jobs, by pid, as of this scan.
+    private var reports: [Int32: JobReport] = [:]
+    private var previousGroups: [RenderGroup] = []
+    /// How the jobs that disappeared in the latest scan ended, for those that reported it. Keyed by group id.
+    package private(set) var lastEnded: [String: JobOutcome] = [:]
 
     private static let shells: Set<String> = ["zsh", "bash", "sh", "dash", "fish"]
     private static let imageExts: Set<String> = ["png", "jpg", "jpeg", "exr", "tif", "tiff", "webp", "bmp", "tga"]
@@ -66,6 +72,14 @@ package final class TaskScanner {
             leaves.append(Leaf(proc: f, kind: .ffmpeg))
         }
 
+        // Jobs that report on themselves. Each report is matched by pid and start time, so a recycled pid is not mistaken for it.
+        reports = Dictionary(ReportStore.all().map { ($0.pid, $0) }, uniquingKeysWith: { a, _ in a })
+        let known = Set(leaves.map(\.proc.pid))
+        for (pid, r) in reports where r.exitCode == nil && !known.contains(pid) {
+            guard let p = snap.table[pid], report(for: p) != nil, compositePids.isDisjoint(with: [pid]) else { continue }
+            leaves.append(Leaf(proc: p, kind: .reported))
+        }
+
         // 2. From each leaf, walk up to the outermost script; that is the job group
         var leavesByRoot: [Int32: [Leaf]] = [:]
         for leaf in leaves {
@@ -94,9 +108,31 @@ package final class TaskScanner {
             groups.append(buildGroup(root: rootProc, leaves: rootLeaves, snap: snap, now: now))
         }
         cpuPrev = cpuPrev.filter { snap.table[$0.key] != nil }
-        return groups.sorted {
+        let sorted = groups.sorted {
             $0.state.rawValue != $1.state.rawValue ? $0.state.rawValue < $1.state.rawValue : $0.startedAt < $1.startedAt
         }
+        lastEnded = outcomes(ofGroupsMissingFrom: sorted)
+        previousGroups = sorted
+        return sorted
+    }
+
+    /// For jobs that were there last scan and are gone now: their exit status, where a wrapper recorded one.
+    /// The wrapper writes it a moment after its child exits, so a report that is still open gets a short grace period.
+    private func outcomes(ofGroupsMissingFrom current: [RenderGroup]) -> [String: JobOutcome] {
+        let alive = Set(current.map(\.id))
+        var result: [String: JobOutcome] = [:]
+        for group in previousGroups where !alive.contains(group.id) {
+            let pids = group.items.compactMap(\.pid).filter { reports[$0] != nil }
+            guard !pids.isEmpty else { continue }
+            var codes: [Int32] = []
+            for attempt in 0..<8 {
+                codes = pids.compactMap { ReportStore.read(pid: $0)?.exitCode }
+                if codes.count == pids.count { break }
+                if attempt < 7 { Thread.sleep(forTimeInterval: 0.2) }
+            }
+            if !codes.isEmpty { result[group.id] = JobOutcome(exitCode: codes.first { $0 != 0 } ?? 0) }
+        }
+        return result
     }
 
     // MARK: Job groups
@@ -194,7 +230,9 @@ package final class TaskScanner {
         }
 
         let scriptName = scriptPath.map { ($0 as NSString).lastPathComponent }
-        let title = note.map(Self.shortTitle) ?? scriptName ?? items.first?.name ?? root.name
+        var title = note.map(Self.shortTitle) ?? scriptName ?? items.first?.name ?? root.name
+        // A single job that was given a name (`renderdock run --name …`) is called that.
+        if items.count == 1, let leaf = leaves.first, let given = report(for: leaf.proc)?.name { title = given }
         let keepAwake = ([root.pid] + desc).contains { snap.table[$0]?.name == "caffeinate" }
         let home = leaves.first.map { snap.cwd($0.proc.pid) } ?? rootCwd
         return RenderGroup(
@@ -223,7 +261,8 @@ package final class TaskScanner {
         switch leaf.kind {
         case .blender:
             let plan = blenderPlan(a, cwd: cwd)
-            if let out = plan.outDir, isDirectory(out) {
+            let rep = report(for: p)
+            if let out = plan.outDir ?? rep?.outDir, isDirectory(out) {
                 item.outDir = out
                 let st = frameStats(out, since: p.start, now: now, only: plan.frames)
                 item.framesDone = st.done
@@ -240,6 +279,10 @@ package final class TaskScanner {
                     item.framesTotal = est
                     item.totalIsEstimate = true
                 }
+            }
+            if let rep {
+                // Started with `renderdock run`: the job's own count is exact, whatever the command line says.
+                apply(rep, to: &item)
             }
             if p.stopped {
                 item.state = .paused
@@ -269,10 +312,37 @@ package final class TaskScanner {
                 item.secPerFrame = fresh ? st.secPerFrame : nil
             }
 
+        case .reported:
+            if let rep = report(for: p) {
+                apply(rep, to: &item)
+                if let out = rep.outDir, isDirectory(out) {
+                    item.outDir = out
+                    item.latestFrame = frameStats(out, since: p.start, now: now).latest
+                }
+            }
+            item.state = p.stopped ? .paused : .rendering
+
         case .ffmpeg:
             item.state = p.stopped ? .paused : .encoding
             if let last = a.last, !last.hasPrefix("-") { item.outDir = (resolve(last, cwd) as NSString).deletingLastPathComponent }
         }
+    }
+
+    private func report(for p: Proc) -> JobReport? {
+        guard let r = reports[p.pid], abs(p.start.timeIntervalSince1970 - r.startedAt) < 10 else { return nil }
+        return r
+    }
+
+    private func apply(_ rep: JobReport, to item: inout RenderItem) {
+        item.framesDone = rep.done
+        if let total = rep.total {
+            item.framesTotal = total
+            item.totalIsEstimate = false
+        }
+        item.sampleDone = rep.sampleDone
+        item.sampleTotal = rep.sampleTotal
+        if item.secPerFrame == nil { item.secPerFrame = rep.secPerFrame }
+        if item.lastFrameAt == nil, let last = rep.recent.last { item.lastFrameAt = Date(timeIntervalSince1970: last) }
     }
 
     /// Frames in the output directory, deduplicated by frame number (one frame may have several images: beauty, shadow, …).
@@ -438,12 +508,25 @@ package final class TaskScanner {
 
     private func root(of p: Proc, _ snap: ProcSnapshot) -> Proc {
         var root = p
+        var cur = p
         var hops = 0
-        while hops < 16, let parent = snap.table[root.ppid], parent.pid > 1, isScriptHost(parent, snap) {
-            root = parent
+        while hops < 16, let parent = snap.table[cur.ppid], parent.pid > 1 {
+            if isScriptHost(parent, snap) {
+                root = parent
+            } else if !isWrapper(parent, snap) {
+                break
+            }
+            cur = parent
             hops += 1
         }
         return root
+    }
+
+    /// `renderdock run -- …` sits between a script and its render. It is looked through, never shown as the job itself.
+    private func isWrapper(_ p: Proc, _ snap: ProcSnapshot) -> Bool {
+        let name = p.name.lowercased()
+        guard name == "renderdock" || name == "renderdock-cli" else { return false }
+        return snap.args(p.pid).dropFirst().first == "run"
     }
 
     /// A shell / node / python that is running a script file. One-off commands such as `zsh -c "…"` (tool wrappers) don't count.
@@ -501,6 +584,8 @@ package final class TaskScanner {
 
     private func leafName(_ leaf: Leaf, _ snap: ProcSnapshot) -> String {
         let a = snap.args(leaf.proc.pid)
+        if let given = report(for: leaf.proc)?.name { return given }   // `renderdock run --name …`
+        if leaf.kind == .reported { return leaf.proc.name }
         if let sc = Self.argValue(a, ["--scene"]) {
             return Self.specName((sc, Self.argValue(a, ["--shot"]) ?? sc))
         }

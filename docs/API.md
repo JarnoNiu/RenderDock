@@ -91,6 +91,7 @@ curl -s http://127.0.0.1:47600/v1/state
 | `fraction` | 0–1. Present only when a total is known |
 | `exact` | `true` when `framesTotal` is exact (from `render-progress.json` or the command line). `false` when it is an estimate or unknown. **Show `≈` or no percentage when this is false** |
 | `etaSec` | Seconds left for this shot. Present only while it is running with a known total and a measured frame time |
+| `sampleDone`, `sampleTotal` | Samples of the frame in progress, when the job reports them. `fraction` already includes that part of the frame |
 | job `state` | `running`, `stalled`, `paused`, `queued` |
 | shot `state` | `rendering`, `compositing`, `finishing`, `encoding`, `starting`, `paused`, `stalled`, `pending`, `done` |
 | `metrics.cpu`, `metrics.gpu` | 0–1 |
@@ -110,9 +111,10 @@ A [server-sent events](https://html.spec.whatwg.org/multipage/server-sent-events
 | `shot.done` | A shot in a queue finishes | The same, plus `shot` |
 | `job.stalled` | No new frame for much longer than usual | |
 | `job.paused`, `job.resumed` | The job's processes were stopped or continued | |
-| `job.ended` | The job's processes are gone | |
+| `job.ended` | The job's processes are gone | Plus `outcome` (`finished` or `failed`) and `exitCode` when the job was started with `renderdock run` |
+| `all.ended` | The last job has gone: nothing is rendering or queued | `{type, at}`, the other fields are empty |
 
-`job.ended` is deliberately not called "done": from the outside, RenderDock cannot tell a finished render from a crashed one. Jobs that were already running when RenderDock started are not announced as `job.started`.
+`job.ended` is deliberately not called "done": from the outside, RenderDock cannot tell a finished render from a crashed one. A job started through the wrapper records its exit status, and then the event says which it was ([EXACT-PROGRESS.md](EXACT-PROGRESS.md)). Jobs that were already running when RenderDock started are not announced as `job.started`.
 
 ```bash
 curl -N http://127.0.0.1:47600/v1/events

@@ -43,6 +43,9 @@ package struct RenderItem: Identifiable, Equatable {
     package var cpuCores: Double?
     package var memBytes: UInt64?
     package var startedAt: Date?
+    /// Progress inside the current frame, when the job reports it (samples done / samples per frame).
+    package var sampleDone: Int?
+    package var sampleTotal: Int?
 
     package init(id: String, name: String, state: ItemState) {
         self.id = id
@@ -52,7 +55,10 @@ package struct RenderItem: Identifiable, Equatable {
 
     package var fraction: Double? {
         guard let d = framesDone, let t = framesTotal, t > 0 else { return nil }
-        return min(1, Double(d) / Double(t))
+        var done = Double(d)
+        // Count the part of the current frame that is already sampled, so a long frame still moves the bar.
+        if d < t, let sd = sampleDone, let st = sampleTotal, st > 0 { done += min(1, Double(sd) / Double(st)) }
+        return min(1, done / Double(t))
     }
 
     /// Time remaining (seconds). Only available while running, with a known total and a known time per frame.

@@ -8,6 +8,9 @@ mkdir -p build
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/RenderDock "$APP/Contents/MacOS/RenderDock"
+# The command line lives in Helpers: on a case-insensitive disk `renderdock` cannot sit next to `RenderDock` in MacOS/.
+mkdir -p "$APP/Contents/Helpers"
+cp .build/release/renderdock-cli "$APP/Contents/Helpers/renderdock"
 # The app draws its own icon: render a 1024 px PNG, then convert it to icns
 ICON=build/AppIcon.icns
 if [ ! -f "$ICON" ]; then
@@ -42,5 +45,6 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
+codesign --force --sign - "$APP/Contents/Helpers/renderdock" 2>&1 | grep -v "replacing existing signature" || true
 codesign --force --sign - "$APP" 2>&1 | grep -v "replacing existing signature" || true
 echo "Built $PWD/$APP"

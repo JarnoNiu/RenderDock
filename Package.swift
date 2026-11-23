@@ -18,6 +18,14 @@ let package = Package(
             path: "Sources/RenderDock",
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
+        // The command line: `renderdock run -- <command>` and `renderdock status`. Built as renderdock-cli because
+        // on a case-insensitive disk it cannot sit next to the app's own RenderDock binary; installed as `renderdock`.
+        .executableTarget(
+            name: "renderdock-cli",
+            dependencies: ["RenderDockCore"],
+            path: "Sources/renderdock-cli",
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
         // Self-contained checks for the core (`swift run rd-checks`). Plain executable so it runs with
         // the Command Line Tools alone, where XCTest and Swift Testing are not on the default search path.
         .executableTarget(

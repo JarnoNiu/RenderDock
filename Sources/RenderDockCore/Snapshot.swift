@@ -37,6 +37,9 @@ package struct StateSnapshot: Codable, Equatable {
         package var secPerFrame: Double?
         package var etaSec: Int?
         package var pid: Int32?
+        /// Samples done / samples per frame of the frame in progress, when the job reports it.
+        package var sampleDone: Int?
+        package var sampleTotal: Int?
     }
 
     package struct Job: Codable, Equatable {
@@ -85,7 +88,8 @@ package struct StateSnapshot: Codable, Equatable {
         func shot(_ i: RenderItem) -> Shot {
             Shot(id: i.id, name: i.name, state: i.state.wireName, framesDone: i.framesDone, framesTotal: i.framesTotal,
                  fraction: i.fraction.map(round3), exact: i.framesTotal != nil && !i.totalIsEstimate,
-                 secPerFrame: i.secPerFrame.map(round3), etaSec: i.eta.map { Int($0.rounded()) }, pid: i.pid)
+                 secPerFrame: i.secPerFrame.map(round3), etaSec: i.eta.map { Int($0.rounded()) }, pid: i.pid,
+                 sampleDone: i.sampleDone, sampleTotal: i.sampleTotal)
         }
         let jobs = groups.map { g in
             Job(id: g.id, title: g.title, project: g.project, script: g.script, state: g.state.wireName,

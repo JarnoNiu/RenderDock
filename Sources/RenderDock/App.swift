@@ -60,6 +60,26 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         let where_ = store.apiPort.map { "（127.0.0.1:\($0)）" } ?? ""
         let whereEn = store.apiPort.map { " (127.0.0.1:\($0))" } ?? ""
         add(menu, L("本机接口\(where_)", "Local API\(whereEn)"), #selector(toggleAPI), on: store.apiEnabled)
+
+        // Notifications
+        let notify = NSMenuItem(title: L("通知", "Notifications"), action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        add(sub, L("在这台 Mac 上通知", "Notify on This Mac"), #selector(toggleSystemNotifications), on: store.notifier.systemEnabled)
+        let channels = store.notifier.activeChannels
+        let info = NSMenuItem(title: channels.isEmpty
+            ? L("手机推送：还没有设置", "Phone push: not set up")
+            : L("手机推送：\(channels.map(\.type).joined(separator: "、"))", "Phone push: \(channels.map(\.type).joined(separator: ", "))"), action: nil, keyEquivalent: "")
+        info.isEnabled = false
+        sub.addItem(info)
+        if let error = store.notifier.lastError {
+            let failed = NSMenuItem(title: L("上次推送没成功：\(error)", "Last push failed: \(error)"), action: nil, keyEquivalent: "")
+            failed.isEnabled = false
+            sub.addItem(failed)
+        }
+        add(sub, L("编辑推送设置…", "Edit Push Settings…"), #selector(editPushSettings))
+        add(sub, L("发送测试通知", "Send a Test Notification"), #selector(sendTestNotification))
+        notify.submenu = sub
+        menu.addItem(notify)
         let login = NSMenuItem(title: LoginItem.installed ? L("登录时启动", "Launch at Login") : L("登录时启动（要先装到「应用程序」）", "Launch at Login (install to Applications first)"),
                                action: LoginItem.installed ? #selector(toggleLogin) : nil, keyEquivalent: "")
         login.target = self
@@ -90,6 +110,22 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc private func resetPosition() { panel?.resetPosition() }
     @objc private func toggleAwake() { store.keepAwakeWhileRendering.toggle() }
     @objc private func toggleAPI() { store.apiEnabled.toggle() }
+    @objc private func editPushSettings() { store.notifier.openSettings() }
+    @objc private func sendTestNotification() { store.notifier.sendTest() }
+
+    @objc private func toggleSystemNotifications() {
+        let turnOn = !store.notifier.systemEnabled
+        store.notifier.setSystemEnabled(turnOn) { allowed in
+            guard turnOn, !allowed else { return }
+            // macOS said no (or was told no earlier): say where to change that.
+            let alert = NSAlert()
+            alert.messageText = L("系统没有允许渲染坞发通知", "macOS is not allowing RenderDock to send notifications")
+            alert.informativeText = L("到「系统设置 → 通知 → RenderDock」里打开「允许通知」，再回来勾选这一项。",
+                                      "Turn on Allow Notifications under System Settings → Notifications → RenderDock, then tick this item again.")
+            NSApp.activate(ignoringOtherApps: true)
+            alert.runModal()
+        }
+    }
 
     @objc private func toggleLogin() {
         do {
@@ -168,6 +204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case "collapse": panel.setExpanded(false)
         case "reset": panel.resetPosition()
         case "pin": store.pinned = arg == "on" ? true : (arg == "off" ? false : !store.pinned)
+        case "notify-test": store.notifier.sendTest()
         case "shot": panel.debugShot(arg)
         case "state":
             if let data = try? JSONSerialization.data(withJSONObject: panel.debugState(), options: [.prettyPrinted, .sortedKeys]) {

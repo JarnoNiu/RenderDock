@@ -398,6 +398,7 @@ private struct ItemRow: View {
         } else if item.state == .paused, item.pid == nil {
             d.append(L("这一路整条被暂停", "whole stream paused"))
         }
+        if item.state == .rendering, let sd = item.sampleDone, let st = item.sampleTotal { d.append(L("采样 \(sd)/\(st)", "sample \(sd)/\(st)")) }
         if let s = item.secPerFrame { d.append(Fmt.secPerFrame(s)) }
         if let e = item.eta { d.append(L("剩约 \(Fmt.duration(e))", "~\(Fmt.duration(e)) left")) }
         return d

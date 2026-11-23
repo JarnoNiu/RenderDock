@@ -11,6 +11,8 @@ package struct RenderEvent: Codable, Equatable {
         /// The job's processes are gone. RenderDock cannot tell success from failure from the outside,
         /// so this is deliberately not called "done".
         case jobEnded = "job.ended"
+        /// The last job has gone: nothing is rendering or queued any more.
+        case allEnded = "all.ended"
     }
 
     package var type: Kind
@@ -19,7 +21,22 @@ package struct RenderEvent: Codable, Equatable {
     package var project: String
     /// Set for `shot.done`.
     package var shot: String?
+    /// Set for `job.ended` when the job was started with `renderdock run`: "finished" (exit status 0) or "failed".
+    package var outcome: String?
+    package var exitCode: Int32?
     package var at: String
+
+    package init(type: Kind, jobId: String, jobTitle: String, project: String, shot: String? = nil,
+                 outcome: String? = nil, exitCode: Int32? = nil, at: String) {
+        self.type = type
+        self.jobId = jobId
+        self.jobTitle = jobTitle
+        self.project = project
+        self.shot = shot
+        self.outcome = outcome
+        self.exitCode = exitCode
+        self.at = at
+    }
 
     package func json() -> Data {
         let encoder = JSONEncoder()
@@ -37,7 +54,8 @@ package struct EventDetector {
 
     /// The first call only records what is already running: jobs that were there before RenderDock
     /// started looking are not announced as "started".
-    package mutating func update(_ groups: [RenderGroup], now: Date = Date()) -> [RenderEvent] {
+    /// `outcomes`: how jobs that have just disappeared ended, by job id, where that is known.
+    package mutating func update(_ groups: [RenderGroup], now: Date = Date(), outcomes: [String: JobOutcome] = [:]) -> [RenderEvent] {
         defer {
             previous = Dictionary(groups.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
             primed = true
@@ -45,7 +63,7 @@ package struct EventDetector {
         guard primed else { return [] }
         let at = ISO8601DateFormatter().string(from: now)
         func event(_ kind: RenderEvent.Kind, _ g: RenderGroup, shot: String? = nil) -> RenderEvent {
-            RenderEvent(type: kind, jobId: g.id, jobTitle: g.title, project: g.project, shot: shot, at: at)
+            RenderEvent(type: kind, jobId: g.id, jobTitle: g.title, project: g.project, shot: shot, outcome: nil, exitCode: nil, at: at)
         }
         var events: [RenderEvent] = []
         var seen = Set<String>()
@@ -68,8 +86,16 @@ package struct EventDetector {
                 }
             }
         }
-        for (id, old) in previous where !seen.contains(id) {
-            events.append(event(.jobEnded, old))
+        for (id, old) in previous.sorted(by: { $0.key < $1.key }) where !seen.contains(id) {
+            var e = event(.jobEnded, old)
+            if let o = outcomes[id] {
+                e.outcome = o.finished ? "finished" : "failed"
+                e.exitCode = o.exitCode
+            }
+            events.append(e)
+        }
+        if groups.isEmpty, !previous.isEmpty {
+            events.append(RenderEvent(type: .allEnded, jobId: "", jobTitle: "", project: "", shot: nil, outcome: nil, exitCode: nil, at: at))
         }
         return events
     }

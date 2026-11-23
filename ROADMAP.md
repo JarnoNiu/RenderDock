@@ -73,13 +73,13 @@ Every gap below has a home in the plan that follows.
 
 ### 0.2 — know the real number, and say when it is done · target December 2026
 
-- [ ] `renderdock run -- <command>`: a wrapper that runs your command unchanged, reads the renderer's own frame output and writes `render-progress.json`
+- [x] `renderdock run -- <command>`: a wrapper that runs your command unchanged and reads the renderer's own frame output — see [docs/EXACT-PROGRESS.md](docs/EXACT-PROGRESS.md) *(done 2026-11-24, unreleased)*
 - [ ] A small Blender add-on that writes progress after every frame, for people who render from the UI or from their own scripts
 - [ ] Follow the log file when a render's output is redirected to one, reading Blender's own frame lines (the 4.x and the 5.x formats differ)
 - [ ] Read the frame range stored in the `.blend` when it is not on the command line
-- [ ] Progress inside a frame, so a ten-minute frame still moves
-- [ ] macOS notifications: shot done, queue done, stalled, failed
-- [ ] Phone notifications through services people already use (a webhook with ready-made templates)
+- [x] Progress inside a frame, so a ten-minute frame still moves *(through the wrapper; done 2026-11-24, unreleased)*
+- [x] macOS notifications: job ended (finished or failed when wrapped), stalled, queue empty — see [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md) *(done 2026-11-24, unreleased; banner delivery not yet confirmed by hand)*
+- [x] Phone notifications: Bark, ntfy, Feishu, WeCom, DingTalk, Telegram and a generic webhook *(done 2026-11-24, unreleased; checked against a local stand-in, not the real services)*
 - [ ] Adapter rules in a file instead of in code: what a process looks like, where its output is, where the total comes from
 - [x] A local, read-only API on `127.0.0.1`: `GET /v1/state`, an event stream, and `--status --json` — see [docs/API.md](docs/API.md) *(done 2026-11-24, unreleased)*
 - [x] Split the scanner from the UI (`RenderDockCore`) and give it checks: `swift run rd-checks`, 74 checks *(done 2026-11-24, unreleased)*

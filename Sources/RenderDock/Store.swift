@@ -75,6 +75,8 @@ final class Store {
     var apiPort: UInt16?
     @ObservationIgnored private let api = LocalAPIServer()
     @ObservationIgnored private var detector = EventDetector()
+    /// Notifications on this Mac and through the channels in notify.json.
+    @ObservationIgnored let notifier = Notifier()
 
     private func applyAPI() {
         if apiEnabled {
@@ -91,8 +93,9 @@ final class Store {
     }
 
     /// Hand the latest state to the API. The detector runs on every scan so it always has the previous one.
-    func publish() {
-        let events = detector.update(groups, now: now)
+    func publish(outcomes: [String: JobOutcome] = [:]) {
+        let events = detector.update(groups, now: now, outcomes: outcomes)
+        notifier.handle(events)
         guard apiEnabled else { return }
         api.publish(state: StateSnapshot.make(groups: groups, metrics: metrics, now: now).json(), events: events)
     }
@@ -182,6 +185,7 @@ final class Store {
         work.async { [weak self] in
             guard let self else { return }
             let g = self.scanner.scan()
+            let ended = self.scanner.lastEnded   // how jobs that just disappeared ended, where a wrapper recorded it
             // Rebuild a thumbnail only when the latest frame has changed
             var fresh: [String: NSImage] = [:]
             var sources: [String: String] = [:]
@@ -203,7 +207,7 @@ final class Store {
                 self.thumbSource = self.thumbSource.filter { sources[$0.key] != nil }
                 self.thumbs = t
                 self.updateAwake()
-                self.publish()
+                self.publish(outcomes: ended)
                 self.onChange?()
             }
         }

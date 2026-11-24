@@ -1,0 +1,11 @@
+# The 16 MB of flash on the Waveshare ESP32-S3-Touch-AMOLED-2.16.
+# "nvs" keeps what the device remembers (the computers it is paired with); it stays where the stock layout has it,
+# so a board flashed with the earlier layout keeps its pairing. "fonts" holds the drawn letters
+# (tools/make-fonts.swift writes the file, tools/flash-fonts.sh puts it there); the program maps it into memory.
+# Name,    Type, SubType,  Offset,   Size
+nvs,       data, nvs,      0x9000,   0x5000
+otadata,   data, ota,      0xe000,   0x2000
+app0,      app,  ota_0,    0x10000,  0x300000
+fonts,     data, 0x40,     0x310000, 0xC00000
+spare,     data, spiffs,   0xF10000, 0xE0000
+coredump,  data, coredump, 0xFF0000, 0x10000

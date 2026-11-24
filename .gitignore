@@ -3,3 +3,10 @@ build/
 .DS_Store
 *.xcodeproj
 .swiftpm/
+
+# Firmware build output
+firmware/**/.pio/
+# Copies of a board's original firmware: never commit someone else's binary
+firmware/backups/
+# Fonts are fetched by firmware/desk-display/tools/fetch-fonts.sh, and what is generated from them is rebuilt
+firmware/desk-display/fonts/

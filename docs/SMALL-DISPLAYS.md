@@ -1,6 +1,6 @@
 # For small displays
 
-> Part of 0.3, which is still in development.
+> New in 0.3.
 
 A light, a strip of LEDs, a two-line screen: none of them can show a list of jobs and sessions. So the state document carries a summary made for them. Whatever the display, it reads the same few fields from `summary` in `GET /v1/state` (see [API.md](API.md)).
 

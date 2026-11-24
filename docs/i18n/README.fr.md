@@ -63,6 +63,8 @@ CPU, utilisation et mémoire du GPU, mémoire et pression mémoire, température
 
 Nouveautés de la version 0.2 : une progression exacte pour n'importe quel rendu grâce à [`renderdock run`](../EXACT-PROGRESS.md), des [notifications](../NOTIFICATIONS.md) sur le Mac et sur votre téléphone quand une tâche se termine, échoue ou se bloque, et une [API locale](../API.md) pour que d'autres afficheurs puissent montrer la même progression. Ces trois documents n'existent pour l'instant qu'en anglais.
 
+Nouveautés de la version 0.3 : un [historique](../HISTORY.md) avec des estimations du temps restant pour toute une file, les [sessions des agents de programmation](../AGENT-TASKS.md) affichées à côté de vos rendus, une vraie progression pour les [encodages ffmpeg](../EXACT-PROGRESS.md#ffmpeg-from-03) et la file d'attente de [ComfyUI](../COMFYUI.md). D'autres fonctions restent désactivées tant que vous ne les activez pas : [répondre à la demande d'autorisation d'un agent](../ANSWERING-AGENTS.md) depuis le panneau, un [petit écran Bluetooth pour le bureau](../DEVICES.md) avec un [firmware ouvert](../../firmware/desk-display/README.md) pour une carte, une [entrée pour les autres programmes](../AGENT-ENTRY.md), afin que n'importe quel script ou agent puisse envoyer un avis, indiquer sa progression ou vous poser une question, et [MQTT](../MQTT.md) pour Home Assistant. Deux [exemples](../../examples) s'appuient sur l'API locale : un ruban LED en guise de barre de progression et une touche de Stream Deck. Ces documents n'existent pour l'instant qu'en anglais.
+
 ## Démarrage rapide
 
 Prérequis : macOS 14 ou version ultérieure, et la chaîne d'outils Swift 6 (Xcode 16 ou version ultérieure, ou simplement les Command Line Tools : `xcode-select --install`).
@@ -139,7 +141,7 @@ Tout ce qui peut écrire un fichier peut signaler sa progression de cette façon
 
 ## Ce que RenderDock ne fait pas
 
-- L'application est en **lecture seule** : elle n'envoie aucun signal et n'écrit jamais dans vos dossiers de rendu. Elle n'établit aucune connexion réseau, sauf si vous ajoutez un canal de notification, et l'API locale facultative n'écoute que sur `127.0.0.1`.
+- L'application **ne touche jamais à vos rendus** : elle ne leur envoie aucun signal et n'écrit jamais dans vos dossiers de rendu. Tout ce qui va au-delà de l'observation reste désactivé tant que vous ne l'activez pas : les canaux de notification, l'API locale (sur `127.0.0.1` uniquement), le Bluetooth pour un écran de bureau, la réponse aux demandes des agents, l'entrée pour les autres programmes et MQTT. Elle n'établit aucune connexion réseau, sauf si vous ajoutez un canal de notification ou un broker MQTT.
 - Il n'y a pas encore de boutons pause, reprise ou arrêt. Les scripts de file d'attente gèrent souvent `STOP`/`CONT` eux-mêmes, et deux mains sur le même interrupteur, c'est une mauvaise idée.
 - Si ni le dossier de sortie ni la plage d'images ne figurent sur la ligne de commande, la tâche apparaît quand même, avec le CPU, la mémoire et le temps écoulé, mais sans les images.
 - La température du SoC est lue sur les capteurs IOHID, une interface privée disponible sur les puces Apple. Sur les Mac Intel, ou après une mise à jour système qui déplace les capteurs, la tuile affiche `–`. La vitesse des ventilateurs et la puissance consommée ne sont pas lues.
@@ -152,9 +154,8 @@ La liste complète de ce qui reste à faire, avec un calendrier, se trouve dans 
 
 En bref (des projets, pas des promesses) :
 
-- Au-delà de Blender : encodages ffmpeg et ComfyUI, avec une vraie progression
-- Un historique : la durée réelle des plans, et de meilleures estimations du temps restant à partir de là
-- Les premiers afficheurs matériels : un ruban LED en guise de barre de progression, une touche de Stream Deck, un petit écran à bouton rotatif
+- Y accéder depuis le réseau : l'API protégée par un jeton, l'écran de bureau en Wi-Fi
+- D'autres moteurs de rendu avec leur propre progression
 - Des contrôles facultatifs : pause, reprise, baisse de priorité
 - Des versions signées et notarisées, Homebrew, davantage de langues d'interface
 
@@ -164,14 +165,14 @@ En bref (des projets, pas des promesses) :
 |---|---|
 | `zsh scripts/build-app.sh` | Compile `build/RenderDock.app` (signature ad hoc ; l'icône est dessinée par l'application elle-même) |
 | `zsh scripts/install.sh [--login]` | Compile, installe dans `/Applications`, relance |
-| `swift run rd-checks` | Vérifie le cœur de l'application : parsing, événements, API, notifications (132 vérifications) |
+| `swift run rd-checks` | Vérifie le cœur de l'application : parsing, événements, API, notifications, agents, protocole des appareils (534 vérifications) |
 | `.build/release/RenderDock --dump` | Affiche en texte les tâches détectées et les indicateurs, sans interface |
 | `.build/release/RenderDock --snapshot DOSSIER [--demo]` | Génère la capsule et le panneau en PNG |
 | `zsh scripts/make-demo.sh` | Régénère les captures d'écran et le GIF dans `assets/` |
 | `zsh scripts/fake-render.sh [images] [s/image]` | Un faux rendu pour tester la détection |
 | `python3 scripts/verify-interactions.py <binaire>` | Injecte des clics et des glissements dans une instance lancée avec `--debug` et vérifie le déploiement, le repli et l'aimantation (12 vérifications) |
 
-Le code est du Swift et du SwiftUI tout simples, avec AppKit pour la fenêtre : environ 5 000 lignes, aucun paquet. Voir [CONTRIBUTING.md](../../CONTRIBUTING.md).
+Le code est du Swift et du SwiftUI tout simples, avec AppKit pour la fenêtre : environ 9 000 lignes, aucun paquet. Voir [CONTRIBUTING.md](../../CONTRIBUTING.md).
 
 ## Remerciements
 

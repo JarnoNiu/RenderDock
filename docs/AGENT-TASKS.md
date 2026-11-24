@@ -1,6 +1,6 @@
 # Coding agents' sessions
 
-> Part of 0.3, which is still in development.
+> New in 0.3.
 
 A render is not the only long job on a Mac. From 0.3 on, RenderDock also shows what the coding agents on this Mac are doing: which sessions are working, which have just finished, and which are waiting for you.
 

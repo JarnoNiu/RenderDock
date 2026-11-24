@@ -63,6 +63,8 @@ También incluye un elemento en la barra de menús con un anillo de progreso, un
 
 Novedades de la versión 0.2: progreso exacto para cualquier render mediante [`renderdock run`](../EXACT-PROGRESS.md), [notificaciones](../NOTIFICATIONS.md) en el Mac y en el teléfono cuando un trabajo termina, falla o se atasca, y una [API local](../API.md) para que otros dispositivos puedan mostrar el mismo progreso. Estos tres documentos están, por ahora, solo en inglés.
 
+Novedades de la versión 0.3: un [historial](../HISTORY.md) con estimaciones del tiempo restante para toda una cola; las [sesiones de los agentes de programación](../AGENT-TASKS.md) junto a tus renders; progreso real para las [codificaciones con ffmpeg](../EXACT-PROGRESS.md#ffmpeg-from-03), y la cola de [ComfyUI](../COMFYUI.md). Hay más cosas que permanecen desactivadas hasta que las actives: [responder a la petición de permiso de un agente](../ANSWERING-AGENTS.md) desde el panel, una [pequeña pantalla Bluetooth para el escritorio](../DEVICES.md) con [firmware abierto](../../firmware/desk-display/README.md) para una placa, una [entrada para otros programas](../AGENT-ENTRY.md), para que cualquier script o agente pueda enviar un aviso, informar de su progreso o hacerte una pregunta, y [MQTT](../MQTT.md) para Home Assistant. Dos [ejemplos](../../examples) se apoyan en la API local: una tira LED como barra de progreso y una tecla de Stream Deck. Estos documentos están, por ahora, solo en inglés.
+
 ## Inicio rápido
 
 Requisitos: macOS 14 o posterior y la cadena de herramientas de Swift 6 (Xcode 16 o posterior, o solo las Command Line Tools: `xcode-select --install`).
@@ -139,7 +141,7 @@ Cualquier cosa que pueda escribir un archivo puede informar de su progreso así,
 
 ## Lo que no hace
 
-- Es de **solo lectura**: no envía señales y nunca escribe en tus carpetas de render. No establece conexiones de red a menos que añadas un canal de notificaciones, y la API local opcional solo escucha en `127.0.0.1`.
+- **Nunca toca tus renders**: no les envía señales y nunca escribe en tus carpetas de render. Todo lo que va más allá de observar está desactivado hasta que lo actives: los canales de notificaciones, la API local (solo en `127.0.0.1`), el Bluetooth para una pantalla de escritorio, responder a las peticiones de los agentes, la entrada para otros programas y MQTT. No establece conexiones de red a menos que añadas un canal de notificaciones o un broker MQTT.
 - Todavía no hay botones para pausar, reanudar ni detener. Los scripts de cola suelen gestionar `STOP`/`CONT` por sí mismos, y dos manos sobre el mismo interruptor son mala idea.
 - Si ni la carpeta de salida ni el rango de fotogramas están en la línea de comandos, el trabajo aparece igualmente, con CPU, memoria y tiempo transcurrido, pero sin fotogramas.
 - La temperatura del SoC se lee de los sensores IOHID, una interfaz privada disponible en Apple Silicon. En los Mac con Intel, o tras una actualización del sistema que cambie los sensores de sitio, el recuadro muestra `–`. No se leen la velocidad de los ventiladores ni la potencia consumida.
@@ -152,9 +154,8 @@ La lista completa de tareas pendientes, con su cronograma, está en **[ROADMAP.m
 
 En resumen (planes, no promesas):
 
-- Más allá de Blender: codificaciones con ffmpeg y ComfyUI, con progreso real
-- Historial: cuánto tardaron de verdad los planos, y mejores estimaciones del tiempo restante a partir de ahí
-- Los primeros indicadores físicos: una tira LED como barra de progreso, una tecla de Stream Deck, una pantalla pequeña con un dial
+- Acceso desde la red: la API protegida con un token, la pantalla de escritorio por Wi-Fi
+- Más renderizadores con su propio progreso
 - Controles opcionales: pausar, reanudar, bajar la prioridad
 - Versiones firmadas y notarizadas, Homebrew, más idiomas de interfaz
 
@@ -164,14 +165,14 @@ En resumen (planes, no promesas):
 |---|---|
 | `zsh scripts/build-app.sh` | Compila `build/RenderDock.app` (firma ad hoc; el icono lo dibuja la propia app) |
 | `zsh scripts/install.sh [--login]` | Compila, instala en `/Applications` y vuelve a abrir la app |
-| `swift run rd-checks` | Comprueba el núcleo: el parseo, los eventos, la API y las notificaciones (132 comprobaciones) |
+| `swift run rd-checks` | Comprueba el núcleo: el parseo, los eventos, la API, las notificaciones, los agentes y el protocolo de dispositivos (534 comprobaciones) |
 | `.build/release/RenderDock --dump` | Imprime como texto los trabajos detectados y las métricas, sin interfaz |
 | `.build/release/RenderDock --snapshot CARPETA [--demo]` | Renderiza la cápsula y el panel a PNG |
 | `zsh scripts/make-demo.sh` | Regenera las capturas de pantalla y el GIF de `assets/` |
 | `zsh scripts/fake-render.sh [fotogramas] [s/fotograma]` | Un render simulado para probar la detección |
 | `python3 scripts/verify-interactions.py <binario>` | Inyecta clics y arrastres en una instancia iniciada con `--debug` y comprueba el despliegue, la contracción y el acople (12 comprobaciones) |
 
-El código es Swift y SwiftUI sin más, con AppKit para la ventana: unas 5000 líneas, sin paquetes. Consulta [CONTRIBUTING.md](../../CONTRIBUTING.md).
+El código es Swift y SwiftUI sin más, con AppKit para la ventana: unas 9000 líneas, sin paquetes. Consulta [CONTRIBUTING.md](../../CONTRIBUTING.md).
 
 ## Agradecimientos
 

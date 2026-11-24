@@ -2,7 +2,7 @@
 
 **English** · [简体中文](docs/i18n/ROADMAP.zh-CN.md)
 
-Where RenderDock stands, what is missing, and what comes next. Last updated: 2026-11-24.
+Where RenderDock stands, what is missing, and what comes next. Last updated: 2026-11-25.
 
 ## Timeline
 
@@ -10,11 +10,13 @@ Where RenderDock stands, what is missing, and what comes next. Last updated: 202
 |---|---|---|---|
 | 2026-11-23 | **0.1.0** | First release: detection, the capsule, system metrics | Released |
 | 2026-11-24 | **0.2.0** | Exact progress, notifications, a local API | Released |
-| Target: January 2027 | **0.3** | History, more renderers, the first hardware displays | Planned |
-| Target: February–March 2027 | **0.4** | Optional controls, preview, a desk display prototype | Planned |
+| 2026-11-25 | **0.3.0** | History, coding agents, a display on the desk, more than Blender | Released |
+| Target: February–March 2027 | **0.4** | Reaching it from the network, optional controls, preview | Planned |
 | Later in 2027 | **1.0 and beyond** | Other machines, new UI forms, custom hardware | Ideas |
 
-The dates are targets, not commitments. 0.2 arrived ahead of its December target; that is no promise about the ones below. This is a one-person project, and when priorities move, this file is updated rather than quietly ignored.
+The dates are targets, not commitments. 0.2 and 0.3 arrived ahead of their targets (December and January); that is no promise about the ones below. This is a one-person project, and when priorities move, this file is updated rather than quietly ignored.
+
+0.3 grew on the way: coding agents and a display on the desk, which were further out, came in. One thing planned for it moved out: access to the API from the local network is now in 0.4.
 
 ## Where 0.2 stands
 
@@ -67,12 +69,13 @@ Not checked yet:
 
 | Gap | Planned for |
 |---|---|
-| Detects only Blender on its own; other tools show up when wrapped, without their native progress | 0.3 |
-| No following of a log file a render is redirected to; no reading of the frame range inside a `.blend` | 0.3 |
-| The `scene:shot` queue convention is still built in rather than a rule | 0.3 |
-| No history: time-left uses the last 30 frames and nothing is kept | 0.3 |
+| Detects only Blender on its own; other tools show up when wrapped, without their native progress | 0.3, done for ffmpeg; a ComfyUI queue is shown without a percentage |
+| No following of a log file a render is redirected to | 0.3, done |
+| No reading of the frame range inside a `.blend` | 0.3, done |
+| The `scene:shot` queue convention is still built in rather than a rule | 0.3, done |
+| No history: time-left uses the last 30 frames and nothing is kept | 0.3, done |
 | Not notarised, so no download and no Homebrew | when there is an Apple developer account |
-| The API is local only; nothing on the network can read it | 0.3, opt-in, with a token |
+| The API is local only; nothing on the network can read it | 0.4, opt-in, with a token |
 | Read-only: no pause, resume or stop | 0.4, opt-in |
 | Thumbnail only: no large preview, no scrubbing through frames | 0.4 |
 | No fan speed, no power draw | 0.4 |
@@ -82,34 +85,41 @@ Not checked yet:
 
 ## Plan by version
 
-### 0.3 — remember, and reach beyond Blender · target January 2027
+### 0.3 — remember, watch the agents, and a display on the desk · released 2026-11-25
 
-- [x] History in a local database: every shot with its duration, frames and outcome — [docs/HISTORY.md](docs/HISTORY.md) *(done 2026-11-24, unreleased)*
-- [x] Time-left estimates for a whole queue, based on history *(done 2026-11-24, unreleased)*
-- [x] Flag odd frames: a sudden jump in frame time, an unusually small file *(done 2026-11-24, unreleased)*
-- [x] Coding agents' sessions, read-only: which are working, which just finished, which need you (Claude Code, Codex, Hermes) — [docs/AGENT-TASKS.md](docs/AGENT-TASKS.md) *(done 2026-11-24, unreleased)*
-- [x] Events and notifications when a session starts to need you, fails or finishes a long turn; a summary for small displays — [docs/SMALL-DISPLAYS.md](docs/SMALL-DISPLAYS.md) *(done 2026-11-24, unreleased)*
-- [ ] ffmpeg encodes with real progress
-- [ ] ComfyUI queues
-- [x] Follow the log file when a render's output is redirected to one *(done 2026-11-24, unreleased)*
-- [ ] Read the frame range stored in the `.blend` when it is not on the command line
-- [ ] Queue conventions as rules instead of code
-- [ ] MQTT publishing with Home Assistant discovery
-- [ ] Access to the API from the local network: a separate switch, off by default, with a token
-- [ ] First off-the-shelf hardware: an LED strip as a progress bar, and a Stream Deck key (see below)
+- [x] History in a local database: every shot with its duration, frames and outcome — [docs/HISTORY.md](docs/HISTORY.md) *(done 2026-11-24)*
+- [x] Time-left estimates for a whole queue, based on history *(done 2026-11-24)*
+- [x] Flag odd frames: a sudden jump in frame time, an unusually small file *(done 2026-11-24)*
+- [x] Coding agents' sessions, read-only: which are working, which just finished, which need you (Claude Code, Codex, Hermes) — [docs/AGENT-TASKS.md](docs/AGENT-TASKS.md) *(done 2026-11-24)*
+- [x] Events and notifications when a session starts to need you, fails or finishes a long turn; a summary for small displays — [docs/SMALL-DISPLAYS.md](docs/SMALL-DISPLAYS.md) *(done 2026-11-24)*
+- [x] Follow the log file when a render's output is redirected to one *(done 2026-11-24)*
+- [x] Answering an agent's permission request from the panel, off by default: only kinds you have said may be answered from a display, shown whole, once, and written to a record — [docs/ANSWERING-AGENTS.md](docs/ANSWERING-AGENTS.md) *(done 2026-11-25)*
+- [x] A Bluetooth display on the desk, off by default: the Hardware Buddy protocol, so a device built for the Claude desktop apps shows RenderDock's renders and agents — [docs/DEVICES.md](docs/DEVICES.md) *(done 2026-11-25)*
+- [x] Open firmware for one board, a 2.16-inch touch display: the render's ring, the agents, a list, sounds, and requests and questions answered by holding a button — [firmware/desk-display](firmware/desk-display/README.md) *(done 2026-11-25)*
+- [x] An entry for other programs, off by default: `renderdock notify`, `progress` and `ask`, so any script or agent can post a notice, report progress, or ask a question and get the answer — [docs/AGENT-ENTRY.md](docs/AGENT-ENTRY.md) *(done 2026-11-25)*
+- [x] ffmpeg encodes with real progress, when wrapped or when their output goes to a log file — [docs/EXACT-PROGRESS.md](docs/EXACT-PROGRESS.md#ffmpeg-from-03) *(done 2026-11-25)*
+- [x] ComfyUI queues: which prompt is running, how many are done and waiting. No percentage: ComfyUI gives that only to the tab that queued the prompt — [docs/COMFYUI.md](docs/COMFYUI.md) *(done 2026-11-25; checked against a stand-in, not a real ComfyUI)*
+- [x] Read the frame range stored in the `.blend` when it is not on the command line *(done 2026-11-25)*
+- [x] Queue conventions as rules instead of code — [docs/ADAPTERS.md](docs/ADAPTERS.md) *(done 2026-11-25)*
+- [x] MQTT publishing with Home Assistant discovery, off unless set up — [docs/MQTT.md](docs/MQTT.md) *(done 2026-11-25; checked against a stand-in broker, not a real one)*
+- [x] First off-the-shelf hardware, as examples on top of the local API: an LED strip as a progress bar, and a Stream Deck key — [examples](examples) *(done 2026-11-25; neither has been run on the real hardware yet)*
 - [ ] First reports from macOS 14/15 and Intel
 
 Done when: estimated and actual finish times are both on record for a week of real queues; one piece of hardware shows overall progress and changes when the queue finishes.
 
-### 0.4 — hands on, carefully · target February–March 2027
+Where that stands: the desk display is that piece of hardware. History has been recording since 2026-11-24, so the week was not up when 0.3 was released; the comparison of estimated and actual finish times is still owed.
 
+### 0.4 — beyond this Mac, and hands on, carefully · target February–March 2027
+
+- [ ] Access to the API from the local network: a separate switch, off by default, with a token
+- [ ] The desk display over Wi-Fi as well as Bluetooth
+- [ ] The entry for other programs as an MCP server, for agents that would rather call a tool than run a command
 - [ ] Optional controls, off by default: pause, resume, lower priority, start the next job when one ends
 - [ ] Rules: pause on battery, pause when the Mac is throttling
 - [ ] Large preview and scrubbing through rendered frames
 - [ ] Fan speed and power draw; energy per job
-- [ ] A desk display prototype on an off-the-shelf development board with a screen and a knob
 
-Done when: controls can be enabled one by one and never act without being enabled; the prototype shows the current shot and overall progress over the local network or USB, and the knob switches jobs.
+Done when: another device on the network can read the state with the token and cannot without it; controls can be enabled one by one and never act without being enabled.
 
 ### 1.0 and beyond — ideas, in no fixed order
 
@@ -128,11 +138,11 @@ The idea is simple: now that the app has a local API, a screen is only one of th
 
 | Tier | What | Needs |
 |---|---|---|
-| 1. Things you already own | Phone notifications (in 0.2); an LED strip that fills up like a progress bar; a Stream Deck key; smart-home lights that change when the queue is done | The 0.2 API; 0.3 for MQTT and network access |
-| 2. A development board | A small round display with a knob on the desk: turn to switch jobs, glance for progress | The API over a USB serial bridge or Wi-Fi; open firmware in this repo |
+| 1. Things you already own | Phone notifications (in 0.2); an LED strip that fills up like a progress bar and a Stream Deck key (examples in 0.3); smart-home lights that change when the queue is done (MQTT in 0.3) | The 0.2 API, or MQTT; 0.4 for reaching the API from another device |
+| 2. A development board | A small touch display on the desk: glance for progress, hold a button to answer an agent | Bluetooth LE; open firmware in this repo, for one board so far |
 | 3. A dedicated device | A reference design: display, knob, light ring, one cable | Only if tier 2 proves there is a point |
 
-Nothing in tiers 2 and 3 exists yet. It will be designed in the open, and the protocol will stay documented so anyone can build their own display.
+Tier 2 exists for one board, in [firmware/desk-display](firmware/desk-display/README.md) (released with 0.3). Tier 3 does not exist. Whatever comes is designed in the open, and the protocol stays documented so anyone can build their own display.
 
 ## Changing this plan
 

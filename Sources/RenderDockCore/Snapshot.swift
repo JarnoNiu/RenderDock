@@ -138,7 +138,7 @@ package struct StateSnapshot: Codable, Equatable {
     package var agents: [Agent]
     package var metrics: Machine
 
-    package static let appVersion = "0.3.0-dev"
+    package static let appVersion = "0.3.0"
 
     /// - Parameter recent: the shots that ended most recently. One that ended in the last few minutes still counts
     ///   towards the overall state: a light stays green for a while after a render finishes.

@@ -1,6 +1,6 @@
 # History, queue estimates and odd frames
 
-> Part of 0.3, which is still in development.
+> New in 0.3.
 
 From 0.3 on, RenderDock remembers the shots it watched. That is what makes two other things possible: an estimate for a whole queue, and a short list of what ended recently.
 

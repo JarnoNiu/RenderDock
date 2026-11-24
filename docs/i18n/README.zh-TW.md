@@ -63,6 +63,8 @@ CPU、顯示卡使用率與顯示記憶體、記憶體與記憶體壓力、晶�
 
 0.2 新增：透過 [`renderdock run`](../EXACT-PROGRESS.md) 讓任何渲染都有精確進度；任務完成、失敗或卡住時，會在 Mac 和手機上發出[通知](../NOTIFICATIONS.md)；還有[本機 API](../API.md)，讓其他顯示裝置也能顯示同一份進度。這三份文件目前只有英文版。
 
+0.3 新增：[歷史紀錄](../HISTORY.md)與整條佇列的剩餘時間估計；[程式開發 agent 的工作階段](../AGENT-TASKS.md)和渲染任務排在一起；[ffmpeg 編碼](../EXACT-PROGRESS.md#ffmpeg-from-03)的真實進度；[ComfyUI](../COMFYUI.md) 的佇列。另有幾項預設關閉、需要你自己開啟：在面板上[回覆 agent 的權限請求](../ANSWERING-AGENTS.md)；[桌上的藍牙小螢幕](../DEVICES.md)，並附上一塊開發板的[開源韌體](../../firmware/desk-display/README.md)；[給其他程式的入口](../AGENT-ENTRY.md)，任何腳本或 agent 都能發通知、回報進度，或問你一個問題；以及給 Home Assistant 用的 [MQTT](../MQTT.md)。還有兩個以本機 API 為基礎的[範例](../../examples)：當進度條用的 LED 燈條，以及一個 Stream Deck 按鍵。這些文件目前只有英文版。
+
 ## 快速開始
 
 需求：macOS 14 或以上版本，以及 Swift 6 工具鏈（Xcode 16 以上，或只安裝命令列工具：`xcode-select --install`）。
@@ -139,7 +141,7 @@ blender -b shot_010.blend -o //render/frame_#### -s 1 -e 250 -a
 
 ## 它不做什麼
 
-- 它是**唯讀**的：不發送任何訊號，也絕不會寫入你的渲染資料夾。除非你新增了通知管道，否則它不會建立任何網路連線；可選的本機 API 也只監聽 `127.0.0.1`。
+- 它**絕不碰你的渲染**：不對它們發送任何訊號，也絕不會寫入你的渲染資料夾。凡是超出「觀看」的功能都預設關閉，需要你自己開啟：通知管道、本機 API（只監聽 `127.0.0.1`）、連接桌上小螢幕的藍牙、回覆 agent 的請求、給其他程式的入口、MQTT。除非你新增了通知管道或 MQTT 伺服器，否則它不會建立任何網路連線。
 - 目前還沒有暫停、繼續或停止按鈕。佇列腳本往往自己在管理 `STOP`／`CONT`，兩隻手去按同一個開關不是好主意。
 - 如果輸出資料夾和影格範圍都不在命令列上，任務還是會出現，並顯示 CPU、記憶體和已執行時間，但沒有影格資訊。
 - 晶片溫度讀自 IOHID 感測器，這是 Apple 晶片上才有的私有介面。在 Intel Mac 上，或是系統更新調動了感測器之後，這一格會顯示 `–`。不讀取風扇轉速和功耗。
@@ -152,9 +154,8 @@ blender -b shot_010.blend -o //render/frame_#### -s 1 -e 250 -a
 
 簡單來說（是計畫，不是承諾）：
 
-- 不只 Blender：ffmpeg 編碼和 ComfyUI 的真實進度
-- 歷史紀錄：每一段實際花了多久，並據此把剩餘時間估得更準
-- 第一批硬體顯示裝置：當進度條用的 LED 燈條、Stream Deck 按鍵、帶旋鈕的小螢幕
+- 從網路上存取：帶權杖的區域網路 API，桌上小螢幕走 Wi-Fi
+- 更多渲染器各自的真實進度
 - 可選的控制功能：暫停、繼續、降低優先權
 - 已簽署並經公證的發行版本、Homebrew、更多介面語言
 
@@ -164,14 +165,14 @@ blender -b shot_010.blend -o //render/frame_#### -s 1 -e 250 -a
 |---|---|
 | `zsh scripts/build-app.sh` | 建置 `build/RenderDock.app`（ad-hoc 簽署；圖示由應用程式自己繪製） |
 | `zsh scripts/install.sh [--login]` | 建置、安裝到 `/Applications`、重新啟動 |
-| `swift run rd-checks` | 核心部分的檢查：解析、事件、API、通知（132 項檢查） |
+| `swift run rd-checks` | 核心部分的檢查：解析、事件、API、通知、agent、裝置協定（534 項檢查） |
 | `.build/release/RenderDock --dump` | 以文字印出偵測到的任務和指標，不顯示介面 |
 | `.build/release/RenderDock --snapshot 資料夾 [--demo]` | 把膠囊和面板繪製成 PNG |
 | `zsh scripts/make-demo.sh` | 重新產生 `assets/` 裡的截圖和 GIF |
 | `zsh scripts/fake-render.sh [影格數] [每影格秒數]` | 用來測試偵測功能的假渲染 |
 | `python3 scripts/verify-interactions.py <執行檔>` | 對以 `--debug` 啟動的程式注入點擊和拖曳，檢查展開、收合和吸附（12 項檢查） |
 
-程式碼是單純的 Swift 和 SwiftUI，視窗部分使用 AppKit：約 5,000 行，沒有用任何套件。請參閱 [CONTRIBUTING.md](../../CONTRIBUTING.md)。
+程式碼是單純的 Swift 和 SwiftUI，視窗部分使用 AppKit：約 9,000 行，沒有用任何套件。請參閱 [CONTRIBUTING.md](../../CONTRIBUTING.md)。
 
 ## 致謝
 

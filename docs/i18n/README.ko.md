@@ -63,6 +63,8 @@ CPU, GPU 사용률과 GPU 메모리, 메모리와 메모리 압력, SoC 온도, 
 
 0.2의 새로운 기능: [`renderdock run`](../EXACT-PROGRESS.md)으로 실행하면 어떤 렌더링이든 정확한 진행률을 볼 수 있습니다. 작업이 끝나거나 실패하거나 정체되면 Mac과 휴대폰으로 [알림](../NOTIFICATIONS.md)을 보내고, [로컬 API](../API.md)가 있어 다른 표시 장치에서도 같은 진행률을 보여 줄 수 있습니다. 이 세 문서는 현재 영어로만 제공됩니다.
 
+0.3의 새로운 기능: [기록](../HISTORY.md)과 이를 바탕으로 한 큐 전체의 남은 시간 추정, 렌더링 옆에 함께 표시되는 [코딩 에이전트 세션](../AGENT-TASKS.md), [ffmpeg 인코딩](../EXACT-PROGRESS.md#ffmpeg-from-03)의 실제 진행률, 그리고 [ComfyUI](../COMFYUI.md) 큐. 직접 켜기 전까지는 꺼져 있는 기능도 있습니다. 패널에서 [에이전트의 권한 요청에 답하기](../ANSWERING-AGENTS.md), [책상 위의 작은 Bluetooth 디스플레이](../DEVICES.md)(보드 한 종류용 [오픈 펌웨어](../../firmware/desk-display/README.md) 포함), 어떤 스크립트나 에이전트든 알림을 보내고 진행 상황을 보고하고 사용자에게 질문할 수 있는 [다른 프로그램을 위한 입구](../AGENT-ENTRY.md), 그리고 Home Assistant를 위한 [MQTT](../MQTT.md)입니다. 로컬 API를 활용한 [예제](../../examples)도 두 가지 있습니다. 진행률 막대로 쓰는 LED 스트립과 Stream Deck 키입니다. 이 문서들은 현재 영어로만 제공됩니다.
+
 ## 빠른 시작
 
 요구 사항: macOS 14 이상, 그리고 Swift 6 툴체인(Xcode 16 이상 또는 Command Line Tools만 설치: `xcode-select --install`).
@@ -139,7 +141,7 @@ blender -b shot_010.blend -o //render/frame_#### -s 1 -e 250 -a
 
 ## 하지 않는 것
 
-- **읽기 전용**입니다. 시그널을 보내지 않고, 렌더링 폴더에는 절대 쓰지 않습니다. 알림 채널을 추가하지 않는 한 네트워크 연결을 하지 않으며, 선택 사항인 로컬 API는 `127.0.0.1`에서만 수신 대기합니다.
+- **렌더링에는 절대 손대지 않습니다**. 시그널을 보내지 않고, 렌더링 폴더에는 절대 쓰지 않습니다. 지켜보는 것 이상의 기능은 직접 켜기 전까지 모두 꺼져 있습니다. 알림 채널, 로컬 API(`127.0.0.1`만), 책상용 디스플레이를 위한 Bluetooth, 에이전트 요청에 답하기, 다른 프로그램을 위한 입구, MQTT가 그렇습니다. 알림 채널이나 MQTT 브로커를 추가하지 않는 한 네트워크 연결을 하지 않습니다.
 - 일시 정지, 재개, 중지 버튼은 아직 없습니다. 큐 스크립트가 `STOP`/`CONT`를 직접 관리하는 경우가 많은데, 같은 스위치에 손이 둘 올라가는 것은 좋은 생각이 아닙니다.
 - 출력 폴더와 프레임 범위가 모두 명령줄에 없어도 작업은 표시됩니다. CPU, 메모리, 경과 시간은 나오지만 프레임은 나오지 않습니다.
 - SoC 온도는 IOHID 센서에서 읽습니다. 이는 Apple Silicon에서 쓸 수 있는 비공개 인터페이스입니다. Intel Mac이거나 시스템 업데이트로 센서가 옮겨진 경우, 해당 타일에는 `–`가 표시됩니다. 팬 속도와 소비 전력은 읽지 않습니다.
@@ -152,9 +154,8 @@ blender -b shot_010.blend -o //render/frame_#### -s 1 -e 250 -a
 
 요약하면 다음과 같습니다(계획이며, 약속은 아닙니다).
 
-- Blender 외의 도구: ffmpeg 인코딩과 ComfyUI의 실제 진행률
-- 기록: 샷에 실제로 걸린 시간, 그리고 이를 바탕으로 한 더 정확한 남은 시간 추정
-- 첫 하드웨어 표시 장치: 진행률 막대로 쓰는 LED 스트립, Stream Deck 키, 노브가 달린 작은 화면
+- 네트워크를 통한 접근: 토큰으로 보호되는 로컬 네트워크용 API, Wi-Fi로 연결되는 책상용 디스플레이
+- 자체 진행률을 보여 주는 렌더러 추가
 - 선택형 제어: 일시 정지, 재개, 우선순위 낮추기
 - 서명 및 공증된 릴리스, Homebrew, 더 많은 UI 언어
 
@@ -164,14 +165,14 @@ blender -b shot_010.blend -o //render/frame_#### -s 1 -e 250 -a
 |---|---|
 | `zsh scripts/build-app.sh` | `build/RenderDock.app`을 빌드합니다(ad-hoc 서명. 아이콘은 앱이 직접 그립니다) |
 | `zsh scripts/install.sh [--login]` | 빌드하고 `/Applications`에 설치한 뒤 다시 실행합니다 |
-| `swift run rd-checks` | 코어 부분을 검사합니다. 파싱, 이벤트, API, 알림이 대상입니다(검사 132개) |
+| `swift run rd-checks` | 코어 부분을 검사합니다. 파싱, 이벤트, API, 알림, 에이전트, 장치 프로토콜이 대상입니다(검사 534개) |
 | `.build/release/RenderDock --dump` | 감지된 작업과 지표를 UI 없이 텍스트로 출력합니다 |
 | `.build/release/RenderDock --snapshot DIR [--demo]` | 캡슐과 패널을 PNG로 그려 냅니다 |
 | `zsh scripts/make-demo.sh` | `assets/`의 스크린샷과 GIF를 다시 생성합니다 |
 | `zsh scripts/fake-render.sh [프레임 수] [프레임당 초]` | 감지 기능을 테스트하기 위한 가짜 렌더링입니다 |
 | `python3 scripts/verify-interactions.py <바이너리>` | `--debug`로 시작한 인스턴스에 클릭과 드래그를 주입해 펼치기, 접기, 달라붙기를 확인합니다(검사 12개) |
 
-코드는 순수 Swift와 SwiftUI이며, 창에는 AppKit을 사용합니다. 약 5,000줄이고 패키지는 쓰지 않습니다. 자세한 내용은 [CONTRIBUTING.md](../../CONTRIBUTING.md)에 있습니다.
+코드는 순수 Swift와 SwiftUI이며, 창에는 AppKit을 사용합니다. 약 9,000줄이고 패키지는 쓰지 않습니다. 자세한 내용은 [CONTRIBUTING.md](../../CONTRIBUTING.md)에 있습니다.
 
 ## 감사의 말
 

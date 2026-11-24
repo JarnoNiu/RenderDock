@@ -63,6 +63,8 @@ CPU、显卡占用与显存、内存与内存压力、芯片温度、交换区�
 
 0.2 新增：用 [`renderdock run`](../EXACT-PROGRESS.md) 给任何渲染拿到准确进度；任务渲完、失败或卡住时，在电脑和手机上[通知](../NOTIFICATIONS.md)你；以及一个[本机接口](../API.md)，让别的显示端显示同一份进度。这三份说明目前只有英文。
 
+0.3 新增：[历史记录](../HISTORY.md)和整条队列的剩余时间估计；[编程 agent 的会话](../AGENT-TASKS.md)和渲染任务排在一起；[ffmpeg 编码](../EXACT-PROGRESS.md#ffmpeg-from-03)的真实进度；[ComfyUI](../COMFYUI.md) 的队列。另有几样默认关闭、要你自己打开：在面板上[答复 agent 的权限请求](../ANSWERING-AGENTS.md)；[桌面上的蓝牙小屏](../DEVICES.md)，并附一块开发板的[开源固件](../../firmware/desk-display/README.md)；[给其他程序的入口](../AGENT-ENTRY.md)，任何脚本或 agent 都能发通知、报进度，或者问你一个问题；以及给 Home Assistant 用的 [MQTT](../MQTT.md)。还有两个基于本机接口的[示例](../../examples)：把灯带当进度条，和一个 Stream Deck 按键。这些说明目前只有英文。
+
 ## 快速开始
 
 需要 macOS 14 或更高版本，以及 Swift 6 工具链（Xcode 16 以上，或者只装命令行工具：`xcode-select --install`）。
@@ -139,7 +141,7 @@ blender -b shot_010.blend -o //render/frame_#### -s 1 -e 250 -a
 
 ## 它不做什么
 
-- 它是**只读**的：不发信号，也绝不往你的渲染目录里写东西。除非你自己添加了通知渠道，否则它不联网；可选的本机接口只监听 `127.0.0.1`。
+- 它**绝不碰你的渲染**：不给它们发信号，也绝不往你的渲染目录里写东西。凡是超出「看」的功能都默认关闭，要你自己打开：通知渠道、本机接口（只监听 `127.0.0.1`）、连接桌面小屏的蓝牙、答复 agent 的请求、给其他程序的入口、MQTT。除非你自己添加了通知渠道或 MQTT 服务器，否则它不联网。
 - 目前还没有暂停、继续、终止按钮。排队脚本常常自己在用 `STOP`／`CONT` 调度，两只手按同一个开关不是好主意。
 - 如果输出目录和帧范围都不在命令行里，任务照样会出现，有 CPU、内存和已跑时长，但没有帧数。
 - 芯片温度读的是 IOHID 传感器，这是 Apple 芯片上的私有接口。在 Intel Mac 上，或者系统更新挪了传感器之后，这一格显示 `–`。风扇转速和功耗没有读。
@@ -152,9 +154,8 @@ blender -b shot_010.blend -o //render/frame_#### -s 1 -e 250 -a
 
 简单说（是计划，不是承诺）：
 
-- 不只是 Blender：ffmpeg 编码和 ComfyUI 的真实进度
-- 历史记录：每段实际渲了多久，并据此把剩余时间估得更准
-- 第一批硬件显示：把灯带当进度条、Stream Deck 按键、带旋钮的小屏
+- 从网络上访问：带令牌的局域网接口，桌面小屏走 Wi-Fi
+- 更多渲染器各自的真实进度
 - 可选的控制：暂停、继续、降低优先级
 - 签名并公证的发行版、Homebrew、更多界面语言
 
@@ -164,14 +165,14 @@ blender -b shot_010.blend -o //render/frame_#### -s 1 -e 250 -a
 |---|---|
 | `zsh scripts/build-app.sh` | 构建 `build/RenderDock.app`（本机临时签名；图标由应用自己画） |
 | `zsh scripts/install.sh [--login]` | 构建、装到 `/Applications`、重新启动 |
-| `swift run rd-checks` | 核心部分的检查：解析、事件、接口、通知（132 项） |
+| `swift run rd-checks` | 核心部分的检查：解析、事件、接口、通知、agent、设备协议（534 项） |
 | `.build/release/RenderDock --dump` | 不开界面，把认出的任务和指标打印成文字 |
 | `.build/release/RenderDock --snapshot 目录 [--demo]` | 把胶囊和面板渲成 PNG |
 | `zsh scripts/make-demo.sh` | 重新生成 `assets/` 里的截图和动图 |
 | `zsh scripts/fake-render.sh [帧数] [每帧秒数]` | 用来测试识别的假渲染 |
 | `python3 scripts/verify-interactions.py <可执行文件>` | 给带 `--debug` 启动的实例注入点击和拖动，检查展开、收起和吸附（12 项） |
 
-代码是纯 Swift 和 SwiftUI，窗口部分用 AppKit：约 5,000 行，不依赖任何包。见 [CONTRIBUTING.md](../../CONTRIBUTING.md)。
+代码是纯 Swift 和 SwiftUI，窗口部分用 AppKit：约 9,000 行，不依赖任何包。见 [CONTRIBUTING.md](../../CONTRIBUTING.md)。
 
 ## 致谢
 

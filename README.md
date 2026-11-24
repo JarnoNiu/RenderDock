@@ -63,6 +63,8 @@ Also included: a menu-bar item with a progress ring, an optional **Keep Awake Wh
 
 New in 0.2: exact progress for any render through [`renderdock run`](docs/EXACT-PROGRESS.md), [notifications](docs/NOTIFICATIONS.md) on the Mac and on your phone when a job finishes, fails or stalls, and a [local API](docs/API.md) so other displays can show the same progress.
 
+New in 0.3: [history](docs/HISTORY.md) with time-left estimates for a whole queue; [coding agents' sessions](docs/AGENT-TASKS.md) next to your renders; real progress for [ffmpeg encodes](docs/EXACT-PROGRESS.md#ffmpeg-from-03), and a [ComfyUI](docs/COMFYUI.md) queue shown as it drains. More things are there and stay off until you switch them on: [answering an agent's permission request](docs/ANSWERING-AGENTS.md) from the panel, a [small Bluetooth display for the desk](docs/DEVICES.md) with [open firmware](firmware/desk-display/README.md) for one board, an [entry for other programs](docs/AGENT-ENTRY.md), so that any script or agent can post a notice, report progress, or ask you a question, and [MQTT](docs/MQTT.md) for Home Assistant. Two [examples](examples) build on the local API: an LED strip as a progress bar, and a Stream Deck key.
+
 ## Quick start
 
 Requirements: macOS 14 or later, and the Swift 6 toolchain (Xcode 16+ or just the Command Line Tools: `xcode-select --install`).
@@ -139,7 +141,7 @@ Anything that can write a file can report progress this way, not just Blender.
 
 ## What it will not do
 
-- It is **read-only**: it sends no signals and never writes into your render folders. It makes no network connections unless you add a notification channel, and the optional local API listens on `127.0.0.1` only.
+- It **never touches your renders**: it sends them no signals and never writes into your render folders. Whatever goes beyond watching is off until you switch it on: notification channels, the local API (`127.0.0.1` only), Bluetooth for a desk display, answering agents' requests, the entry for other programs, and MQTT. It makes no network connections unless you add a notification channel or an MQTT broker.
 - There are no pause, resume or stop buttons yet. Queue scripts often manage `STOP`/`CONT` themselves, and two hands on the same switch is a bad idea.
 - If neither the output folder nor the frame range is on the command line, a job still appears, with CPU, memory and elapsed time, but without frames.
 - SoC temperature is read from IOHID sensors, a private interface available on Apple Silicon. On Intel Macs, or after a system update that moves the sensors, the tile shows `–`. Fan speed and wattage are not read.
@@ -152,9 +154,8 @@ The full TODO list, with a timeline, is in **[ROADMAP.md](ROADMAP.md)**.
 
 In short (plans, not promises):
 
-- More than Blender: ffmpeg encodes and ComfyUI with real progress
-- History: how long shots really took, and better time-left estimates from it
-- The first hardware displays: an LED strip as a progress bar, a Stream Deck key, a small screen with a knob
+- Reaching it from the network: the API behind a token, the desk display over Wi-Fi
+- More renderers with their own progress
 - Optional controls: pause, resume, lower priority
 - Signed and notarised releases, Homebrew, more UI languages
 
@@ -164,14 +165,14 @@ In short (plans, not promises):
 |---|---|
 | `zsh scripts/build-app.sh` | Builds `build/RenderDock.app` (ad-hoc signed; the icon is drawn by the app itself) |
 | `zsh scripts/install.sh [--login]` | Builds, installs to `/Applications`, relaunches |
-| `swift run rd-checks` | Checks for the core: parsing, events, the API, notifications (132 checks) |
+| `swift run rd-checks` | Checks for the core: parsing, events, the API, notifications, agents, the device protocol (534 checks) |
 | `.build/release/RenderDock --dump` | Prints detected jobs and metrics as text, no UI |
 | `.build/release/RenderDock --snapshot DIR [--demo]` | Renders the capsule and the panel to PNG |
 | `zsh scripts/make-demo.sh` | Regenerates the screenshots and the GIF in `assets/` |
 | `zsh scripts/fake-render.sh [frames] [sec/frame]` | A stand-in render for testing detection |
 | `python3 scripts/verify-interactions.py <binary>` | Injects clicks and drags into an instance started with `--debug` and checks expanding, collapsing and snapping (12 checks) |
 
-The code is plain Swift and SwiftUI with AppKit for the window: about 5,000 lines, no packages. See [CONTRIBUTING.md](CONTRIBUTING.md).
+The code is plain Swift and SwiftUI with AppKit for the window: about 9,000 lines, no packages. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Acknowledgements
 

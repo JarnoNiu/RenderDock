@@ -18,18 +18,19 @@ package final class LogFollower {
 
     /// What the process has written to its standard output so far, as progress. Nil when its output is not a
     /// regular file (a terminal, a pipe), or when nothing in the file looks like render progress.
-    package func progress(pid: Int32, totalFromCommandLine: Int?) -> ProgressParser? {
-        guard let path = ProcTable.regularFile(pid: pid, fd: 1) else {
+    /// `fd` is which of its outputs to read: 1 for a render, 2 for ffmpeg, which reports on standard error.
+    package func progress(pid: Int32, totalFromCommandLine: Int?, fd: Int32 = 1, ffmpegArguments: [String]? = nil) -> ProgressParser? {
+        guard let path = ProcTable.regularFile(pid: pid, fd: fd) else {
             states[pid] = nil
             return nil
         }
-        var st = states[pid].flatMap { $0.path == path ? $0 : nil }
-            ?? State(path: path, parser: ProgressParser(totalFromCommandLine: totalFromCommandLine))
+        func fresh() -> ProgressParser { ProgressParser(totalFromCommandLine: totalFromCommandLine, ffmpegArguments: ffmpegArguments) }
+        var st = states[pid].flatMap { $0.path == path ? $0 : nil } ?? State(path: path, parser: fresh())
         guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
         defer { try? handle.close() }
         let size = (try? handle.seekToEnd()) ?? 0
         if size < st.offset {   // the file was truncated: start over
-            st = State(path: path, parser: ProgressParser(totalFromCommandLine: totalFromCommandLine))
+            st = State(path: path, parser: fresh())
         }
         guard size - st.offset <= Self.maxCatchUp else { return nil }
         if size > st.offset {
@@ -41,8 +42,9 @@ package final class LogFollower {
                 st.pending.removeSubrange(st.pending.startIndex...i)
                 // Several renders may append to one log. What came before the previous render's last line,
                 // or before this render announced its range, belongs to an earlier run.
-                if line.hasSuffix("Blender quit") || line.contains("Rendering animation (frames") {
-                    st.parser = ProgressParser(totalFromCommandLine: totalFromCommandLine)
+                // For an encode the same holds for its banner, which every run prints first.
+                if line.hasSuffix("Blender quit") || line.contains("Rendering animation (frames") || line.hasPrefix("ffmpeg version ") {
+                    st.parser = fresh()
                 }
                 st.parser.feed(line)
             }
@@ -50,7 +52,7 @@ package final class LogFollower {
         }
         states[pid] = st
         let p = st.parser
-        return p.done > 0 || p.total != nil || p.frame != nil ? p : nil
+        return p.done > 0 || p.total != nil || p.frame != nil || p.mediaDone != nil ? p : nil
     }
 
     func forget(except alive: Set<Int32>) {

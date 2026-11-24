@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftUI
 import RenderDockCore
 
 let cli = CommandLine.arguments
@@ -55,11 +56,21 @@ if let i = cli.firstIndex(of: "--snapshot"), i + 1 < cli.count {
     // `--at <seconds>` picks the moment of the demo to draw (the demo cycles: at 15 s a session is asking for permission).
     let at = cli.firstIndex(of: "--at").flatMap { $0 + 1 < cli.count ? Double(cli[$0 + 1]) : nil } ?? 7
     if cli.contains("--demo") { store.loadDemo(at) } else { store.loadOnce() }
+    // `--stress` pushes every number to its widest: 100% everywhere, three-digit readouts. For catching text that wraps.
+    // The live window is only as wide as the capsule was a moment ago, so the capsule is also drawn at the width it
+    // had before the numbers grew: that is where a wrap would show.
+    let widthBefore = MainActor.assumeIsolated {
+        NSHostingController(rootView: CapsuleView(store: store).environment(\.colorScheme, .dark)).sizeThatFits(in: CGSize(width: 2000, height: 200)).width
+    }
+    if cli.contains("--stress") { store.applyStress() }
     store.listMaxHeight = 4000
     let suffix = cli.contains("--demo") ? "-\(Lang.current.rawValue)" : ""
     MainActor.assumeIsolated {
         renderSnapshot(CapsuleView(store: store), to: "\(dir)/capsule\(suffix).png")
         renderSnapshot(PanelView(store: store), to: "\(dir)/panel\(suffix).png")
+        if cli.contains("--stress") {
+            renderSnapshot(CapsuleView(store: store).frame(width: widthBefore), to: "\(dir)/capsule-tight\(suffix).png")
+        }
     }
     exit(0)
 }

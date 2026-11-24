@@ -49,6 +49,100 @@ check("long options with =", TaskScanner.blenderFrames(["blender", "--background
 check("end before start", TaskScanner.blenderFrames(["blender", "-b", "-s", "9", "-e", "3", "-a"]) == nil)
 check("no range given", TaskScanner.blenderFrames(["blender", "-b", "a.blend", "-a"]) == nil)
 
+section("the frame range stored in a .blend")
+do {
+    // A file put together here in the shape Blender writes: a header, the file's globals, two scenes, and the
+    // block in which the file describes its own structs. `large` is the block heading Blender 5 uses.
+    func blend(large: Bool, pointer: Int = 8, activeSecond: Bool = false) -> Data {
+        func le(_ value: Int, _ size: Int) -> [UInt8] { (0..<size).map { UInt8((UInt64(bitPattern: Int64(value)) >> UInt64(8 * $0)) & 0xFF) } }
+        func block(_ code: String, structIndex: Int, address: Int, _ body: [UInt8]) -> [UInt8] {
+            let name = Array(code.utf8) + [UInt8](repeating: 0, count: 4 - code.utf8.count)
+            if large { return name + le(structIndex, 4) + le(address, 8) + le(body.count, 8) + le(1, 8) + body }
+            return name + le(body.count, 4) + le(address, pointer) + le(structIndex, 4) + le(1, 4) + body
+        }
+        // Types: 0 int, 1 char, 2 ID, 3 RenderData, 4 Scene, 5 FileGlobal, 6 short.
+        let nameList = ["*next", "name[66]", "pad", "sfra", "efra", "frame_step", "id", "*camera", "r", "*curscene", "flag"]
+        let types = ["int", "char", "ID", "RenderData", "Scene", "FileGlobal", "short"]
+        let idSize = pointer + 66 + 2, renderSize = 4 * 4, sceneSize = idSize + pointer + renderSize
+        let sizes = [4, 1, idSize, renderSize, sceneSize, 4 + pointer, 2]
+        func pad(_ bytes: [UInt8]) -> [UInt8] { bytes + [UInt8](repeating: 0, count: (4 - bytes.count % 4) % 4) }
+        var dna = Array("SDNA".utf8) + Array("NAME".utf8) + le(nameList.count, 4)
+        dna += pad(nameList.flatMap { Array($0.utf8) + [0] })
+        dna += Array("TYPE".utf8) + le(types.count, 4) + pad(types.flatMap { Array($0.utf8) + [0] })
+        dna += Array("TLEN".utf8) + pad(sizes.flatMap { le($0, 2) })
+        let structs: [(Int, [(Int, Int)])] = [
+            (2, [(2, 0), (1, 1), (6, 2)]),                 // ID: *next, name[66], pad
+            (3, [(0, 10), (0, 3), (0, 4), (0, 5)]),        // RenderData: flag, sfra, efra, frame_step
+            (4, [(2, 6), (4, 7), (3, 8)]),                 // Scene: id, *camera, r
+            (5, [(0, 10), (4, 9)]),                        // FileGlobal: flag, *curscene
+        ]
+        dna += Array("STRC".utf8) + le(structs.count, 4)
+        for (type, fields) in structs { dna += le(type, 2) + le(fields.count, 2) + fields.flatMap { le($0.0, 2) + le($0.1, 2) } }
+
+        func scene(_ name: String, _ start: Int, _ end: Int, _ step: Int) -> [UInt8] {
+            let text = Array(("SC" + name).utf8)
+            return le(0, pointer) + text + [UInt8](repeating: 0, count: 66 - text.count) + le(0, 2) + le(0, pointer) + le(0, 4) + le(start, 4) + le(end, 4) + le(step, 4)
+        }
+        var file = large ? Array("BLENDER17-01v0502".utf8) : Array("BLENDER\(pointer == 8 ? "-" : "_")v404".utf8)
+        file += block("GLOB", structIndex: 3, address: 16, le(0, 4) + le(activeSecond ? 0x2000 : 0x1000, pointer))
+        file += block("SC", structIndex: 2, address: 0x1000, scene("Scene", 101, 180, 2))
+        file += block("DATA", structIndex: 0, address: 0x1800, [1, 2, 3, 4, 5, 6, 7, 8])
+        file += block("SC", structIndex: 2, address: 0x2000, scene("镜头 B", 10, 40, 1))
+        file += block("DNA1", structIndex: 0, address: 0, dna)
+        file += block("ENDB", structIndex: 0, address: 0, [])
+        return Data(file)
+    }
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("rdb-\(UUID().uuidString.prefix(8))")
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    func write(_ name: String, _ data: Data) -> String {
+        let url = dir.appendingPathComponent(name)
+        try? data.write(to: url)
+        return url.path
+    }
+    let modern = write("modern.blend", blend(large: true))
+    let scenes = BlendFile.scenes(at: modern)
+    check("both scenes are found, by the names the file gives them", scenes?.map(\.name) == ["Scene", "镜头 B"])
+    check("…each with its own range, and which one is active", scenes?.first?.range == BlendFile.FrameRange(start: 101, end: 180, step: 2)
+          && scenes?.first?.active == true && scenes?.last?.active == false && scenes?.last?.range == BlendFile.FrameRange(start: 10, end: 40, step: 1))
+    check("the active scene's range is the file's range", BlendFile.frameRange(at: modern) == BlendFile.FrameRange(start: 101, end: 180, step: 2))
+    check("a scene can be asked for by name", BlendFile.frameRange(at: modern, scene: "镜头 B")?.end == 40 && BlendFile.frameRange(at: modern, scene: "No such scene") == nil)
+    check("whichever scene was in front when the file was saved is the active one",
+          BlendFile.frameRange(at: write("second.blend", blend(large: true, activeSecond: true)))?.start == 10)
+    check("the layout before Blender 5 reads the same, with 64-bit pointers", BlendFile.frameRange(at: write("older.blend", blend(large: false))) == BlendFile.FrameRange(start: 101, end: 180, step: 2))
+    check("…and with 32-bit ones", BlendFile.scenes(at: write("older32.blend", blend(large: false, pointer: 4)))?.map(\.range.end) == [180, 40])
+    check("the frames of a range", BlendFile.FrameRange(start: 101, end: 180, step: 2).frames?.count == 40 && BlendFile.FrameRange(start: 9, end: 3, step: 1).frames == nil)
+    check("a compressed file is not read", BlendFile.scenes(at: write("zstd.blend", Data([0x28, 0xB5, 0x2F, 0xFD] + [UInt8](repeating: 7, count: 200)))) == nil)
+    check("nor a file cut short, a file that is something else, or one that is not there",
+          BlendFile.scenes(at: write("cut.blend", blend(large: true).prefix(300))) == nil && BlendFile.scenes(at: write("text.blend", Data("BLENDER is not what this is".utf8))) == nil
+          && BlendFile.scenes(at: dir.appendingPathComponent("missing.blend").path) == nil)
+
+    func read(_ file: String, _ scene: String?) -> BlendFile.FrameRange? { BlendFile.frameRange(at: file, scene: scene) }
+    check("a command line that leaves the range to the file gets it from there",
+          TaskScanner.blenderFramesFromFile(["blender", "-b", modern, "-a"], read: read)?.frames.count == 40
+          && TaskScanner.blenderFramesFromFile(["blender", "-b", modern, "-a"], read: read)?.rough == false)
+    check("what the command line does say takes the place of the file's value",
+          TaskScanner.blenderFramesFromFile(["blender", "-b", modern, "-s", "171", "-a"], read: read)?.frames == [171, 173, 175, 177, 179]
+          && TaskScanner.blenderFramesFromFile(["blender", "-b", modern, "-j", "40", "-a"], read: read)?.frames == [101, 141])
+    check("-S picks the scene", TaskScanner.blenderFramesFromFile(["blender", "-b", modern, "-S", "镜头 B", "-a"], read: read)?.frames.count == 31)
+    check("with a script on the command line the file's range is only a best guess",
+          TaskScanner.blenderFramesFromFile(["blender", "-b", modern, "-P", "setup.py", "-a"], read: read)?.rough == true)
+    check("no -a, an explicit frame list, or no file: nothing is read",
+          TaskScanner.blenderFramesFromFile(["blender", "-b", modern], read: read) == nil && TaskScanner.blenderFramesFromFile(["blender", "-b", modern, "-f", "3"], read: read) == nil
+          && TaskScanner.blenderFramesFromFile(["blender", "-b", "-a"], read: read) == nil)
+
+    // Files saved by a real Blender, when a folder of them is at hand (see the comment in Blend.swift).
+    if let samples = ProcessInfo.processInfo.environment["RENDERDOCK_BLEND_SAMPLES"], !samples.isEmpty {
+        check("a file saved by Blender: the active scene's range", BlendFile.frameRange(at: samples + "/range-101-180-step-2.blend") == BlendFile.FrameRange(start: 101, end: 180, step: 2))
+        check("a file saved by Blender: three scenes, the first active",
+              BlendFile.scenes(at: samples + "/three-scenes.blend")?.map(\.name) == ["Scene", "Shot B", "镜头三"]
+              && BlendFile.frameRange(at: samples + "/three-scenes.blend") == BlendFile.FrameRange(start: 1, end: 250, step: 1)
+              && BlendFile.frameRange(at: samples + "/three-scenes.blend", scene: "镜头三") == BlendFile.FrameRange(start: 5, end: 9, step: 1))
+        check("a file saved by Blender with another scene in front", BlendFile.frameRange(at: samples + "/second-active.blend") == BlendFile.FrameRange(start: 10, end: 40, step: 1))
+        check("a file saved by Blender with compression on is not read", BlendFile.scenes(at: samples + "/compressed.blend") == nil)
+    }
+    try? FileManager.default.removeItem(at: dir)
+}
+
 // MARK: Arguments, queue specs, titles
 
 section("arguments")
@@ -65,6 +159,39 @@ check("three parts", TaskScanner.parseSpec("a:b:c") == nil)
 check("empty side", TaskScanner.parseSpec(":b") == nil)
 check("name collapses when the shot repeats the scene", TaskScanner.specName(("s040-explode", "explode")) == "s040-explode")
 check("name keeps a different shot", TaskScanner.specName(("s050-return", "ret")) == "s050-return · ret")
+
+section("queue rules")
+do {
+    let standard = QueueRule.standard
+    let item = standard.parse("s040-explode:explode")
+    check("the standard rule reads scene:shot", item?.fields == ["scene": "s040-explode", "shot": "explode"] && item?.key == "s040-explode-explode")
+    check("…names it as before", item.map(standard.title(for:)) == "s040-explode" && standard.parse("s050-return:ret").map(standard.title(for:)) == "s050-return · ret")
+    check("…ties a render to it by its --scene and --shot",
+          item.map { standard.matches(arguments: ["blender", "-b", "--", "--scene", "s040-explode", "--shot", "explode"], $0) } == true
+          && item.map { standard.matches(arguments: ["blender", "-b", "--", "--scene", "s040-explode", "--shot", "wide"], $0) } == false)
+    check("…or, without those, by the two names joined in an argument",
+          item.map { standard.matches(arguments: ["node", "paste.js", "out/s040-explode-explode/frames"], $0) } == true
+          && item.map { standard.matches(arguments: ["node", "paste.js", "out/s050-return-ret/frames"], $0) } == false)
+    check("…and with both flags present, the joined name alone is not enough",
+          item.map { standard.matches(arguments: ["x", "--scene", "other", "--shot", "explode", "s040-explode-explode"], $0) } == false)
+    check("a script's items are its arguments that read as items; options are not", standard.items(in: ["queue.sh", "--fast", "s010:a", "notes.txt", "s020:b"]).map(\.key) == ["s010-a", "s020-b"])
+
+    let folders = QueueRule(script: "render_all.sh", item: "{seq}/{shot}", flags: ["--seq": "{seq}", "--shot": "{shot}"], title: "{seq} / {shot}", doneFile: "{cwd}/out/{seq}_{shot}.mov")
+    check("another way of writing items: a rule of your own", folders.parse("ep04/intro")?.fields == ["seq": "ep04", "shot": "intro"] && folders.parse("ep04:intro") == nil && folders.parse("ep04/") == nil)
+    check("…with its own name for them", folders.parse("ep04/intro").map(folders.title(for:)) == "ep04 / intro")
+    check("…only for the script it names", folders.items(in: ["scripts/render_all.sh", "ep04/intro", "ep04/table"]).count == 2 && folders.items(in: ["other.sh", "ep04/intro"]).isEmpty)
+    check("…and the script's own path is not one of its items", QueueRule(script: "all.sh", item: "{shot}").items(in: ["./all.sh", "intro", "table"]).map(\.key) == ["intro", "table"])
+    check("a part ends at the first place the text after it appears", QueueRule(item: "{a}-{b}").parse("s040-explode-wide")?.values == ["s040", "explode-wide"])
+    check("a template with no parts, or two parts run together, reads nothing", QueueRule(item: "plain").parse("plain") == nil && QueueRule(item: "{a}{b}").parse("ab") == nil)
+    check("a time or an address is still not an item", QueueRule(item: "{a}:{b}").parse("12:30") == nil && QueueRule(item: "{a}:{b}").parse("http://example.com") == nil)
+
+    let file = Data("{\"queueDoneFile\":\"{cwd}/out/{scene}-{shot}.mp4\",\"queues\":[{\"script\":\"render_all.sh\",\"item\":\"{seq}/{shot}\",\"contains\":\"{seq}_{shot}\"}]}".utf8)
+    let rules = try? JSONDecoder().decode(AdapterRules.self, from: file)
+    check("rules from the file come first, then the standard one, which keeps the done-file set for it",
+          rules?.queueRules.map(\.item) == ["{seq}/{shot}", "{scene}:{shot}"] && rules?.queueRules.last?.doneFile == "{cwd}/out/{scene}-{shot}.mp4")
+    check("with no file there is only the standard rule", AdapterRules().queueRules == [QueueRule.standard])
+    check("the standard rule can be switched off", (try? JSONDecoder().decode(AdapterRules.self, from: Data("{\"standardQueue\":false}".utf8)))?.queueRules.isEmpty == true)
+}
 
 section("titles from a script's first comment")
 check("ASCII colon", TaskScanner.shortTitle("Fake render: a stand-in for a headless Blender job") == "Fake render")
@@ -190,6 +317,77 @@ explicitLines.feed("progress 13/720")
 check("PROGRESS i/N, any case", explicitLines.done == 13)
 var unrelated = ProgressParser()
 check("an unrelated line is not progress", !unrelated.feed("Read blend: /tmp/a.blend") && unrelated.done == 0 && unrelated.total == nil)
+
+section("progress of an ffmpeg encode")
+do {
+    // Lines as ffmpeg 9 prints them (the status line is rewritten in place, with a carriage return).
+    let banner = [
+        "ffmpeg version 9.0.1 Copyright (c) 2000-2026 the FFmpeg developers",
+        "Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'input.mp4':",
+        "  Duration: 00:00:40.00, start: 0.000000, bitrate: 15578 kb/s",
+        "Stream mapping:",
+        "Output #0, mp4, to 'out.mp4':",
+    ]
+    var p = ProgressParser(ffmpegArguments: ["ffmpeg", "-y", "-i", "input.mp4", "-c:v", "libx264", "out.mp4"])
+    for line in banner { p.feed(line) }
+    check("nothing is known before the first status line", p.mediaDone == nil && p.mediaTotal == nil)
+    check("a status line gives the place in the output, its length and the speed",
+          p.feed("frame=   28 fps= 28 q=24.0 size=     768KiB time=00:00:05.15 bitrate=1220.6kbits/s speed=5.12x elapsed=0:00:01.00    ")
+          && p.mediaDone == 5.15 && p.mediaTotal == 40 && p.mediaSpeed == 5.12 && !p.mediaTotalIsRough)
+    check("the last line reaches the end", p.feed("frame= 1200 fps= 43 q=-1.0 Lsize=   42996KiB time=00:00:40.00 bitrate=8805.6kbits/s speed=1.44x elapsed=0:00:27.77    ") && p.mediaDone == 40)
+    check("an encode has no frames", p.done == 0 && p.total == nil)
+
+    var audio = ProgressParser(ffmpegArguments: ["ffmpeg", "-i", "input.mp4", "-vn", "a.mp3"])
+    for line in banner { audio.feed(line) }
+    check("sound alone has a status line without frames", audio.feed("size=     313KiB time=00:00:20.00 bitrate=  64.1kbits/s speed= 266x elapsed=0:00:00.15") && audio.mediaDone == 20 && audio.mediaSpeed == 266)
+
+    var machine = ProgressParser(ffmpegArguments: ["ffmpeg", "-nostats", "-progress", "pipe:1", "-t", "3", "-i", "input.mp4", "p.mp4"])
+    for line in ["  Duration: 00:00:40.00, start: 0.000000, bitrate: 15578 kb/s", "frame=45", "out_time_us=1500000", "out_time_ms=1500000", "out_time=00:00:01.500000", "speed=11.6x", "progress=continue"] { machine.feed(line) }
+    check("what -progress prints is read too, and -t is the length", machine.mediaDone == 1.5 && machine.mediaTotal == 3 && !machine.mediaTotalIsRough)
+    check("…and its last word finishes it", machine.feed("progress=end") && machine.mediaDone == 3)
+
+    var quiet = ProgressParser(ffmpegArguments: ["ffmpeg", "-loglevel", "error", "-stats", "-i", "input.mp4", "out.mp4"])
+    check("with the inputs' lengths not printed, the place is known and the length is not",
+          quiet.feed("frame=   28 fps= 28 q=24.0 size=     768KiB time=00:00:05.15 bitrate=1220.6kbits/s speed=5.12x") && quiet.mediaDone == 5.15 && quiet.mediaTotal == nil)
+
+    var two = ProgressParser(ffmpegArguments: ["ffmpeg", "-i", "video.mp4", "-i", "music.m4a", "out.mp4"])
+    for line in ["  Duration: 00:00:40.00, start: 0.000000, bitrate: 15578 kb/s", "  Duration: 00:03:10.00, start: 0.000000, bitrate: 128 kb/s"] { two.feed(line) }
+    two.feed("frame=   28 fps= 28 q=24.0 size=     768KiB time=00:00:05.15 bitrate=1220.6kbits/s speed=5.12x")
+    check("inputs of different lengths: the longest, marked as a best guess", two.mediaTotal == 190 && two.mediaTotalIsRough)
+    check("…and when the output runs past it, the guess is dropped for good",
+          two.feed("frame= 9000 fps= 28 q=24.0 size=   90768KiB time=00:03:30.00 bitrate=1220.6kbits/s speed=5.12x") && two.mediaTotal == nil
+          && { two.feed("frame= 9100 fps= 28 q=24.0 size=   91768KiB time=00:03:31.00 bitrate=1220.6kbits/s speed=5.12x"); return two.mediaTotal == nil }())
+
+    var joined = ProgressParser(ffmpegArguments: ["ffmpeg", "-i", "a.mp4", "-i", "b.mp4", "-filter_complex", "[0:v][1:v]concat=n=2:v=1[v]", "-map", "[v]", "out.mp4"])
+    for line in ["  Duration: 00:00:40.00, start: 0.000000, bitrate: 1 kb/s", "  Duration: 00:00:20.00, start: 0.000000, bitrate: 1 kb/s"] { joined.feed(line) }
+    joined.feed("frame=   28 fps= 28 q=24.0 size=     768KiB time=00:00:05.00 bitrate=1220.6kbits/s speed=5.12x")
+    check("inputs joined end to end add up, as a best guess", joined.mediaTotal == 60 && joined.mediaTotalIsRough)
+
+    check("what a command line says about the output's length",
+          ProgressParser.encodePlan(["ffmpeg", "-i", "a.mp4", "-t", "0:01:30", "out.mp4"]) == ProgressParser.EncodePlan(limit: 90, rough: false, joined: false)
+          && ProgressParser.encodePlan(["ffmpeg", "-ss", "10", "-i", "a.mp4", "out.mp4"]).rough
+          && ProgressParser.encodePlan(["ffmpeg", "-i", "a.mp4", "-vf", "setpts=0.5*PTS", "out.mp4"]).rough
+          && !ProgressParser.encodePlan(["ffmpeg", "-i", "a.mp4", "-vf", "scale=1280:-2", "out.mp4"]).rough)
+    check("times as ffmpeg takes them", ProgressParser.mediaTime("90") == 90 && ProgressParser.mediaTime("1:30") == 90 && ProgressParser.mediaTime("0:01:30.5") == 90.5
+          && ProgressParser.mediaTime("1500ms") == 1.5 && ProgressParser.mediaTime("soon") == nil)
+    var cut = ProgressParser(ffmpegArguments: ["ffmpeg", "-ss", "5", "-i", "input.mp4", "-t", "10", "out.mp4"])
+    cut.feed("  Duration: 00:00:40.00, start: 0.000000, bitrate: 15578 kb/s")
+    cut.feed("frame=   28 fps= 28 q=24.0 size=     768KiB time=00:00:05.15 bitrate=1220.6kbits/s speed=5.12x")
+    check("a -t shorter than the input is the exact length, whatever else is on the line", cut.mediaTotal == 10 && !cut.mediaTotalIsRough)
+
+    var blender = ProgressParser()
+    check("a render's lines are not taken for an encode", !blender.feed("Fra:12 Mem:1.2G (Peak 2G) | Time:00:10.21 | Remaining:00:05.00 | Rendering 8/64 samples") || blender.mediaDone == nil)
+
+    var report = JobReport(pid: 1, startedAt: 0, source: "wrapper")
+    report.absorb(p, now: 10)
+    check("the report carries it", report.mediaDone == 40 && report.mediaTotal == 40 && report.mediaRough == false && report.mediaSpeed == 1.44)
+    var item = RenderItem(id: "x", name: "encode", state: .encoding)
+    item.mediaDone = 10
+    item.mediaTotal = 40
+    item.mediaSpeed = 2
+    check("an encode's fraction and time left come from its place in the output and its speed", item.fraction == 0.25 && item.eta == 15)
+    check("a place in a clip is written the way a player writes it", Fmt.media(5.9) == "0:05" && Fmt.media(750) == "12:30" && Fmt.media(3723) == "1:02:03")
+}
 
 section("job reports")
 var jobReport = JobReport(pid: 4242, startedAt: 1_800_000_000, source: "wrapper", name: "hero")
@@ -766,6 +964,901 @@ do {
     hook.url = "http://127.0.0.1:9/hook"
     check("a channel with its own event list can leave agents out", { hook.events = ["job.ended"]; return !hook.wants("agent.waiting") }())
     check("agent events know what they are", RenderEvent.Kind.agentWaiting.isAgent && RenderEvent.Kind.agentsIdle.isAgent && !RenderEvent.Kind.jobEnded.isAgent)
+}
+
+// MARK: Answering agents
+
+section("an agent's permission request")
+func hookJSON(_ action: String, _ input: String, event: String = "PermissionRequest") -> Data {
+    Data("{\"hook_event_name\":\"\(event)\",\"session_id\":\"s-1\",\"cwd\":\"/tmp/somewhere/demo-site\",\"permission_mode\":\"default\",\"tool_name\":\"\(action)\",\"tool_input\":\(input)}".utf8)
+}
+do {
+    let bash = HookInput.parse(hookJSON("Bash", "{\"command\":\"npm test\",\"description\":\"Run the tests\"}"))
+    check("a Bash request shows its command, and after it every other field by name",
+          bash?.action == "Bash" && bash?.detail == "npm test  ·  description: Run the tests" && bash?.event == "PermissionRequest")
+    check("the fingerprint is sixteen hex digits", bash?.fingerprint.count == 16 && bash?.fingerprint.allSatisfy(\.isHexDigit) == true)
+    check("the same request has the same fingerprint, whatever the key order",
+          bash?.fingerprint == HookInput.parse(hookJSON("Bash", "{\"description\":\"Run the tests\",\"command\":\"npm test\"}"))?.fingerprint)
+    check("a different command has a different one", bash?.fingerprint != HookInput.parse(hookJSON("Bash", "{\"command\":\"npm test -- -u\",\"description\":\"Run the tests\"}"))?.fingerprint)
+    check("a Read request shows its path", HookInput.parse(hookJSON("Read", "{\"file_path\":\"src/login.ts\"}"))?.detail == "src/login.ts")
+    check("a search shows the pattern and where", HookInput.parse(hookJSON("Grep", "{\"pattern\":\"TODO\",\"path\":\"src\"}"))?.detail == "TODO  in  src")
+    check("anything else shows every field by name", HookInput.parse(hookJSON("Mystery", "{\"b\":\"x\",\"a\":1}"))?.detail == "a: 1  ·  b: x")
+    check("a search shows its other fields too", HookInput.parse(hookJSON("Grep", "{\"pattern\":\"TODO\",\"path\":\"src\",\"-i\":true,\"glob\":\"*.ts\"}"))?.detail
+          == "TODO  in  src  ·  -i: true  ·  glob: *.ts")
+    let edit = HookInput.parse(hookJSON("Edit", "{\"file_path\":\"a.txt\",\"old_string\":\"one\\ntwo\",\"new_string\":\"three\"}"))
+    check("an edit shows what it would change, not only where", edit?.detail == "a.txt  ·  new_string: three  ·  old_string: one\ntwo")
+    check("a flag that matters cannot hide behind the command",
+          HookInput.parse(hookJSON("Bash", "{\"command\":\"ls\",\"dangerouslyDisableSandbox\":true}"))?.detail == "ls  ·  dangerouslyDisableSandbox: true")
+    check("nested input is shown as it is", HookInput.parse(hookJSON("Mystery", "{\"list\":[1,2],\"path\":\"p\"}"))?.detail == "p  ·  list: [1,2]")
+    check("without a tool name there is nothing to ask", HookInput.parse(Data("{\"hook_event_name\":\"PermissionRequest\"}".utf8)) == nil)
+
+    let allow = HookOutput.permissionRequest(.allow) ?? ""
+    check("allow is printed the way the agent expects it", allow.contains("\"hookEventName\":\"PermissionRequest\"") && allow.contains("\"behavior\":\"allow\""))
+    check("deny too, with a reason", (HookOutput.permissionRequest(.deny) ?? "").contains("\"behavior\":\"deny\""))
+    check("no answer prints nothing at all", HookOutput.permissionRequest(.none) == nil)
+
+    let policy = ControlPolicy()
+    check("reading may be allowed from here by default", policy.verdict(action: "Read", detail: "src/login.ts").approvable)
+    check("running a command may not, and the reason is given", !policy.verdict(action: "Bash", detail: "ls").approvable && policy.verdict(action: "Bash", detail: "ls").reason != nil)
+    check("nor editing", !policy.verdict(action: "Edit", detail: "a.txt").approvable && !policy.verdict(action: "Write", detail: "a.txt").approvable)
+    check("what cannot be shown whole cannot be allowed", !policy.verdict(action: "Read", detail: String(repeating: "x", count: 200)).approvable)
+    check("nor what runs over several lines", !policy.verdict(action: "Read", detail: "a\nb").approvable)
+    let everything = ControlPolicy(approvable: ["Read", "Edit"], maxDetail: 400)
+    check("even with editing allowed from here, an edit of several lines cannot be",
+          !everything.verdict(action: "Edit", detail: edit?.detail ?? "").approvable && everything.verdict(action: "Edit", detail: "a.txt  ·  new_string: b  ·  old_string: a").approvable)
+    check("text that reads backwards or hides characters cannot be allowed",
+          !policy.verdict(action: "Read", detail: "src/\u{202E}txt.exe").approvable && !policy.verdict(action: "Read", detail: "src/a\u{200B}b").approvable
+          && !policy.verdict(action: "Read", detail: "a\tb").approvable && policy.verdict(action: "Read", detail: "文档/说明 v2.md").approvable)
+}
+
+section("the hook in a settings file")
+do {
+    let command = "'/Applications/RenderDock.app/Contents/Helpers/renderdock' hook"
+    func object(_ data: Data?) -> NSDictionary? { data.flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? NSDictionary } }
+    let fresh = HookSettings.adding(command: command, to: nil)
+    check("a file that does not exist yet gets just the hook", HookSettings.isInstalled(in: fresh) && object(fresh)?.count == 1)
+    let existing = Data("{\"theme\":\"dark\",\"hooks\":{\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"say done\"}]}],\"PermissionRequest\":[{\"matcher\":\"Bash\",\"hooks\":[{\"type\":\"command\",\"command\":\"mine.sh\"}]}]}}".utf8)
+    let added = HookSettings.adding(command: command, to: existing)
+    let hooks = object(added)?["hooks"] as? NSDictionary
+    check("everything already there is kept", object(added)?["theme"] as? String == "dark" && (hooks?["Stop"] as? [Any])?.count == 1)
+    check("the user's own permission hook stays, ours is added after it", (hooks?["PermissionRequest"] as? [Any])?.count == 2)
+    check("adding it twice leaves one", ((object(HookSettings.adding(command: command, to: added))?["hooks"] as? NSDictionary)?["PermissionRequest"] as? [Any])?.count == 2)
+    let removed = added.flatMap(HookSettings.removing(from:))
+    check("taking it out leaves what was there, and nothing of ours", object(removed) == object(existing) && !HookSettings.isInstalled(in: removed))
+    check("taking it out of a file that never had it changes nothing", HookSettings.removing(from: existing) == existing)
+    check("our hook alone, taken out again, leaves an empty object", object(fresh.flatMap(HookSettings.removing(from:)))?.count == 0)
+    check("a file that is not JSON is left alone", HookSettings.adding(command: command, to: Data("not json".utf8)) == nil && HookSettings.removing(from: Data("[1]".utf8)) == nil)
+    let shared = Data("{\"hooks\":{\"PermissionRequest\":[{\"matcher\":\"*\",\"hooks\":[{\"type\":\"command\",\"command\":\"mine.sh\"},{\"type\":\"command\",\"command\":\"'/x/renderdock' hook\"}]}]}}".utf8)
+    let sharedOut = object(HookSettings.removing(from: shared))
+    let leftGroup = (((sharedOut?["hooks"] as? NSDictionary)?["PermissionRequest"] as? [Any])?.first as? NSDictionary)
+    check("a hook of the user's own in the same group as ours stays when ours is taken out",
+          (leftGroup?["hooks"] as? [NSDictionary])?.map { $0["command"] as? String } == ["mine.sh"] && leftGroup?["matcher"] as? String == "*")
+    let sharedAgain = object(HookSettings.adding(command: command, to: shared))
+    let groupsAgain = (sharedAgain?["hooks"] as? NSDictionary)?["PermissionRequest"] as? [NSDictionary]
+    check("…and when ours is put in again over itself",
+          groupsAgain?.count == 2 && (groupsAgain?.first?["hooks"] as? [NSDictionary])?.map { $0["command"] as? String } == ["mine.sh"])
+    let kept = HookSettings.keepsakes(for: URL(fileURLWithPath: "/tmp/project/.claude/settings.local.json"), paths: ControlPaths(directory: URL(fileURLWithPath: "/tmp/rd-control")))
+    check("the copy of a settings file is kept in RenderDock's own directory, not beside the settings",
+          kept.backup.path.hasPrefix("/tmp/rd-control/hook-backups/") && kept.created.path.hasPrefix("/tmp/rd-control/hook-backups/")
+          && kept.backup != HookSettings.keepsakes(for: URL(fileURLWithPath: "/tmp/other/.claude/settings.local.json"), paths: ControlPaths(directory: URL(fileURLWithPath: "/tmp/rd-control"))).backup)
+    check("someone else's hook that merely ends in 'hook' is not ours",
+          !HookSettings.isInstalled(in: Data("{\"hooks\":{\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"my hook\"}]}]}}".utf8)))
+}
+
+section("asking and answering")
+do {
+    let fm = FileManager.default
+    // A Unix socket path is limited to about a hundred bytes, so the directory name is kept short.
+    let dir = fm.temporaryDirectory.appendingPathComponent("rdc-\(UUID().uuidString.prefix(8))")
+    let paths = ControlPaths(directory: dir)
+    let broker = ControlBroker(paths: paths)
+
+    let started = Date()
+    check("with nothing listening, the hook's question comes back at once and unanswered",
+          ControlClient.ask(hookJSON: hookJSON("Read", "{\"file_path\":\"a.txt\"}"), paths: paths, timeout: 5) == .none && Date().timeIntervalSince(started) < 0.5)
+
+    check("the broker starts", broker.start() && broker.isRunning)
+    func mode(_ url: URL) -> Int { ((try? fm.attributesOfItem(atPath: url.path))?[.posixPermissions] as? NSNumber)?.intValue ?? -1 }
+    check("its directory is the user's alone, and so are the socket and the token", mode(dir) == 0o700 && mode(paths.socket) == 0o600 && mode(paths.token) == 0o600)
+
+    /// Asks in the background, the way the hook does, and hands back what it was told.
+    func ask(_ json: Data, timeout: TimeInterval = 10) -> () -> ControlDecision {
+        var result = ControlDecision.none
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            result = ControlClient.ask(hookJSON: json, paths: paths, timeout: timeout)
+            done.signal()
+        }
+        return {
+            _ = done.wait(timeout: .now() + timeout + 2)
+            return result
+        }
+    }
+    func waitFor(_ count: Int) -> [ControlRequest] {
+        for _ in 0..<200 {
+            let p = broker.pending
+            if p.count == count { return p }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        return broker.pending
+    }
+
+    var answer = ask(hookJSON("Read", "{\"file_path\":\"src/login.ts\"}"))
+    var pending = waitFor(1)
+    check("a request arrives with what it is about", pending.count == 1 && pending.first?.action == "Read" && pending.first?.detail == "src/login.ts" && pending.first?.project == "demo-site")
+    check("it has a five-letter id and may be allowed here", pending.first?.id.count == 5 && pending.first?.approvable == true)
+    check("an answer for a request that does not exist does nothing", !broker.decide(id: "zzzzz", .allow, source: "check"))
+    check("allowing it", broker.decide(id: pending.first?.id ?? "", .allow, source: "check"))
+    check("…reaches the one who asked", answer() == .allow)
+    check("an answered request is gone, and cannot be answered twice", waitFor(0).isEmpty && !broker.decide(id: pending.first?.id ?? "", .deny, source: "check"))
+
+    answer = ask(hookJSON("Bash", "{\"command\":\"rm -rf build\"}"))
+    pending = waitFor(1)
+    check("a command arrives marked as not allowable here", pending.first?.approvable == false && pending.first?.reason != nil)
+    check("allowing it from here is refused", !broker.decide(id: pending.first?.id ?? "", .allow, source: "check") && broker.pending.count == 1)
+    check("denying it works", broker.decide(id: pending.first?.id ?? "", .deny, source: "check") && answer() == .deny)
+
+    answer = ask(hookJSON("Read", "{\"file_path\":\"b.txt\"}"), timeout: 0.4)
+    _ = waitFor(1)
+    check("when the asker gives up, it gets no answer", answer() == .none)
+    check("…and its request is dropped here", waitFor(0).isEmpty)
+
+    check("something that is not a permission request is not taken", { let a = ask(hookJSON("Read", "{\"file_path\":\"c.txt\"}", event: "PreToolUse"), timeout: 1); return a() == .none && broker.pending.isEmpty }())
+
+    let token = try? String(contentsOf: paths.token, encoding: .utf8)
+    try? "wrong".write(to: paths.token, atomically: true, encoding: .utf8)
+    check("a caller with the wrong token is turned away", { let a = ask(hookJSON("Read", "{\"file_path\":\"d.txt\"}"), timeout: 1); return a() == .none && broker.pending.isEmpty }())
+    try? (token ?? "").write(to: paths.token, atomically: true, encoding: .utf8)
+
+    answer = ask(hookJSON("Read", "{\"file_path\":\"e.txt\"}"))
+    _ = waitFor(1)
+    broker.stop()
+    check("stopping releases whoever is waiting, without an answer", answer() == .none && !broker.isRunning)
+    check("…and takes the socket and the token away", !fm.fileExists(atPath: paths.socket.path) && !fm.fileExists(atPath: paths.token.path))
+
+    let records = ControlBroker.auditRecords(paths: paths)
+    check("every outcome is on record", records.compactMap { $0["decision"] as? String } == ["allow", "deny", "none", "none"])
+    check("…with who decided and what it was about",
+          records.first?["source"] as? String == "check" && records.first?["action"] as? String == "Read" && records.first?["detail"] as? String == "src/login.ts"
+          && records.compactMap { $0["source"] as? String }.suffix(2) == ["gone", "stopped"])
+    check("the record is the user's alone", mode(paths.audit) == 0o600)
+    try? fm.removeItem(at: dir)
+}
+
+// MARK: The entry for other programs
+
+section("notices, progress and questions from other programs")
+do {
+    let fm = FileManager.default
+    let dir = fm.temporaryDirectory.appendingPathComponent("rdi-\(UUID().uuidString.prefix(8))")
+    let paths = InboxPaths(directory: dir)
+    let server = InboxServer(paths: paths)
+
+    let started = Date()
+    check("with nothing listening, a notice is turned away at once",
+          InboxClient.notify(title: "", body: "hello", from: "check", paths: paths) == .unavailable && Date().timeIntervalSince(started) < 0.5)
+    check("…and so is a question", InboxClient.ask(text: "Go on?", choices: ["Yes", "No"], timeoutSec: 5, from: "check", paths: paths) == .unavailable)
+
+    check("the entry starts", server.start() && server.isRunning)
+    func mode(_ url: URL) -> Int { ((try? fm.attributesOfItem(atPath: url.path))?[.posixPermissions] as? NSNumber)?.intValue ?? -1 }
+    check("its directory is the user's alone, and so are the socket and the token", mode(dir) == 0o700 && mode(paths.socket) == 0o600 && mode(paths.token) == 0o600)
+
+    var arrivals: [String] = []
+    server.onArrival = { notice, question in arrivals.append(notice?.title ?? question?.text ?? "?") }
+    /// What the main queue was handed is only run when the main thread gives it the time.
+    func settle() { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+
+    // Notices
+    check("a notice is taken", { if case .ok(let id) = InboxClient.notify(title: "Build", body: "All 42 tests passed", level: .done, from: "builder", paths: paths) { return id?.count == 5 }; return false }())
+    var view = server.view
+    check("…and kept with who sent it, what it says and how it went",
+          view.notices.count == 1 && view.notices.first?.from == "builder" && view.notices.first?.title == "Build" && view.notices.first?.body == "All 42 tests passed"
+          && view.notices.first?.level == .done)
+    settle()
+    check("…and announced once", arrivals == ["Build"])
+    check("a notice with nothing in it is refused", InboxClient.notify(title: " ", body: "\n", from: "builder", paths: paths) == .refused("nothing to say"))
+    _ = InboxClient.notify(title: String(repeating: "t", count: 90), body: "line one\nline two\u{07}" + String(repeating: "b", count: 300), from: String(repeating: "f", count: 60), paths: paths)
+    view = server.view
+    check("the newest notice comes first", view.notices.count == 2 && view.notices.last?.title == "Build")
+    check("long text is cut, line breaks become spaces, and what cannot be seen is dropped",
+          view.notices.first?.title.count == InboxLimits.title && view.notices.first?.body.count == InboxLimits.body
+          && view.notices.first?.body.hasPrefix("line one line two" + "bbb") == true && view.notices.first?.from.count == InboxLimits.from)
+    for i in 0..<12 { _ = InboxClient.notify(title: "n\(i)", body: "", from: "builder", paths: paths) }
+    check("only the last few notices are kept", server.view.notices.count == InboxLimits.notices && server.view.notices.first?.title == "n11")
+    server.dismissNotice(server.view.notices.first?.id ?? "")
+    check("a notice can be dismissed", server.view.notices.count == InboxLimits.notices - 1 && server.view.notices.first?.title == "n10")
+    var refusedAt: Int?
+    for i in 0..<40 where refusedAt == nil {
+        if InboxClient.notify(title: "flood \(i)", body: "", from: "builder", paths: paths) == .refused("too many notices") { refusedAt = i }
+    }
+    check("a flood of notices is stopped", refusedAt == InboxLimits.noticesPerMinute - 14)
+
+    // Progress
+    check("a task's progress is taken", InboxClient.progress(name: "import", title: "Import the catalogue", percent: 25, etaSec: 90, from: "importer", paths: paths) == .ok(id: nil))
+    var task = server.view.tasks.first
+    check("…with its title, how far along and how long is left", task?.title == "Import the catalogue" && task?.fraction == 0.25 && task?.etaSec == 90 && task?.state == "working" && task?.from == "importer")
+    let began = task?.startedAt
+    _ = InboxClient.progress(name: "import", title: nil, percent: 60, etaSec: nil, from: "importer", paths: paths)
+    task = server.view.tasks.first
+    check("a later report updates the same task: the title stays, the estimate goes when it is no longer given",
+          server.view.tasks.count == 1 && task?.title == "Import the catalogue" && task?.fraction == 0.6 && task?.etaSec == nil && task?.startedAt == began)
+    _ = InboxClient.progress(name: "import", title: nil, percent: nil, etaSec: nil, from: "someone else", paths: paths)
+    check("the same name from another sender is another task", server.view.tasks.count == 2 && server.view.tasks.first?.fraction == nil)
+    _ = InboxClient.progress(name: "import", title: nil, percent: 250, etaSec: nil, state: "done", from: "importer", paths: paths)
+    check("done is done, whatever percentage came with it", server.view.tasks.first?.state == "done" && server.view.tasks.first?.fraction == 1)
+    _ = InboxClient.progress(name: "import", title: nil, percent: 30, etaSec: 5, state: "failed", from: "someone else", paths: paths)
+    check("failed is kept as an error, at the percentage it reached", server.view.tasks.first?.state == "error" && server.view.tasks.first?.fraction == 0.3 && server.view.tasks.first?.etaSec == nil)
+    check("a task needs a name", InboxClient.progress(name: " ", title: "x", percent: 1, etaSec: nil, from: "importer", paths: paths) == .refused("a task needs a name"))
+    for i in 0..<10 { _ = InboxClient.progress(name: "t\(i)", title: nil, percent: 1, etaSec: nil, from: "importer", paths: paths) }
+    check("there is room for only so many tasks", server.view.tasks.count == InboxLimits.tasks
+          && InboxClient.progress(name: "one more", title: nil, percent: 1, etaSec: nil, from: "importer", paths: paths) == .refused("too many tasks"))
+    server.dismissTask("importer/t0")
+    check("a task can be taken off the list", server.view.tasks.count == InboxLimits.tasks - 1)
+
+    // Questions
+    func ask(_ text: String, _ choices: [String], timeout: Int = 10) -> () -> InboxClient.Answer {
+        var result = InboxClient.Answer.unavailable
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            result = InboxClient.ask(text: text, choices: choices, timeoutSec: timeout, from: "planner", paths: paths)
+            done.signal()
+        }
+        return {
+            _ = done.wait(timeout: .now() + .seconds(timeout + 7))
+            return result
+        }
+    }
+    func waitFor(_ count: Int) -> [InboxQuestion] {
+        for _ in 0..<300 {
+            let q = server.view.questions
+            if q.count == count { return q }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        return server.view.questions
+    }
+    settle()   // the notices above have all been announced by now
+    arrivals = []
+    var answer = ask("Which branch should the fix go on?", ["main", "release", "a new one"])
+    var questions = waitFor(1)
+    check("a question arrives whole, with its answers in order",
+          questions.first?.text == "Which branch should the fix go on?" && questions.first?.choices == ["main", "release", "a new one"] && questions.first?.from == "planner"
+          && questions.first?.id.count == 5)
+    settle()
+    check("…and is announced", arrivals == ["Which branch should the fix go on?"])
+    check("an answer that is not one of them does nothing", !server.answer(id: questions.first?.id ?? "", index: 3) && !server.answer(id: "zzzzz", index: 0) && server.view.questions.count == 1)
+    check("picking one", server.answer(id: questions.first?.id ?? "", index: 1))
+    check("…reaches the one who asked, as its number and its words", answer() == .chosen(index: 1, label: "release"))
+    check("an answered question is gone, and cannot be answered twice", waitFor(0).isEmpty && !server.answer(id: questions.first?.id ?? "", index: 0))
+
+    answer = ask("Keep going?", ["Yes", "No"])
+    questions = waitFor(1)
+    server.dismissQuestion(questions.first?.id ?? "")
+    check("a dismissed question comes back as no answer", answer() == .none("dismissed") && waitFor(0).isEmpty)
+
+    let quick = Date()
+    answer = ask("Still there?", ["Yes", "No"], timeout: 5)
+    _ = waitFor(1)
+    check("with nobody answering, the question runs out", answer() == .none("timeout") && abs(Date().timeIntervalSince(quick) - 5) < 1.5 && waitFor(0).isEmpty)
+
+    check("a question with one answer, or five, or two the same, is refused",
+          ask("Go?", ["Yes"])() == .refused("a question needs two to four answers") && ask("Go?", ["a", "b", "c", "d", "e"])() == .refused("a question needs two to four answers")
+          && ask("Go?", ["Yes", "Yes"])() == .refused("two answers are the same"))
+    check("a question too long to show is refused, not cut short",
+          ask(String(repeating: "q", count: InboxLimits.question + 1), ["Yes", "No"])() == .refused("the question is too long (\(InboxLimits.question) characters at most)")
+          && { if case .refused = ask("Go?", ["Yes", String(repeating: "n", count: InboxLimits.choice + 1)])() { return true }; return false }())
+    check("…while one exactly at the limit is taken", { let a = ask(String(repeating: "q", count: InboxLimits.question), [String(repeating: "y", count: InboxLimits.choice), "No"])
+        let q = waitFor(1); server.answer(id: q.first?.id ?? "", index: 0); return a() == .chosen(index: 0, label: String(repeating: "y", count: InboxLimits.choice)) }())
+
+    let pending = (0..<InboxLimits.questions).map { ask("Question \($0)?", ["Yes", "No"]) }
+    questions = waitFor(InboxLimits.questions)
+    check("only so many questions wait at once", questions.count == InboxLimits.questions && ask("One more?", ["Yes", "No"])() == .refused("too many questions waiting"))
+    check("the oldest is first", questions.map(\.text).sorted() == questions.map(\.text) || questions.first?.askedAt ?? .distantFuture <= questions.last?.askedAt ?? .distantPast)
+
+    let token = try? String(contentsOf: paths.token, encoding: .utf8)
+    try? "wrong".write(to: paths.token, atomically: true, encoding: .utf8)
+    check("a caller with the wrong token is turned away", InboxClient.notify(title: "x", body: "y", from: "check", paths: paths) == .unavailable)
+    try? (token ?? "").write(to: paths.token, atomically: true, encoding: .utf8)
+
+    server.stop()
+    check("stopping tells everyone who is waiting that there will be no answer", pending.allSatisfy { $0() == .none("stopped") } && !server.isRunning)
+    check("…forgets everything", server.view.isEmpty)
+    check("…and takes the socket and the token away", !fm.fileExists(atPath: paths.socket.path) && !fm.fileExists(atPath: paths.token.path))
+    check("nothing else was left in its directory", ((try? fm.contentsOfDirectory(atPath: dir.path)) ?? ["?"]).isEmpty)
+    try? fm.removeItem(at: dir)
+
+    do {
+        // A caller that connects and then says nothing must not hold everything else up.
+        let dir2 = fm.temporaryDirectory.appendingPathComponent("rdj-\(UUID().uuidString.prefix(8))")
+        let paths2 = InboxPaths(directory: dir2)
+        let server2 = InboxServer(paths: paths2)
+        server2.start()
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: paths2.socket.path.utf8) }
+        let silent = socket(AF_UNIX, SOCK_STREAM, 0)
+        _ = withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(silent, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) } }
+        _ = "{\"op\":".withCString { write(silent, $0, 6) }
+        let began = Date()
+        let sent = InboxClient.notify(title: "after the silent one", body: "", from: "check", paths: paths2)
+        check("a caller that connects and says nothing holds the entry up for about a second, no longer",
+              sent != .unavailable && Date().timeIntervalSince(began) < 2.5 && server2.view.notices.first?.title == "after the silent one")
+        close(silent)
+
+        var refused: InboxClient.Answer?
+        for i in 0...InboxLimits.questionsPerMinute {
+            var result = InboxClient.Answer.unavailable
+            let done = DispatchSemaphore(value: 0)
+            DispatchQueue.global().async {
+                result = InboxClient.ask(text: "Question \(i)?", choices: ["Yes", "No"], timeoutSec: 5, from: "check", paths: paths2)
+                done.signal()
+            }
+            for _ in 0..<200 where server2.view.questions.isEmpty && done.wait(timeout: .now() + 0.01) == .timedOut {}
+            if let q = server2.view.questions.first { server2.dismissQuestion(q.id) }
+            _ = done.wait(timeout: .now() + 3)
+            if i == InboxLimits.questionsPerMinute { refused = result }
+        }
+        check("more questions in a minute than a person could answer are refused", refused == .refused("too many questions"))
+        server2.stop()
+        try? fm.removeItem(at: dir2)
+    }
+
+    check("text is made one line", InboxLimits.oneLine("  a\n\n b\tc \u{1B}[31m ") == "a b c [31m")
+    check("the rules for a question", InboxLimits.problem(question: "Go?", choices: ["Yes", "No"]) == nil && InboxLimits.problem(question: "", choices: ["Yes", "No"]) == "nothing asked"
+          && InboxLimits.problem(question: "Go?", choices: ["Yes", ""]) == "an answer is empty")
+}
+
+section("the commands other programs run")
+do {
+    // The command-line tool itself, run as another program would run it, against an entry started here.
+    let fm = FileManager.default
+    let tool = (Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])).deletingLastPathComponent().appendingPathComponent("renderdock-cli")
+    if fm.isExecutableFile(atPath: tool.path) {
+        let dir = fm.temporaryDirectory.appendingPathComponent("rdx-\(UUID().uuidString.prefix(8))")
+        let server = InboxServer(paths: InboxPaths(directory: dir))
+        struct Ran { var code: Int32; var out: String; var err: String }
+        func start(_ arguments: [String], environment extra: [String: String] = [:]) -> () -> Ran {
+            let process = Process()
+            process.executableURL = tool
+            process.arguments = arguments
+            var environment = ProcessInfo.processInfo.environment
+            environment["RENDERDOCK_INBOX"] = dir.path
+            environment["RENDERDOCK_FROM"] = nil
+            extra.forEach { environment[$0.key] = $0.value }
+            process.environment = environment
+            let out = Pipe(), err = Pipe()
+            process.standardOutput = out
+            process.standardError = err
+            process.standardInput = FileHandle.nullDevice
+            try? process.run()
+            return {
+                let o = out.fileHandleForReading.readDataToEndOfFile(), e = err.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                return Ran(code: process.terminationStatus, out: String(decoding: o, as: UTF8.self), err: String(decoding: e, as: UTF8.self))
+            }
+        }
+        func run(_ arguments: String..., environment: [String: String] = [:]) -> Ran { start(arguments, environment: environment)() }
+        func waitFor(_ count: Int) -> [InboxQuestion] {
+            for _ in 0..<300 {
+                let q = server.view.questions
+                if q.count == count { return q }
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            return server.view.questions
+        }
+
+        var ran = run("notify", "hello")
+        check("with the entry off, notify says so and exits 3", ran.code == 3 && ran.out.isEmpty && ran.err.contains("not taking this"))
+        ran = run("ask", "Go on?", "--choice", "Yes", "--choice", "No")
+        check("…and so does ask, without waiting", ran.code == 3 && ran.out.isEmpty)
+
+        server.start()
+        ran = run("notify", "All 42 tests passed", "--title", "Build", "--level", "done", "--from", "builder")
+        check("notify: quiet, exit 0, and the notice is there", ran.code == 0 && ran.out.isEmpty && ran.err.isEmpty
+              && server.view.notices.first?.title == "Build" && server.view.notices.first?.body == "All 42 tests passed" && server.view.notices.first?.level == .done
+              && server.view.notices.first?.from == "builder")
+        ran = run("notify", "several", "words", "--", "--and dashes", environment: ["RENDERDOCK_FROM": "from the environment"])
+        check("notify: words are joined, text after -- may start with dashes, the sender may come from the environment",
+              ran.code == 0 && server.view.notices.first?.body == "several words --and dashes" && server.view.notices.first?.from == "from the environment")
+        check("notify: nothing to say, an unknown level and an unknown option are usage errors",
+              run("notify").code == 64 && run("notify", "x", "--level", "loud").code == 64 && run("notify", "x", "--colour", "red").code == 64 && run("notify", "x", "--title").code == 64)
+
+        ran = run("progress", "import", "--title", "Import the catalogue", "--percent", "40", "--eta", "30", "--from", "importer")
+        check("progress: quiet, exit 0, and the task is there", ran.code == 0 && ran.out.isEmpty && server.view.tasks.first?.title == "Import the catalogue"
+              && server.view.tasks.first?.fraction == 0.4 && server.view.tasks.first?.etaSec == 30)
+        check("progress --done finishes it", run("progress", "import", "--done", "--from", "importer").code == 0 && server.view.tasks.count == 1 && server.view.tasks.first?.state == "done")
+        check("progress --failed marks another as failed", run("progress", "export", "--failed", "--from", "importer").code == 0 && server.view.tasks.first?.state == "error")
+        check("progress: no name, two names, a percentage out of range, done and failed together are usage errors",
+              run("progress").code == 64 && run("progress", "a", "b").code == 64 && run("progress", "a", "--percent", "140").code == 64
+              && run("progress", "a", "--eta", "soon").code == 64 && run("progress", "a", "--done", "--failed").code == 64)
+
+        var asked = start(["ask", "Which branch should the fix go on?", "--choice", "main", "--choice", "release", "--from", "planner"])
+        var questions = waitFor(1)
+        check("ask: the question arrives", questions.first?.text == "Which branch should the fix go on?" && questions.first?.choices == ["main", "release"] && questions.first?.from == "planner")
+        server.answer(id: questions.first?.id ?? "", index: 1)
+        ran = asked()
+        check("ask: prints the answer that was picked, and nothing else", ran.code == 0 && ran.out == "release\n" && ran.err.isEmpty)
+
+        asked = start(["ask", "Keep going?", "--choice", "Yes", "--choice", "No", "--json"])
+        questions = waitFor(1)
+        server.answer(id: questions.first?.id ?? "", index: 0)
+        ran = asked()
+        check("ask --json: the answer's number and its words", ran.code == 0 && ran.out == "{\"choice\":\"Yes\",\"index\":0}\n")
+
+        asked = start(["ask", "Keep going?", "--choice", "Yes", "--choice", "No"])
+        questions = waitFor(1)
+        server.dismissQuestion(questions.first?.id ?? "")
+        ran = asked()
+        check("ask: no answer is exit 2, with nothing printed", ran.code == 2 && ran.out.isEmpty && ran.err.contains("no answer"))
+
+        let began = Date()
+        ran = run("ask", "Still there?", "--choice", "Yes", "--choice", "No", "--timeout", "5")
+        check("ask --timeout: gives up after that long", ran.code == 2 && abs(Date().timeIntervalSince(began) - 5) < 1.5)
+
+        check("ask: one answer, a fifth answer, no question, a timeout out of range are usage errors, and nothing is asked",
+              run("ask", "Go?", "--choice", "Yes").code == 64 && run("ask", "Go?", "--choice", "a", "--choice", "b", "--choice", "c", "--choice", "d", "--choice", "e").code == 64
+              && run("ask", "--choice", "Yes", "--choice", "No").code == 64 && run("ask", "Go?", "--choice", "Yes", "--choice", "No", "--timeout", "1").code == 64
+              && server.view.questions.isEmpty)
+        ran = run("ask", String(repeating: "q", count: InboxLimits.question + 1), "--choice", "Yes", "--choice", "No")
+        check("ask: a question too long is refused before it is sent, with the reason", ran.code == 64 && ran.err.contains("too long"))
+
+        asked = start(["ask", "Keep going?", "--choice", "Yes", "--choice", "No"])
+        _ = waitFor(1)
+        server.stop()
+        check("ask: the app going away is no answer", asked().code == 2)
+        try? fm.removeItem(at: dir)
+    } else {
+        print("  (renderdock-cli is not built next to the checks: skipped)")
+    }
+}
+
+// MARK: A device on the desk
+
+section("what a device is sent")
+do {
+    func agent(_ id: String, _ state: AgentState, project: String = "demo-site", waitingFor: String? = nil) -> AgentSession {
+        AgentSession(id: "claude-code:\(id)", tool: "claude-code", project: project, title: "A private title", state: state,
+                     waitingFor: waitingFor, since: agentNow.addingTimeInterval(-20), source: "official")
+    }
+    func request(_ id: String, _ action: String, _ detail: String, approvable: Bool = true) -> ControlRequest {
+        ControlRequest(id: id, tool: "claude-code", sessionId: "s", project: "demo-site", action: action, detail: detail, fingerprint: "f",
+                       receivedAt: agentNow, expiresAt: agentNow.addingTimeInterval(100), approvable: approvable)
+    }
+    let state = StateSnapshot.make(groups: [groupA], metrics: Metrics(),
+                                   agents: [agent("a", .working), agent("b", .waiting, project: "docs", waitingFor: "permission prompt"), agent("c", .idle)],
+                                   now: agentNow, host: "Test Mac")
+    let secure = BuddyProtocol.Options(secure: true)
+    let plain = BuddyProtocol.heartbeat(state: state, requests: [], options: secure)
+    check("counts: every session and job, what is running, what is waiting", plain.total == 4 && plain.running == 2 && plain.waiting == 1)
+    check("the message is the one-line summary", plain.msg == "1 waiting | render 50%" && plain.msg.count <= BuddyProtocol.Limit.msg)
+    check("no request, no prompt", plain.prompt == nil)
+    check("the lines name what is going on, never an idle session",
+          plain.entries.contains("Claude Code docs: waiting (permission prompt)") && plain.entries.contains("s2: rendering 50% ~37m left")
+          && !plain.entries.contains { $0.contains("idle") })
+    check("no session title is sent", !String(decoding: plain.line(), as: UTF8.self).contains("A private title"))
+    check("a snapshot is one line of JSON", plain.line().last == 0x0A && plain.line().dropLast().firstIndex(of: 0x0A) == nil)
+    let decoded = (try? JSONSerialization.jsonObject(with: plain.line())) as? [String: Any]
+    check("…with the fields a device expects", decoded?["total"] as? Int == 4 && decoded?["tokens"] as? Int == 0 && decoded?["prompt"] == nil
+          && (decoded?["entries"] as? [String])?.count == plain.entries.count)
+
+    let read = request("kqmtv", "Read", "src/login.ts")
+    let asked = BuddyProtocol.heartbeat(state: state, requests: [read], options: secure)
+    check("a request that may be allowed is offered on the device", asked.prompt == BuddyProtocol.Prompt(id: "kqmtv", tool: "Read", hint: "src/login.ts"))
+    check("…and the message says what to approve", asked.msg == "approve: Read")
+    let promptJSON = ((try? JSONSerialization.jsonObject(with: asked.line())) as? [String: Any])?["prompt"] as? [String: String]
+    check("…in the protocol's own shape", promptJSON == ["id": "kqmtv", "tool": "Read", "hint": "src/login.ts"])
+
+    let bash = request("hbxwe", "Bash", "rm -rf build", approvable: false)
+    let refused = BuddyProtocol.heartbeat(state: state, requests: [bash], options: secure)
+    check("a request that may not be allowed from a display is never offered on the device", refused.prompt == nil)
+    check("…but the device still says something is waiting on the Mac", refused.entries.first == "Bash demo-site: answer on the Mac")
+    let long = request("abcde", "Read", String(repeating: "x", count: 44))
+    check("what the device cannot show whole is not offered", BuddyProtocol.heartbeat(state: state, requests: [long], options: secure).prompt == nil)
+    let chinese = request("abcde", "Read", "文档/说明.md")
+    check("nor text the device cannot draw", BuddyProtocol.prompt(for: chinese, options: secure) == nil)
+    check("…unless the device can draw it", BuddyProtocol.prompt(for: chinese, options: BuddyProtocol.Options(secure: true, unicode: true))?.hint == "文档/说明.md")
+    check("the first request that can be offered is the one offered", BuddyProtocol.heartbeat(state: state, requests: [bash, read], options: secure).prompt?.id == "kqmtv")
+    let wide = request("abcde", "Read", "文档/这个文件夹的名字比较长/说明.md")   // 19 characters, 47 bytes
+    check("a plain device's limit is a size in bytes: text that is short in characters may still not fit",
+          BuddyProtocol.prompt(for: wide, options: BuddyProtocol.Options(secure: true, unicode: true)) == nil
+          && BuddyProtocol.prompt(for: wide, options: BuddyProtocol.Options(secure: true, unicode: true, extended: true)) != nil)
+    check("…and its lines are cut by bytes too, between characters",
+          BuddyProtocol.fit(String(repeating: "渲", count: 40), 91, unicode: true, bytes: true).utf8.count <= 91
+          && BuddyProtocol.fit(String(repeating: "渲", count: 40), 91, unicode: true, bytes: true).hasSuffix("…")
+          && BuddyProtocol.fit("short", 91, unicode: true, bytes: true) == "short")
+    let lookOnly = BuddyProtocol.heartbeat(state: state, requests: [read], options: BuddyProtocol.Options(secure: true, offerRequests: false))
+    check("with answering on the device switched off, a request is never offered there: the device only hears that it waits on the Mac",
+          lookOnly.prompt == nil && lookOnly.entries.first == "Read demo-site: answer on the Mac" && !String(decoding: lookOnly.line(), as: UTF8.self).contains("login.ts"))
+
+    let open = BuddyProtocol.heartbeat(state: state, requests: [read], options: BuddyProtocol.Options(secure: false))
+    check("on a link that is not encrypted, only counts go out: no names, no request", open.entries.isEmpty && open.prompt == nil && open.total == 4 && open.msg == "1 waiting | render 50%")
+
+    check("text is cut to the limit", BuddyProtocol.fit(String(repeating: "a", count: 30), 23, unicode: false).count == 23)
+    check("what a plain device cannot draw becomes one question mark", BuddyProtocol.fit("渲染 final", 40, unicode: false) == "? final")
+    check("a device that can draw it gets it as it is", BuddyProtocol.fit("渲染 final", 40, unicode: true) == "渲染 final")
+    let crowded = StateSnapshot.make(groups: [], metrics: Metrics(), agents: (0..<20).map { agent("w\($0)", .working, project: String(repeating: "p", count: 120)) }, now: agentNow, host: "Test Mac")
+    let many = BuddyProtocol.heartbeat(state: crowded, requests: [], options: secure)
+    check("at most eight lines, none longer than the device has room for", many.entries.count == 8 && many.entries.allSatisfy { $0.count <= BuddyProtocol.Limit.entry })
+
+    let sync = String(decoding: BuddyProtocol.timeSync(now: Date(timeIntervalSince1970: 1_800_000_000), zone: TimeZone(secondsFromGMT: 28_800)!), as: UTF8.self)
+    check("the time is sent with the zone's offset", sync == "{\"time\":[1800000000,28800]}\n")
+    check("a long line is cut into writes of the size the link allows",
+          BuddyProtocol.chunks(Data(repeating: 1, count: 50), size: 20).map(\.count) == [20, 20, 10] && BuddyProtocol.chunks(Data(), size: 20).isEmpty)
+}
+
+section("what a device sends back")
+do {
+    func parse(_ text: String) -> BuddyProtocol.Incoming { BuddyProtocol.parse(Data(text.utf8)) }
+    check("'once' allows", parse("{\"cmd\":\"permission\",\"id\":\"kqmtv\",\"decision\":\"once\"}") == .permission(id: "kqmtv", decision: .allow))
+    check("'deny' denies", parse("{\"cmd\":\"permission\",\"id\":\"kqmtv\",\"decision\":\"deny\"}") == .permission(id: "kqmtv", decision: .deny))
+    check("anything else is not an answer", parse("{\"cmd\":\"permission\",\"id\":\"kqmtv\",\"decision\":\"always\"}") == .unknown
+          && parse("{\"cmd\":\"permission\",\"decision\":\"once\"}") == .unknown && parse("not json") == .unknown)
+    check("the device's status: name, encrypted or not, battery",
+          parse("{\"ack\":\"status\",\"ok\":true,\"data\":{\"name\":\"Clawd\",\"sec\":true,\"bat\":{\"pct\":87,\"usb\":true}}}")
+          == .status(BuddyProtocol.DeviceStatus(name: "Clawd", secure: true, batteryPercent: 87, onUSB: true)))
+    check("a status without the encryption flag is not encrypted", parse("{\"ack\":\"status\",\"ok\":true,\"data\":{}}") == .status(BuddyProtocol.DeviceStatus(name: nil, secure: false, batteryPercent: nil, onUSB: nil)))
+    check("other acknowledgements pass through", parse("{\"ack\":\"owner\",\"ok\":true}") == .ack("owner", ok: true))
+
+    var assembler = BuddyProtocol.LineAssembler(limit: 64)
+    check("half a line is not a line", assembler.feed(Data("{\"cmd\":\"permi".utf8)).isEmpty)
+    let rest = assembler.feed(Data("ssion\",\"id\":\"a\",\"decision\":\"once\"}\n{\"ack\":\"name\",\"ok\":true}\n{\"a".utf8))
+    check("pieces are put back together, and two lines in one piece come out as two", rest.count == 2 && BuddyProtocol.parse(rest[0]) == .permission(id: "a", decision: .allow))
+    check("a line that never ends is thrown away", assembler.feed(Data(repeating: 0x41, count: 200)).isEmpty && assembler.feed(Data("\n".utf8)).isEmpty)
+}
+
+section("the extra fields for RenderDock's own firmware")
+do {
+    func agent(_ id: String, _ state: AgentState, project: String, waitingFor: String? = nil) -> AgentSession {
+        AgentSession(id: "claude-code:\(id)", tool: "claude-code", project: project, title: "A private title", state: state,
+                     waitingFor: waitingFor, since: agentNow.addingTimeInterval(-20), source: "official")
+    }
+    let state = StateSnapshot.make(groups: [groupA], metrics: Metrics(),
+                                   agents: [agent("a", .working, project: "billing-api"), agent("b", .done, project: "docs"), agent("c", .idle, project: "notes")],
+                                   now: agentNow, host: "Test Mac")
+    let plainDevice = BuddyProtocol.heartbeat(state: state, requests: [], options: BuddyProtocol.Options(secure: true), now: agentNow)
+    check("a device that did not ask gets none of them", plainDevice.extended == nil && !String(decoding: plainDevice.line(), as: UTF8.self).contains("\"rd\""))
+    let ours = BuddyProtocol.Options(secure: true, unicode: true, extended: true)
+    let hb = BuddyProtocol.heartbeat(state: state, requests: [], options: ours, now: agentNow)
+    let e = hb.extended
+    check("a device that asked gets the overall state and the top item with its percentage",
+          e?.state == "working" && e?.topKind == "render" && e?.topName == "s2" && e?.topPercent == 50 && e?.topExact == true && e?.topEtaSec == 2250)
+    check("…the job the shot belongs to", e?.jobTitle == "Job a" && e?.jobDone == 1 && e?.jobTotal == 3)
+    check("…and a list: renders, then sessions working, then what just finished, never the idle",
+          e?.rows.map(\.name) == ["s2", "billing-api", "docs"] && e?.rows.map(\.state) == ["working", "working", "done"] && e?.rows.first?.percent == 50)
+    check("a session's row has the tool's name and its age", e?.rows[1].tool == "Claude Code" && e?.rows[1].ageSec == 20)
+    let rd = ((try? JSONSerialization.jsonObject(with: hb.line())) as? [String: Any])?["rd"] as? [String: Any]
+    check("on the wire they sit under one extra key", rd?["state"] as? String == "working" && (rd?["top"] as? [String: Any])?["pct"] as? Int == 50
+          && (rd?["rows"] as? [[String: Any]])?.count == 3 && ((rd?["agents"] as? [String: Any])?["working"] as? Int) == 1)
+    check("still no session title anywhere", !String(decoding: hb.line(), as: UTF8.self).contains("A private title"))
+    check("not on an unencrypted link, whatever the device says",
+          BuddyProtocol.heartbeat(state: state, requests: [], options: BuddyProtocol.Options(secure: false, unicode: true, extended: true), now: agentNow).extended == nil)
+
+    let request = ControlRequest(id: "kqmtv", tool: "claude-code", sessionId: "s", project: "docs", action: "Read",
+                                 detail: "src/features/authentication/redirect-after-login.ts", fingerprint: "f",
+                                 receivedAt: agentNow, expiresAt: agentNow.addingTimeInterval(96), approvable: true)
+    check("its own firmware has room for a longer request than the reference one",
+          BuddyProtocol.prompt(for: request, options: ours) != nil && BuddyProtocol.prompt(for: request, options: BuddyProtocol.Options(secure: true)) == nil)
+    check("…and is told how long is left to answer", BuddyProtocol.heartbeat(state: state, requests: [request], options: ours, now: agentNow).extended?.promptLeftSec == 96)
+    let asked = BuddyProtocol.heartbeat(state: state, requests: [request], options: ours, now: agentNow)
+    let by = (((try? JSONSerialization.jsonObject(with: asked.line())) as? [String: Any])?["rd"] as? [String: Any])?["by"] as? [String: String]
+    check("…and whose request it is, which is not the same as the most urgent thing going on",
+          asked.extended?.promptProject == "docs" && asked.extended?.promptAgent == "Claude Code" && asked.extended?.topName == "s2" && by == ["n": "docs", "t": "Claude Code"])
+    check("no request offered, no asker named", hb.extended?.promptProject == nil && rd?["by"] == nil)
+
+    let waiting = StateSnapshot.make(groups: [], metrics: Metrics(), agents: [agent("w", .waiting, project: "文档站", waitingFor: "permission prompt")], now: agentNow, host: "Test Mac")
+    let w = BuddyProtocol.heartbeat(state: waiting, requests: [], options: ours, now: agentNow).extended
+    check("a waiting session is the top item, by its project name, in the script it is written in",
+          w?.state == "waiting" && w?.topKind == "agent" && w?.topName == "文档站" && w?.topTool == "Claude Code" && w?.topWait == "permission prompt")
+    check("a device that cannot draw that script gets a question mark instead",
+          BuddyProtocol.heartbeat(state: waiting, requests: [], options: BuddyProtocol.Options(secure: true, extended: true), now: agentNow).extended?.topName == "?")
+    check("the device says what it understands in its status",
+          BuddyProtocol.parse(Data("{\"ack\":\"status\",\"ok\":true,\"data\":{\"sec\":true,\"rd\":1,\"utf8\":true}}".utf8))
+          == .status(BuddyProtocol.DeviceStatus(name: nil, secure: true, batteryPercent: nil, onUSB: nil, extended: true, unicode: true)))
+}
+
+section("other programs' things on a device")
+do {
+    func agent(_ id: String, _ state: AgentState, project: String) -> AgentSession {
+        AgentSession(id: "claude-code:\(id)", tool: "claude-code", project: project, title: "A private title", state: state,
+                     waitingFor: nil, since: agentNow.addingTimeInterval(-20), source: "official")
+    }
+    func task(_ name: String, _ state: String, fraction: Double?, eta: Int? = nil, ago: TimeInterval = 5) -> InboxTask {
+        InboxTask(id: "importer/\(name)", from: "importer", title: name, fraction: fraction, etaSec: eta, state: state,
+                  startedAt: agentNow.addingTimeInterval(-300), updatedAt: agentNow.addingTimeInterval(-ago))
+    }
+    let question = InboxQuestion(id: "qwert", from: "planner", text: "Which branch should the fix go on?", choices: ["main", "release"],
+                                 askedAt: agentNow.addingTimeInterval(-20), expiresAt: agentNow.addingTimeInterval(100))
+    let notice = InboxNotice(id: "nnnnn", from: "builder", title: "Build", body: "All 42 tests passed", level: .done, at: agentNow.addingTimeInterval(-10))
+    let idle = StateSnapshot.make(groups: [], metrics: Metrics(), agents: [], now: agentNow, host: "Test Mac")
+    let rendering = StateSnapshot.make(groups: [groupA], metrics: Metrics(), agents: [], now: agentNow, host: "Test Mac")
+    let inbox = InboxView(notices: [notice], tasks: [task("Import", "working", fraction: 0.4, eta: 120)], questions: [question])
+    let ours = BuddyProtocol.Options(secure: true, unicode: true, extended: true, inbox: true)
+    func rd(_ state: StateSnapshot, _ inbox: InboxView, _ options: BuddyProtocol.Options = ours) -> BuddyProtocol.Extended? {
+        BuddyProtocol.heartbeat(state: state, requests: [], inbox: inbox, options: options, now: agentNow).extended
+    }
+
+    let hb = BuddyProtocol.heartbeat(state: idle, requests: [], inbox: inbox, options: ours, now: agentNow)
+    check("the counts include a task at work and a question waiting", hb.total == 1 && hb.running == 1 && hb.waiting == 1)
+    check("every device is told that a question is waiting, in one line that says nothing of what was asked",
+          hb.msg == "a question is waiting" && hb.entries.isEmpty)
+    let unaware = BuddyProtocol.heartbeat(state: idle, requests: [], inbox: inbox, options: BuddyProtocol.Options(secure: true, unicode: true), now: agentNow)
+    check("a device that never said it understands them gets no word of what other programs sent",
+          unaware.extended == nil && unaware.entries.isEmpty && !String(decoding: unaware.line(), as: UTF8.self).contains("branch")
+          && !String(decoding: unaware.line(), as: UTF8.self).contains("Import") && !String(decoding: unaware.line(), as: UTF8.self).contains("tests passed"))
+    let e = hb.extended
+    check("with nothing else going on, the task is the top item", e?.state == "working" && e?.topKind == "task" && e?.topName == "Import" && e?.topTool == "importer"
+          && e?.topPercent == 40 && e?.topEtaSec == 120 && e?.jobTitle == nil)
+    check("…and a row in the list", e?.rows.map(\.name) == ["Import"] && e?.rows.first?.tool == "importer" && e?.rows.first?.percent == 40 && e?.rows.first?.ageSec == 300)
+    check("the question is offered, with how long is left", e?.ask == BuddyProtocol.Ask(id: "qwert", from: "planner", text: "Which branch should the fix go on?", choices: ["main", "release"], leftSec: 100))
+    check("a new notice goes along", e?.note == BuddyProtocol.Note(id: "nnnnn", from: "builder", title: "Build", body: "All 42 tests passed", level: "done"))
+    let wire = ((try? JSONSerialization.jsonObject(with: hb.line())) as? [String: Any])?["rd"] as? [String: Any]
+    check("on the wire: ask and note under the extra key",
+          (wire?["ask"] as? [String: Any])?["choices"] as? [String] == ["main", "release"] && (wire?["ask"] as? [String: Any])?["left"] as? Int == 100
+          && (wire?["note"] as? [String: Any])?["level"] as? String == "done" && (wire?["top"] as? [String: Any])?["kind"] as? String == "task")
+
+    check("a render keeps the top place over a task at work; the task is still in the list",
+          rd(rendering, inbox)?.topKind == "render" && rd(rendering, inbox)?.rows.map(\.name) == ["s2", "Import"])
+    let failed = InboxView(tasks: [task("Import", "error", fraction: 0.3)])
+    check("a task that just failed outranks a render at work", rd(rendering, failed)?.state == "error" && rd(rendering, failed)?.topKind == "task" && rd(rendering, failed)?.rows.first?.state == "error")
+    check("…for a minute, and then only stays in the list",
+          rd(rendering, InboxView(tasks: [task("Import", "error", fraction: 0.3, ago: 90)]))?.topKind == "render"
+          && rd(rendering, InboxView(tasks: [task("Import", "error", fraction: 0.3, ago: 90)]))?.rows.count == 2)
+    check("a task that just finished shows as done when nothing else is going on",
+          rd(idle, InboxView(tasks: [task("Import", "done", fraction: 1)]))?.state == "done" && rd(idle, InboxView(tasks: [task("Import", "done", fraction: 1)]))?.topEtaSec == nil)
+    check("a task with no percentage has none", rd(idle, InboxView(tasks: [task("Import", "working", fraction: nil)]))?.topPercent == nil
+          && rd(idle, InboxView(tasks: [task("Import", "working", fraction: nil)]))?.topExact == nil)
+    check("a notice older than a minute stays on the Mac",
+          rd(idle, InboxView(notices: [InboxNotice(id: "nnnnn", from: "b", title: "t", body: "", level: .info, at: agentNow.addingTimeInterval(-61))]))?.note == nil)
+
+    let old = BuddyProtocol.Options(secure: true, unicode: true, extended: true)
+    check("firmware that does not know these fields gets none of them, and its top item is left alone",
+          rd(idle, inbox, old)?.ask == nil && rd(idle, inbox, old)?.note == nil && rd(idle, inbox, old)?.topKind == nil && rd(idle, inbox, old)?.rows.isEmpty == true)
+    check("nothing of it on an unencrypted link", BuddyProtocol.heartbeat(state: idle, requests: [], inbox: inbox,
+          options: BuddyProtocol.Options(secure: false, unicode: true, extended: true, inbox: true), now: agentNow).extended == nil
+          && BuddyProtocol.heartbeat(state: idle, requests: [], inbox: inbox, options: BuddyProtocol.Options(secure: false), now: agentNow).entries.isEmpty)
+    let chinese = InboxQuestion(id: "abcde", from: "规划", text: "修复放到哪个分支？", choices: ["主干", "发布"], askedAt: agentNow, expiresAt: agentNow.addingTimeInterval(60))
+    let ascii = BuddyProtocol.Options(secure: true, unicode: false, extended: true, inbox: true)
+    check("a question the device cannot draw is not offered there", BuddyProtocol.ask(for: chinese, options: ascii, now: agentNow) == nil
+          && BuddyProtocol.ask(for: chinese, options: ours, now: agentNow)?.choices == ["主干", "发布"])
+    check("the first question that can be offered is the one offered", rd(idle, InboxView(questions: [chinese, question]), ascii)?.ask?.id == "qwert")
+    check("nor a notice it cannot draw", rd(idle, InboxView(notices: [InboxNotice(id: "n", from: "b", title: "完成", body: "", level: .done, at: agentNow)]), ascii)?.note == nil)
+
+    func parse(_ text: String) -> BuddyProtocol.Incoming { BuddyProtocol.parse(Data(text.utf8)) }
+    check("a pick comes back as the question's id and the answer's number", parse("{\"cmd\":\"choice\",\"id\":\"qwert\",\"index\":1}") == .choice(id: "qwert", index: 1))
+    check("anything that is not a whole number in range is not a pick",
+          parse("{\"cmd\":\"choice\",\"id\":\"qwert\",\"index\":4}") == .unknown && parse("{\"cmd\":\"choice\",\"id\":\"qwert\",\"index\":-1}") == .unknown
+          && parse("{\"cmd\":\"choice\",\"id\":\"qwert\",\"index\":\"1\"}") == .unknown && parse("{\"cmd\":\"choice\",\"id\":\"qwert\",\"index\":1.5}") == .unknown
+          && parse("{\"cmd\":\"choice\",\"id\":\"qwert\",\"index\":true}") == .unknown && parse("{\"cmd\":\"choice\",\"index\":1}") == .unknown)
+    check("a pick is never an approval", parse("{\"cmd\":\"choice\",\"id\":\"qwert\",\"index\":0,\"decision\":\"once\"}") == .choice(id: "qwert", index: 0))
+    check("the device says it understands them with a 2",
+          parse("{\"ack\":\"status\",\"ok\":true,\"data\":{\"sec\":true,\"rd\":2,\"utf8\":true}}")
+          == .status(BuddyProtocol.DeviceStatus(name: nil, secure: true, batteryPercent: nil, onUSB: nil, extended: true, unicode: true, inbox: true)))
+}
+
+// MARK: ComfyUI
+
+section("a ComfyUI server's queue")
+do {
+    check("a Python running ComfyUI's main.py is a ComfyUI server, on the usual port",
+          ComfyUI.port(processName: "Python", arguments: ["python3", "main.py"], cwd: "/Users/me/ComfyUI") == 8188
+          && ComfyUI.port(processName: "python3.12", arguments: ["python3.12", "/opt/ComfyUI/main.py", "--listen"], cwd: "/") == 8188)
+    check("…or on the port its command line gives", ComfyUI.port(processName: "python", arguments: ["python", "main.py", "--port", "9000"], cwd: "/srv/comfyui") == 9000)
+    check("another Python, another main.py, or another program is not",
+          ComfyUI.port(processName: "Python", arguments: ["python3", "train.py"], cwd: "/Users/me/ComfyUI") == nil
+          && ComfyUI.port(processName: "Python", arguments: ["python3", "main.py"], cwd: "/Users/me/website") == nil
+          && ComfyUI.port(processName: "node", arguments: ["node", "main.py"], cwd: "/Users/me/ComfyUI") == nil)
+
+    let body = Data("{\"queue_running\":[[5,\"aaaa\",{\"1\":{\"class_type\":\"KSampler\"}},{},[\"9\"]]],\"queue_pending\":[[7,\"cccc\",{},{},[]],[6,\"bbbb\",{},{},[]]]}".utf8)
+    let queue = ComfyUI.parseQueue(body)
+    check("its queue: what is running and what waits, in the order they were queued",
+          queue?.running == [ComfyUI.Prompt(number: 5, id: "aaaa")] && queue?.pending.map(\.id) == ["bbbb", "cccc"])
+    check("an empty queue is a queue; something else is not", ComfyUI.parseQueue(Data("{\"queue_running\":[],\"queue_pending\":[]}".utf8))?.isEmpty == true
+          && ComfyUI.parseQueue(Data("{\"error\":\"no\"}".utf8)) == nil && ComfyUI.parseQueue(Data("not json".utf8)) == nil)
+    check("with nothing listening the question comes back unanswered, and soon", { let began = Date(); return ComfyUI.fetchQueue(port: 1, timeout: 0.5) == nil && Date().timeIntervalSince(began) < 1.5 }())
+
+    let tracker = ComfyTracker()
+    func q(_ running: [Int], _ pending: [Int]) -> ComfyUI.Queue {
+        ComfyUI.Queue(running: running.map { ComfyUI.Prompt(number: $0, id: "p\($0)") }, pending: pending.map { ComfyUI.Prompt(number: $0, id: "p\($0)") })
+    }
+    check("an idle server is not a job", tracker.update(pid: 1, queue: q([], [])) == nil && tracker.update(pid: 1, queue: nil) == nil)
+    let first = tracker.update(pid: 1, queue: q([5], [6, 7]))
+    check("a queue with work in it is", first?.running.map(\.number) == [5] && first?.pending.map(\.number) == [6, 7] && first?.done.isEmpty == true)
+    let second = tracker.update(pid: 1, queue: q([6], [7, 8]))
+    check("a prompt that has left the queue is done; one that joined is up next", second?.done.map(\.number) == [5] && second?.running.map(\.number) == [6] && second?.pending.map(\.number) == [7, 8])
+    check("when the queue empties, the count starts over", tracker.update(pid: 1, queue: q([], [])) == nil && tracker.update(pid: 1, queue: q([9], []))?.done.isEmpty == true)
+    check("two servers are counted apart", tracker.update(pid: 2, queue: q([1], []))?.running.map(\.number) == [1] && tracker.update(pid: 1, queue: q([10], []))?.done.map(\.number) == [9])
+    check("it can be switched off in the rules file", (try? JSONDecoder().decode(AdapterRules.self, from: Data("{\"comfyui\":false}".utf8)))?.comfyui == false && AdapterRules().comfyui == nil)
+}
+
+// MARK: MQTT
+
+/// Stands in for a broker: takes one connection after another on this Mac, answers a CONNECT, and keeps every packet it is sent.
+final class StandInBroker {
+    struct Packet { var type: UInt8; var flags: UInt8; var body: Data }
+    let port: UInt16
+    private let fd: Int32
+    private let lock = NSLock()
+    private var kept: [Packet] = []
+    private let connack: UInt8
+
+    init(connack: UInt8 = 0) {
+        self.connack = connack
+        let listener = socket(AF_INET, SOCK_STREAM, 0)
+        fd = listener
+        var yes: Int32 = 1
+        setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
+        var address = sockaddr_in()
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        address.sin_port = 0
+        _ = withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(listener, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
+        listen(listener, 4)
+        var bound = sockaddr_in()
+        var size = socklen_t(MemoryLayout<sockaddr_in>.size)
+        _ = withUnsafeMutablePointer(to: &bound) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(listener, $0, &size) } }
+        port = UInt16(bigEndian: bound.sin_port)
+        let code = connack
+        Thread.detachNewThread { [weak self] in
+            while true {
+                let client = accept(listener, nil, nil)
+                if client < 0 { return }
+                var buffer = Data()
+                var chunk = [UInt8](repeating: 0, count: 4096)
+                while true {
+                    let n = read(client, &chunk, chunk.count)
+                    if n <= 0 { break }
+                    buffer.append(contentsOf: chunk[..<n])
+                    while buffer.count >= 2 {
+                        let first = buffer[buffer.startIndex]
+                        var length = 0, shift = 0, used = 1, complete = false
+                        while used < buffer.count {
+                            let byte = buffer[buffer.startIndex + used]
+                            length |= Int(byte & 0x7F) << shift
+                            used += 1
+                            if byte & 0x80 == 0 { complete = true; break }
+                            shift += 7
+                        }
+                        guard complete, buffer.count >= used + length else { break }
+                        let body = buffer.subdata(in: (buffer.startIndex + used)..<(buffer.startIndex + used + length))
+                        buffer.removeSubrange(buffer.startIndex..<(buffer.startIndex + used + length))
+                        self?.lock.lock()
+                        self?.kept.append(Packet(type: first >> 4, flags: first & 0x0F, body: body))
+                        self?.lock.unlock()
+                        if first >> 4 == 1 { _ = [UInt8]([0x20, 0x02, 0x00, code]).withUnsafeBufferPointer { write(client, $0.baseAddress, 4) } }
+                        if first >> 4 == 12 { _ = [UInt8]([0xD0, 0x00]).withUnsafeBufferPointer { write(client, $0.baseAddress, 2) } }
+                    }
+                }
+                close(client)
+            }
+        }
+    }
+
+    func stop() { close(fd) }
+
+    var packets: [Packet] {
+        lock.lock()
+        defer { lock.unlock() }
+        return kept
+    }
+
+    /// The PUBLISH packets so far, as topic, payload and whether they are to be retained.
+    var published: [(topic: String, payload: String, retain: Bool)] {
+        packets.filter { $0.type == 3 }.compactMap { p in
+            guard p.body.count >= 2 else { return nil }
+            let n = Int(p.body[p.body.startIndex]) << 8 | Int(p.body[p.body.startIndex + 1])
+            guard p.body.count >= 2 + n else { return nil }
+            let topic = String(decoding: p.body[(p.body.startIndex + 2)..<(p.body.startIndex + 2 + n)], as: UTF8.self)
+            return (topic, String(decoding: p.body[(p.body.startIndex + 2 + n)...], as: UTF8.self), p.flags & 1 == 1)
+        }
+    }
+
+    func wait(_ what: () -> Bool, seconds: Double = 3) -> Bool {
+        let end = Date().addingTimeInterval(seconds)
+        while Date() < end {
+            if what() { return true }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        return what()
+    }
+}
+
+section("MQTT: packets and topics")
+do {
+    check("the length every packet carries, seven bits at a time",
+          MQTTPacket.length(0) == [0] && MQTTPacket.length(127) == [0x7F] && MQTTPacket.length(128) == [0x80, 0x01] && MQTTPacket.length(16_383) == [0xFF, 0x7F]
+          && MQTTPacket.length(16_384) == [0x80, 0x80, 0x01])
+    check("a message, byte for byte", MQTTPacket.publish(topic: "a/b", payload: "hi", retain: true) == Data([0x31, 0x07, 0x00, 0x03, 0x61, 0x2F, 0x62, 0x68, 0x69])
+          && MQTTPacket.publish(topic: "a/b", payload: "hi", retain: false).first == 0x30)
+    let plain = MQTTPacket.connect(clientID: "rd", username: nil, password: nil, keepAlive: 60, willTopic: "t/availability", willMessage: "offline")
+    check("the opening packet names the protocol, its level, a clean start and a last will that is kept",
+          plain.first == 0x10 && Array(plain[2..<8]) == [0x00, 0x04, 0x4D, 0x51, 0x54, 0x54] && plain[8] == 0x04 && plain[9] == 0x26 && plain[10] == 0 && plain[11] == 60)
+    let named = MQTTPacket.connect(clientID: "rd", username: "me", password: "secret", keepAlive: 60, willTopic: "t", willMessage: "offline")
+    check("…and a user name and password when there are any", named[9] == 0xE6 && String(decoding: named, as: UTF8.self).contains("secret")
+          && MQTTPacket.connect(clientID: "rd", username: "me", password: nil, keepAlive: 60, willTopic: "t", willMessage: "x")[9] == 0xA6)
+    var incoming = Data([0x20, 0x02, 0x00])
+    check("half an answer from the broker is not an answer", MQTTPacket.next(in: &incoming) == nil)
+    incoming.append(contentsOf: [0x00, 0xD0, 0x00])
+    let first = MQTTPacket.next(in: &incoming), second = MQTTPacket.next(in: &incoming)
+    check("…and two that arrive together come out as two", first?.type == 2 && first?.body == Data([0, 0]) && second?.type == 13 && incoming.isEmpty)
+
+    let settings = MQTTSettings(host: "broker.local")
+    check("the defaults: the usual port, the topic renderdock", settings.resolvedPort == 1883 && MQTTSettings(host: "b", tls: true).resolvedPort == 8883 && settings.base == "renderdock")
+    check("a topic is kept free of what MQTT gives a meaning to", MQTTTopics.clean("/studio/#/mac +1/") == "studio//mac1" && MQTTTopics.clean("#") == "renderdock")
+    let state = StateSnapshot.make(groups: [groupA], metrics: Metrics(), agents: [], now: agentNow, host: "Test Mac")
+    let payload = (try? JSONSerialization.jsonObject(with: Data(MQTTTopics.statePayload(state, settings: settings).utf8))) as? [String: Any]
+    check("the state document: the word, the counts, the shot in front with its percentage and its job",
+          payload?["state"] as? String == "working" && payload?["rendering"] as? Int == 1 && payload?["progress"] as? Int == 50 && payload?["exact"] as? Bool == true
+          && payload?["eta"] as? Int == 2250 && payload?["shot"] as? String == "s2" && payload?["job"] as? String == "Job a" && payload?["agents_waiting"] as? Int == 0)
+    check("…with no host name, no path and no project in it",
+          !MQTTTopics.statePayload(state, settings: settings).contains("Test Mac") && !MQTTTopics.statePayload(state, settings: settings).contains("/"))
+    let unnamed = (try? JSONSerialization.jsonObject(with: Data(MQTTTopics.statePayload(state, settings: MQTTSettings(host: "b", names: false)).utf8))) as? [String: Any]
+    check("names can be left out; the numbers still go", unnamed?["shot"] as? String == "" && unnamed?["job"] as? String == "" && unnamed?["progress"] as? Int == 50)
+    let idle = (try? JSONSerialization.jsonObject(with: Data(MQTTTopics.statePayload(StateSnapshot.make(groups: [], metrics: Metrics(), now: agentNow, host: "x"), settings: settings).utf8))) as? [String: Any]
+    check("with nothing rendering the percentage is 0, so a gauge always has a number", idle?["state"] as? String == "idle" && idle?["progress"] as? Int == 0 && idle?["eta"] as? Int == 0)
+
+    let found = MQTTTopics.discovery(settings, version: "0.3.0")
+    let progress = found.first { $0.topic == "homeassistant/sensor/renderdock_renderdock/progress/config" }
+    let config = progress.flatMap { (try? JSONSerialization.jsonObject(with: Data($0.payload.utf8))) as? [String: Any] }
+    check("Home Assistant is told of each sensor, where to read it and how", found.count == 11 && found.allSatisfy(\.retain)
+          && config?["state_topic"] as? String == "renderdock/state" && config?["value_template"] as? String == "{{ value_json.progress }}"
+          && config?["availability_topic"] as? String == "renderdock/availability" && config?["unique_id"] as? String == "renderdock_renderdock_progress"
+          && (config?["device"] as? [String: Any])?["sw_version"] as? String == "0.3.0")
+    check("…two fewer when names are left out, and under another topic for a second Mac",
+          MQTTTopics.discovery(MQTTSettings(host: "b", names: false), version: "1").count == 9
+          && MQTTTopics.discovery(MQTTSettings(host: "b", topic: "studio/mac-2"), version: "1").first?.topic.hasPrefix("homeassistant/sensor/renderdock_studio_mac_2/") == true)
+    check("the settings file the menu creates is complete and switched off",
+          (try? JSONDecoder().decode(MQTTSettings.self, from: Data(MQTTSettings.template.utf8)))?.enabled == false)
+    check("no file, or one with no broker in it, means no settings",
+          MQTTSettings.load(from: URL(fileURLWithPath: "/nonexistent/mqtt.json")) == nil
+          && { let u = FileManager.default.temporaryDirectory.appendingPathComponent("rd-mqtt-\(UUID().uuidString.prefix(6)).json"); try? Data("{\"enabled\":true,\"host\":\"\"}".utf8).write(to: u)
+               defer { try? FileManager.default.removeItem(at: u) }; return MQTTSettings.load(from: u) == nil }())
+}
+
+section("MQTT: against a stand-in broker")
+do {
+    let broker = StandInBroker()
+    let settings = MQTTSettings(host: "127.0.0.1", port: Int(broker.port), username: "me", password: "secret", topic: "studio")
+    let client = MQTTClient(settings: settings, version: "0.3.0")
+    var statuses: [MQTTClient.Status] = []
+    client.onStatus = { statuses.append($0) }
+    let working = StateSnapshot.make(groups: [groupA], metrics: Metrics(), agents: [], now: agentNow, host: "Test Mac")
+    client.publish(state: working)   // before it is even started: nothing may be lost or sent early
+    client.start()
+    client.publish(state: working)
+    check("it connects, and the state published while connecting arrives once it is in",
+          broker.wait { broker.published.contains { $0.topic == "studio/state" } } && client.status == .connected)
+    let hello = broker.packets.first
+    check("it opens with a CONNECT carrying the user name, the password and the last will", hello?.type == 1
+          && String(decoding: hello?.body ?? Data(), as: UTF8.self).contains("studio/availability") && String(decoding: hello?.body ?? Data(), as: UTF8.self).contains("offline")
+          && String(decoding: hello?.body ?? Data(), as: UTF8.self).contains("secret"))
+    let sent = broker.published
+    check("first \"online\", then the sensors, then the state: all to be kept by the broker",
+          sent.first?.topic == "studio/availability" && sent.first?.payload == "online" && sent.allSatisfy(\.retain)
+          && sent.filter { $0.topic.hasPrefix("homeassistant/") }.count == 11 && sent.last?.topic == "studio/state")
+    let before = broker.published.count
+    client.publish(state: working)
+    Thread.sleep(forTimeInterval: 0.3)
+    check("the same state again is not sent again", broker.published.count == before)
+    client.publish(state: StateSnapshot.make(groups: [], metrics: Metrics(), now: agentNow, host: "x"))
+    check("a changed state is", broker.wait { broker.published.count == before + 1 } && broker.published.last?.payload.contains("\"state\":\"idle\"") == true)
+    client.stop()
+    check("stopping says \"offline\" and then goodbye",
+          broker.wait { broker.packets.last?.type == 14 } && broker.published.last?.topic == "studio/availability" && broker.published.last?.payload == "offline")
+    RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+    check("the status went: connecting, connected, stopped", statuses == [.connecting, .connected, .stopped])
+    broker.stop()
+
+    let refusing = StandInBroker(connack: 4)
+    let turnedAway = MQTTClient(settings: MQTTSettings(host: "127.0.0.1", port: Int(refusing.port), homeAssistant: false), version: "1")
+    turnedAway.start()
+    check("a broker that refuses the password is reported in plain words, and nothing is published to it",
+          refusing.wait { turnedAway.status == .failed("wrong user name or password") } && refusing.published.isEmpty)
+    turnedAway.stop()
+    refusing.stop()
+
+    let nobody = MQTTClient(settings: MQTTSettings(host: "127.0.0.1", port: 1), version: "1")
+    nobody.start()
+    check("no broker there at all: a failure, not a hang", refusing.wait({ if case .failed = nobody.status { return true }; return false }, seconds: 5))
+    nobody.stop()
 }
 
 // MARK: HTTP parsing and the Host check

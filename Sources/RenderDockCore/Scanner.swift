@@ -6,7 +6,8 @@ package final class TaskScanner {
     package init() {}
 
     /// `reported`: a job that is not a Blender render but tells us about itself (it was started with `renderdock run`).
-    private enum LeafKind { case blender, adapter, ffmpeg, reported }
+    /// `comfy`: a ComfyUI server with something in its queue.
+    private enum LeafKind { case blender, adapter, ffmpeg, reported, comfy }
 
     private struct Leaf {
         let proc: Proc
@@ -17,7 +18,9 @@ package final class TaskScanner {
 
     private struct Stream {
         let proc: Proc
-        let specs: [(scene: String, shot: String)]
+        /// The rule that reads this script's queue, and the items it lists.
+        let rule: QueueRule
+        let specs: [QueueRule.Item]
     }
 
     private struct FrameStats {
@@ -38,6 +41,9 @@ package final class TaskScanner {
     private var rules = AdapterRules()
     private var rulesStamp: Date?
     private let logs = LogFollower()
+    private let comfy = ComfyTracker()
+    /// What each ComfyUI server's queue holds, as of this scan. Keyed by the server's pid.
+    private var comfyViews: [Int32: ComfyTracker.View] = [:]
     /// Reports written by wrapped jobs, by pid, as of this scan.
     private var reports: [Int32: JobReport] = [:]
     private var previousGroups: [RenderGroup] = []
@@ -59,6 +65,7 @@ package final class TaskScanner {
         var adapterCandidates: [(proc: Proc, rule: Int)] = []
         let adapterProcesses = Set(rules.adapters.map { $0.process.lowercased() })
         var ffmpegCandidates: [Proc] = []
+        var comfyServers: [(proc: Proc, port: Int)] = []
         for p in snap.table.values {
             let lower = p.name.lowercased()
             if adapterProcesses.contains(lower) {
@@ -70,8 +77,17 @@ package final class TaskScanner {
                 if a.contains("-b") || a.contains("--background") { blenderLeaves.append(Leaf(proc: p, kind: .blender)) }
             } else if lower == "ffmpeg" {
                 if now.timeIntervalSince(p.start) >= 3 { ffmpegCandidates.append(p) }
+            } else if rules.comfyui != false, lower.hasPrefix("python"),
+                      let port = ComfyUI.port(processName: p.name, arguments: snap.args(p.pid), cwd: snap.cwd(p.pid)) {
+                comfyServers.append((p, port))
             }
         }
+        // A ComfyUI server counts as a job only while its queue has something in it.
+        comfyViews = [:]
+        for (p, port) in comfyServers {
+            if let view = comfy.view(pid: p.pid, port: port, now: now) { comfyViews[p.pid] = view }
+        }
+        comfy.forget(except: Set(comfyServers.map(\.proc.pid)))
         let blenderPids = Set(blenderLeaves.map(\.proc.pid))
         var leaves = blenderLeaves
         var adapterPids = Set<Int32>()
@@ -83,6 +99,9 @@ package final class TaskScanner {
         }
         for f in ffmpegCandidates where !adapterPids.contains(f.pid) && !hasAncestor(f, in: adapterPids, snap) {
             leaves.append(Leaf(proc: f, kind: .ffmpeg))
+        }
+        for (p, _) in comfyServers where comfyViews[p.pid] != nil && !adapterPids.contains(p.pid) {
+            leaves.append(Leaf(proc: p, kind: .comfy))
         }
 
         // Jobs that report on themselves. Each report is matched by pid and start time, so a recycled pid is not mistaken for it.
@@ -165,23 +184,30 @@ package final class TaskScanner {
         }
         let note = scriptPath.flatMap(scriptNote)
 
-        // The queued shots (scene:shot list)
+        // The queued shots: what each script's command line lists, read by the first queue rule that finds any
+        // (the rules in adapters.json, then the standard `scene:shot`).
         var streamProcs: [String: [Proc]] = [:]
-        var streamSpecs: [String: [(scene: String, shot: String)]] = [:]
+        var streamSpecs: [String: (rule: QueueRule, items: [QueueRule.Item])] = [:]
+        let queueRules = rules.queueRules
         for pid in [root.pid] + desc {
             guard let p = snap.table[pid], Self.shells.contains(p.name.lowercased()) else { continue }
-            let specs = snap.args(pid).dropFirst().compactMap(Self.parseSpec)
-            guard !specs.isEmpty else { continue }
-            let key = specs.map { "\($0.scene):\($0.shot)" }.joined(separator: " ")
-            streamProcs[key, default: []].append(p)
-            streamSpecs[key] = specs
+            let arguments = Array(snap.args(pid).dropFirst())
+            for (index, rule) in queueRules.enumerated() {
+                let listed = rule.items(in: arguments)
+                guard !listed.isEmpty else { continue }
+                let key = "\(index) " + listed.map(\.key).joined(separator: " ")
+                streamProcs[key, default: []].append(p)
+                streamSpecs[key] = (rule, listed)
+                break
+            }
         }
         // A subshell in a pipeline has exactly the same command line as the main shell: keep only the main one (the one whose parent does not have that same command line)
         var streams: [Stream] = []
         for (key, procs) in streamProcs {
             let pids = Set(procs.map(\.pid))
             let main = procs.first { !pids.contains($0.ppid) } ?? procs[0]
-            streams.append(Stream(proc: main, specs: streamSpecs[key] ?? []))
+            guard let found = streamSpecs[key] else { continue }
+            streams.append(Stream(proc: main, rule: found.rule, specs: found.items))
         }
         streams.sort { $0.proc.pid < $1.proc.pid }
 
@@ -194,13 +220,13 @@ package final class TaskScanner {
             var built: [RenderItem] = []
             var current: Int?
             for (i, spec) in stream.specs.enumerated() {
-                let key = "\(spec.scene)-\(spec.shot)"
-                var item = RenderItem(id: "\(groupId)/\(stream.proc.pid)/\(key)", name: Self.specName(spec), state: .pending)
-                if let leaf = leaves.first(where: { sdescSet.contains($0.proc.pid) && !used.contains($0.proc.pid) && matches($0.proc, spec, snap) }) {
+                let key = spec.key
+                var item = RenderItem(id: "\(groupId)/\(stream.proc.pid)/\(key)", name: stream.rule.title(for: spec), state: .pending)
+                if let leaf = leaves.first(where: { sdescSet.contains($0.proc.pid) && !used.contains($0.proc.pid) && stream.rule.matches(arguments: snap.args($0.proc.pid), spec) }) {
                     used.insert(leaf.proc.pid)
-                    fill(&item, leaf: leaf, spec: spec, snap: snap, now: now)
+                    fill(&item, leaf: leaf, snap: snap, now: now)
                     if current == nil { current = i }
-                } else if current == nil, sdesc.contains(where: { snap.args($0).contains { $0.contains(key) } }) {
+                } else if current == nil, sdesc.contains(where: { stream.rule.follows(arguments: snap.args($0), spec) }) {
                     // This shot's post-processing (re-pasting, flicker check, etc.) is running
                     item.state = .finishing
                     current = i
@@ -214,8 +240,8 @@ package final class TaskScanner {
                 var firstOpen: Int?
                 for i in built.indices {
                     let spec = stream.specs[i]
-                    let doneFile = rules.queueDoneFile.flatMap {
-                        AdapterRules.expand($0, args: [], cwd: scwd, extra: ["scene": spec.scene, "shot": spec.shot])
+                    let doneFile = stream.rule.doneFile.flatMap {
+                        AdapterRules.expand($0, args: [], cwd: scwd, extra: spec.fields)
                     }
                     if let doneFile, let m = mtime(doneFile), m >= stream.proc.start {
                         built[i].state = .done
@@ -229,8 +255,22 @@ package final class TaskScanner {
         }
         // Leaves that are in no list each count as a shot of their own
         for leaf in leaves.sorted(by: { $0.proc.pid < $1.proc.pid }) where !used.contains(leaf.proc.pid) {
+            if leaf.kind == .comfy, let view = comfyViews[leaf.proc.pid] {
+                // A ComfyUI server: each prompt in its queue is a shot. The ones that have left the queue are
+                // done, the one running is tied to the server's process, the rest are up next.
+                func name(_ prompt: ComfyUI.Prompt) -> String { L("第 \(prompt.number) 个", "prompt \(prompt.number)") }
+                func id(_ prompt: ComfyUI.Prompt) -> String { "\(groupId)/c\(prompt.id)" }
+                for prompt in view.done { items.append(RenderItem(id: id(prompt), name: name(prompt), state: .done)) }
+                for prompt in view.running {
+                    var item = RenderItem(id: id(prompt), name: name(prompt), state: .rendering)
+                    fill(&item, leaf: leaf, snap: snap, now: now)
+                    items.append(item)
+                }
+                for prompt in view.pending { items.append(RenderItem(id: id(prompt), name: name(prompt), state: .pending)) }
+                continue
+            }
             var item = RenderItem(id: "\(groupId)/p\(leaf.proc.pid)", name: leafName(leaf, snap), state: .preparing)
-            fill(&item, leaf: leaf, spec: nil, snap: snap, now: now)
+            fill(&item, leaf: leaf, snap: snap, now: now)
             items.append(item)
         }
 
@@ -247,6 +287,7 @@ package final class TaskScanner {
 
         let scriptName = scriptPath.map { ($0 as NSString).lastPathComponent }
         var title = note.map(Self.shortTitle) ?? scriptName ?? items.first?.name ?? root.name
+        if leaves.count == 1, leaves[0].kind == .comfy { title = "ComfyUI" }
         // A single job that was given a name (`renderdock run --name …`) is called that.
         if items.count == 1, let leaf = leaves.first, let given = report(for: leaf.proc)?.name { title = given }
         let keepAwake = ([root.pid] + desc).contains { snap.table[$0]?.name == "caffeinate" }
@@ -260,7 +301,7 @@ package final class TaskScanner {
 
     // MARK: Progress of one shot
 
-    private func fill(_ item: inout RenderItem, leaf: Leaf, spec: (scene: String, shot: String)?, snap: ProcSnapshot, now: Date) {
+    private func fill(_ item: inout RenderItem, leaf: Leaf, snap: ProcSnapshot, now: Date) {
         let p = leaf.proc
         let a = snap.args(p.pid)
         let cwd = snap.cwd(p.pid)
@@ -281,7 +322,7 @@ package final class TaskScanner {
             var hasProgressFile = false
             if let out = plan.outDir ?? rep?.outDir, isDirectory(out) {
                 item.outDir = out
-                let st = frameStats(out, since: p.start, now: now, only: plan.frames)
+                let st = frameStats(out, since: p.start, now: now, only: plan.rough ? nil : plan.frames)
                 item.framesDone = st.done
                 item.latestFrame = st.latest
                 item.lastFrameAt = st.lastAt
@@ -293,8 +334,10 @@ package final class TaskScanner {
                     item.framesDone = exact.done
                     item.framesTotal = exact.total
                 } else if let frames = plan.frames, !frames.isEmpty {
-                    // The frame range is on the command line (-s/-e/-a or -f): the total is exact
+                    // The frame range is on the command line (-s/-e/-a or -f), or in the .blend it names: the
+                    // total is exact, unless a script on the command line may change it first.
                     item.framesTotal = frames.count
+                    item.totalIsEstimate = plan.rough
                 } else if let est = estimatedTotal(out: out, args: a, procStart: p.start), est >= st.done {
                     item.framesTotal = est
                     item.totalIsEstimate = true
@@ -303,7 +346,7 @@ package final class TaskScanner {
             if let rep {
                 // Started with `renderdock run`: the job's own count is exact, whatever the command line says.
                 apply(rep, to: &item)
-            } else if !hasProgressFile, let log = logs.progress(pid: p.pid, totalFromCommandLine: plan.frames?.count) {
+            } else if !hasProgressFile, let log = logs.progress(pid: p.pid, totalFromCommandLine: plan.rough ? nil : plan.frames?.count) {
                 // Its output goes to a log file: read Blender's own frame lines from there.
                 item.framesDone = log.done
                 if let total = log.total {
@@ -361,9 +404,23 @@ package final class TaskScanner {
             }
             item.state = p.stopped ? .paused : .rendering
 
+        case .comfy:
+            // The prompt that is running. ComfyUI does not say how far along it is to anyone but the tab that queued it.
+            item.state = p.stopped ? .paused : .rendering
+
         case .ffmpeg:
             item.state = p.stopped ? .paused : .encoding
             if let last = a.last, !last.hasPrefix("-") { item.outDir = (resolve(last, cwd) as NSString).deletingLastPathComponent }
+            // An encode says how far along it is in its own output. That is read from the wrapper's report when
+            // it was started with `renderdock run`, or from the file its standard error is redirected to.
+            if let rep = report(for: p) {
+                apply(rep, to: &item)
+            } else if let log = logs.progress(pid: p.pid, totalFromCommandLine: nil, fd: 2, ffmpegArguments: a) {
+                item.mediaDone = log.mediaDone
+                item.mediaTotal = log.mediaTotal
+                item.mediaSpeed = log.mediaSpeed
+                item.totalIsEstimate = log.mediaTotal != nil && log.mediaTotalIsRough
+            }
         }
     }
 
@@ -397,6 +454,14 @@ package final class TaskScanner {
         }
         item.sampleDone = rep.sampleDone
         item.sampleTotal = rep.sampleTotal
+        if rep.mediaDone != nil {
+            // An encode: its progress is in seconds of output, and it has no frames to speak of.
+            item.framesDone = nil
+            item.mediaDone = rep.mediaDone
+            item.mediaTotal = rep.mediaTotal
+            item.mediaSpeed = rep.mediaSpeed
+            item.totalIsEstimate = rep.mediaTotal != nil && rep.mediaRough == true
+        }
         if item.secPerFrame == nil { item.secPerFrame = rep.secPerFrame }
         if item.lastFrameAt == nil, let last = rep.recent.last { item.lastFrameAt = Date(timeIntervalSince1970: last) }
     }
@@ -467,8 +532,26 @@ package final class TaskScanner {
 
     private struct BlenderPlan {
         var outDir: String?
-        /// Frame numbers given explicitly on the command line; nil when not given (the range is stored in the .blend and can't be seen from outside).
+        /// The frames to be rendered: given on the command line, or read from the .blend when the command line
+        /// leaves the range to the file. Nil when neither says.
         var frames: Set<Int>?
+        /// The frames come from the .blend and a script on the command line may change them before the render
+        /// starts: a best guess, not a count to hold the job to.
+        var rough = false
+    }
+
+    /// What was read from each .blend, kept until the file changes.
+    private var blendCache: [String: (stamp: Date?, scenes: [BlendFile.SceneRange]?)] = [:]
+
+    private func blendRange(_ path: String, scene: String?) -> BlendFile.FrameRange? {
+        let stamp = mtime(path)
+        if blendCache[path] == nil || blendCache[path]?.stamp != stamp {
+            if blendCache.count > 64 { blendCache.removeAll() }
+            blendCache[path] = (stamp, stamp == nil ? nil : BlendFile.scenes(at: path))
+        }
+        guard let all = blendCache[path]?.scenes else { return nil }
+        if let scene { return all.first { $0.name == scene }?.range }
+        return (all.first { $0.active } ?? (all.count == 1 ? all.first : nil))?.range
     }
 
     /// Reads Blender's command line. Before `--` are Blender's own arguments (-o, -s, -e, -j, -a, -f); after it are the script's own (--out).
@@ -493,7 +576,27 @@ package final class TaskScanner {
         plan.outDir = out
 
         plan.frames = Self.blenderFrames(own)
+        if plan.frames == nil, let fromFile = Self.blenderFramesFromFile(own, read: { [self] file, scene in blendRange(resolve(file, cwd), scene: scene) }) {
+            plan.frames = fromFile.frames
+            plan.rough = fromFile.rough
+        }
         return plan
+    }
+
+    /// The frames `blender -b file.blend -a` renders when the command line leaves all or part of the range to the
+    /// file: `-s`, `-e` and `-j` where given, the scene's own values where not. `read` returns the range stored
+    /// in a .blend for a scene (nil for the active one). `rough` is true when a script on the command line could
+    /// change the range before the render starts.
+    package static func blenderFramesFromFile(_ own: [String], read: (String, String?) -> BlendFile.FrameRange?) -> (frames: Set<Int>, rough: Bool)? {
+        guard own.contains("-a") || own.contains("--render-anim"), argValue(own, ["-f", "--render-frame"]) == nil,
+              let file = own.first(where: { $0.lowercased().hasSuffix(".blend") }),
+              let stored = read(file, argValue(own, ["-S", "--scene"])) else { return nil }
+        let start = argValue(own, ["-s", "--frame-start"]).flatMap { Int($0) } ?? stored.start
+        let end = argValue(own, ["-e", "--frame-end"]).flatMap { Int($0) } ?? stored.end
+        let jump = max(1, argValue(own, ["-j", "--frame-jump"]).flatMap { Int($0) } ?? stored.step)
+        guard let frames = BlendFile.FrameRange(start: start, end: end, step: jump).frames else { return nil }
+        let scripted = own.contains { ["-P", "--python", "--python-expr", "--python-text"].contains($0) }
+        return (frames, scripted)
     }
 
     /// The frames a Blender command line asks for (`-f 1..250`, or `-s 1 -e 250 [-j 2] -a`); nil when it does not say.
@@ -642,19 +745,10 @@ package final class TaskScanner {
         return false
     }
 
+    /// One `scene:shot` item, as the standard queue rule reads it.
     package static func parseSpec(_ arg: String) -> (scene: String, shot: String)? {
-        let parts = arg.split(separator: ":", omittingEmptySubsequences: false)
-        guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
-        let ok: (Substring) -> Bool = { $0.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == ".") } }
-        guard ok(parts[0]), ok(parts[1]), parts[0].contains(where: \.isLetter) else { return nil }
-        return (String(parts[0]), String(parts[1]))
-    }
-
-    private func matches(_ p: Proc, _ spec: (scene: String, shot: String), _ snap: ProcSnapshot) -> Bool {
-        let a = snap.args(p.pid)
-        if let sc = Self.argValue(a, ["--scene"]), let sh = Self.argValue(a, ["--shot"]) { return sc == spec.scene && sh == spec.shot }
-        let key = "\(spec.scene)-\(spec.shot)"
-        return a.contains { $0.contains(key) }
+        guard let item = QueueRule.standard.parse(arg), item.values.count == 2 else { return nil }
+        return (item.values[0], item.values[1])
     }
 
     package static func specName(_ spec: (scene: String, shot: String)) -> String {

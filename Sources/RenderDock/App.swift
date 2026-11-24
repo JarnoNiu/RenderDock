@@ -75,9 +75,38 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         if store.agentsEnabled {
             add(menu, L("显示会话标题", "Show Session Titles"), #selector(toggleAgentTitles), on: store.agentTitles)
         }
+        let failed = L("（没能启动）", " (could not start)")
+        add(menu, L("在这里答复 agent 的请求", "Answer Agents' Requests Here") + (store.controlFailed ? failed : ""), #selector(toggleControl), on: store.controlEnabled)
+        add(menu, L("接收其他程序的通知、进度和提问", "Take Notices, Progress and Questions from Other Programs") + (store.inboxFailed ? failed : ""),
+            #selector(toggleInbox), on: store.inboxEnabled)
+
+        // A device on the desk
+        let deviceItem = NSMenuItem(title: L("桌面小设备", "Desk Device"), action: nil, keyEquivalent: "")
+        let deviceMenu = NSMenu()
+        add(deviceMenu, L("连接蓝牙小设备", "Connect a Bluetooth Device"), #selector(toggleDevice), on: store.deviceEnabled)
+        if store.deviceEnabled {
+            let line = NSMenuItem(title: store.deviceStatus.text, action: nil, keyEquivalent: "")
+            line.isEnabled = false
+            deviceMenu.addItem(line)
+            add(deviceMenu, L("可以在设备上答复 agent 的请求", "Agents' Requests May Be Answered on the Device"), #selector(toggleDeviceAnswers), on: store.deviceAnswers)
+            add(deviceMenu, L("设备能显示中文", "The Device Can Show Chinese"), #selector(toggleDeviceUnicode), on: store.deviceUnicode)
+            add(deviceMenu, L("忘记这台设备", "Forget This Device"), #selector(forgetDevice))
+        }
+        deviceItem.submenu = deviceMenu
+        menu.addItem(deviceItem)
         let where_ = store.apiPort.map { "（127.0.0.1:\($0)）" } ?? ""
         let whereEn = store.apiPort.map { " (127.0.0.1:\($0))" } ?? ""
         add(menu, L("本机接口\(where_)", "Local API\(whereEn)"), #selector(toggleAPI), on: store.apiEnabled)
+
+        // MQTT: for a home-automation system. Nothing is sent unless the settings file names a broker and switches it on.
+        let mqttItem = NSMenuItem(title: "MQTT", action: nil, keyEquivalent: "")
+        let mqttMenu = NSMenu()
+        let mqttLine = NSMenuItem(title: store.mqttStatus ?? L("没有设置，什么都不发", "Not set up: nothing is sent"), action: nil, keyEquivalent: "")
+        mqttLine.isEnabled = false
+        mqttMenu.addItem(mqttLine)
+        add(mqttMenu, L("编辑 MQTT 设置…", "Edit MQTT Settings…"), #selector(editMQTTSettings))
+        mqttItem.submenu = mqttMenu
+        menu.addItem(mqttItem)
 
         // Notifications
         let notify = NSMenuItem(title: L("通知", "Notifications"), action: nil, keyEquivalent: "")
@@ -132,7 +161,14 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc private func toggleAgents() { store.agentsEnabled.toggle() }
     @objc private func toggleAgentTitles() { store.agentTitles.toggle() }
     @objc private func toggleAgentNotifications() { store.notifier.agentsEnabled.toggle() }
+    @objc private func toggleControl() { store.controlEnabled.toggle() }
+    @objc private func toggleInbox() { store.inboxEnabled.toggle() }
+    @objc private func toggleDevice() { store.deviceEnabled.toggle() }
+    @objc private func toggleDeviceUnicode() { store.deviceUnicode.toggle() }
+    @objc private func toggleDeviceAnswers() { store.deviceAnswers.toggle() }
+    @objc private func forgetDevice() { store.device.forget() }
     @objc private func editPushSettings() { store.notifier.openSettings() }
+    @objc private func editMQTTSettings() { store.openMQTTSettings() }
     @objc private func sendTestNotification() { store.notifier.sendTest() }
 
     @objc private func toggleSystemNotifications() {
@@ -215,7 +251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Debug commands (`RenderDock --send "<command>"`): expand, collapse, reset, pin, shot <path>, state <path>,
+    /// Debug commands (`RenderDock --send "<command>"`): expand, collapse, reset, pin, stress on|off, shot <path>, state <path>,
     /// mouse x1,y1 [x2,y2 …] (screen coordinates; one point is a click, several points are a drag).
     private func handle(command: String) {
         let parts = command.split(separator: " ", maxSplits: 1).map(String.init)
@@ -227,6 +263,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case "reset": panel.resetPosition()
         case "pin": store.pinned = arg == "on" ? true : (arg == "off" ? false : !store.pinned)
         case "notify-test": store.notifier.sendTest()
+        case "stress": store.stress = arg != "off"   // demo only: every readout at its widest, to watch the live window follow
+        case "answer":   // "answer allow <id>" / "answer deny <id>": what a click on the panel's buttons does
+            let words = arg.split(separator: " ").map(String.init)
+            if words.count == 2, let decision = ControlDecision(rawValue: words[0]) { store.answer(words[1], decision) }
+        case "requests":   // write the waiting requests to a file: id, action, approvable
+            let list = store.requests.map { ["id": $0.id, "action": $0.action, "project": $0.project, "approvable": $0.approvable] as [String: Any] }
+            if let data = try? JSONSerialization.data(withJSONObject: list, options: [.sortedKeys]) { try? data.write(to: URL(fileURLWithPath: arg)) }
         case "shot": panel.debugShot(arg)
         case "state":
             if let data = try? JSONSerialization.data(withJSONObject: panel.debugState(), options: [.prettyPrinted, .sortedKeys]) {

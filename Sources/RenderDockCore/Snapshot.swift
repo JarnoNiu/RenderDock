@@ -138,7 +138,7 @@ package struct StateSnapshot: Codable, Equatable {
     package var agents: [Agent]
     package var metrics: Machine
 
-    package static let appVersion = "0.2.0"
+    package static let appVersion = "0.3.0-dev"
 
     /// - Parameter recent: the shots that ended most recently. One that ended in the last few minutes still counts
     ///   towards the overall state: a light stays green for a while after a render finishes.
@@ -147,7 +147,7 @@ package struct StateSnapshot: Codable, Equatable {
         let iso = ISO8601DateFormatter()
         func shot(_ i: RenderItem) -> Shot {
             Shot(id: i.id, name: i.name, state: i.state.wireName, framesDone: i.framesDone, framesTotal: i.framesTotal,
-                 fraction: i.fraction.map(round3), exact: i.framesTotal != nil && !i.totalIsEstimate,
+                 fraction: i.fraction.map(round3), exact: (i.framesTotal != nil || i.mediaTotal != nil) && !i.totalIsEstimate,
                  secPerFrame: i.secPerFrame.map(round3), etaSec: i.eta.map { Int($0.rounded()) }, pid: i.pid,
                  sampleDone: i.sampleDone, sampleTotal: i.sampleTotal,
                  smallFrames: i.smallFrames.isEmpty ? nil : i.smallFrames, slowFrames: i.slowFrames.isEmpty ? nil : i.slowFrames)
@@ -161,7 +161,7 @@ package struct StateSnapshot: Codable, Equatable {
         }
         let focus = groups.focusItem.map { i in
             Focus(name: i.name, state: i.state.wireName, framesDone: i.framesDone, framesTotal: i.framesTotal,
-                  fraction: i.fraction.map(round3), exact: i.framesTotal != nil && !i.totalIsEstimate,
+                  fraction: i.fraction.map(round3), exact: (i.framesTotal != nil || i.mediaTotal != nil) && !i.totalIsEstimate,
                   etaSec: i.eta.map { Int($0.rounded()) })
         }
         return StateSnapshot(

@@ -136,6 +136,41 @@ enum Demo {
         ].byUrgency
     }
 
+    /// Made-up requests: one that may be allowed here, one that may not.
+    static func requests(now: Date) -> [ControlRequest] {
+        [
+            ControlRequest(id: "kqmtv", tool: AgentTool.claudeCode, sessionId: "demo1", project: "demo-site", action: "Read",
+                           detail: "src/auth/redirect.ts", fingerprint: "0000000000000001", receivedAt: now.addingTimeInterval(-4),
+                           expiresAt: now.addingTimeInterval(96), approvable: true),
+            ControlRequest(id: "hbxwe", tool: AgentTool.claudeCode, sessionId: "demo1", project: "demo-site", action: "Bash",
+                           detail: "npm test -- --watch=false", fingerprint: "0000000000000002", receivedAt: now.addingTimeInterval(-2),
+                           expiresAt: now.addingTimeInterval(98), approvable: false,
+                           reason: L("「Bash」这一类要在电脑上处理", "\"Bash\" has to be handled on the computer")),
+        ]
+    }
+
+    /// Made-up things from other programs: a question, a task at work, and two notices.
+    static func inbox(_ t: Double, now: Date, asking: Bool) -> InboxView {
+        let cycle = t.truncatingRemainder(dividingBy: 40)
+        let fraction = min(1, 0.18 + cycle / 40 * 0.8)
+        return InboxView(
+            notices: [
+                InboxNotice(id: "dnone", from: L("部署脚本", "deploy script"), title: L("预览环境已更新", "Preview is up to date"),
+                            body: L("3 个页面有改动，用时 48 秒。", "3 pages changed, in 48 seconds."), level: .done, at: now.addingTimeInterval(-95 - cycle)),
+                InboxNotice(id: "dntwo", from: L("夜间备份", "nightly backup"), title: "", body: L("外接硬盘没插上，这次跳过了。", "The external disk is not connected. Skipped this time."),
+                            level: .error, at: now.addingTimeInterval(-1240 - cycle)),
+            ],
+            tasks: [
+                InboxTask(id: "demo/import", from: L("导入脚本", "import script"), title: L("导入商品目录", "Import the catalogue"), fraction: fraction,
+                          etaSec: Int((1 - fraction) * 300), state: "working", startedAt: now.addingTimeInterval(-60 - cycle * 6), updatedAt: now.addingTimeInterval(-2)),
+            ],
+            questions: asking ? [
+                InboxQuestion(id: "dqask", from: "Codex · billing-api", text: L("发票导出做好了。要我顺手把旧的导出接口也删掉吗？", "Invoice export is done. Shall I remove the old export endpoint as well?"),
+                              choices: [L("删掉", "Remove it"), L("先留着", "Keep it for now"), L("我来看看", "Let me look")],
+                              askedAt: now.addingTimeInterval(-6), expiresAt: now.addingTimeInterval(114)),
+            ] : [])
+    }
+
     static func recentRuns(now: Date) -> [HistoryRun] {
         let t = now.timeIntervalSince1970
         func run(_ id: Int64, _ shot: String, _ job: String, ago: Double, took: Double, frames: Int, outcome: String, code: Int32? = nil) -> HistoryRun {
@@ -217,9 +252,50 @@ extension Store {
         thumbs = images
         recentRuns = Demo.recentRuns(now: date)
         agents = agentsEnabled ? Demo.agents(t, now: date) : []
+        if controlEnabled {
+            let phase = t.truncatingRemainder(dividingBy: 40)
+            if phase < 12 || phase >= 26 {
+                requests = []
+                demoAnswered = false
+            } else if !demoAnswered, requests.isEmpty {
+                requests = Demo.requests(now: date)
+                demoAnswered = true   // shown once per cycle: an answer makes it go away until the next one
+            }
+        }
+        if inboxEnabled {
+            // The made-up question is there for the same part of the cycle as the requests, until it is answered.
+            let phase = t.truncatingRemainder(dividingBy: 40)
+            let window = phase >= 12 && phase < 26
+            if !window { demoQuestionAnswered = false }
+            inbox = Demo.inbox(t, now: date, asking: window && !demoQuestionAnswered)
+        }
+        if stress { applyStress() }
         publish()
         publishAgentEvents(now: date)
         onChange?()
+    }
+}
+
+extension Store {
+    /// Widest-case numbers on top of whatever is loaded: every gauge at 100%, the shots in progress at 100%.
+    func applyStress() {
+        metrics.cpu = 1
+        metrics.gpu = 1
+        metrics.memUsed = metrics.memTotal
+        metrics.tempC = 100
+        cpuHistory = cpuHistory.map { _ in 1 }
+        gpuHistory = gpuHistory.map { _ in 1 }
+        memHistory = memHistory.map { _ in 1 }
+        for g in groups.indices {
+            for i in groups[g].items.indices where groups[g].items[i].state.isActive || groups[g].items[i].state == .paused {
+                groups[g].items[i].name += "_with_a_long_shot_name_take_12"
+                if let total = groups[g].items[i].framesTotal {
+                    groups[g].items[i].framesDone = total
+                } else {
+                    groups[g].items[i].framesDone = 100_000
+                }
+            }
+        }
     }
 }
 

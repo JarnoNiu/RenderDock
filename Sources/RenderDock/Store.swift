@@ -83,6 +83,192 @@ final class Store {
     @ObservationIgnored private var lastAgentScan = Date.distantPast
     @ObservationIgnored private var agentDetector = AgentEventDetector()
 
+    // MARK: Answering agents (off unless switched on in the menu or with `--control`)
+
+    /// Requests from agents that are waiting for an answer here, oldest first.
+    var requests: [ControlRequest] = []
+    /// Whether RenderDock takes agents' permission requests at all. Off by default. Even when it is on, an
+    /// agent only asks here if the user has put the hook into that agent's settings themselves.
+    var controlEnabled = UserDefaults.standard.bool(forKey: "answerAgents") || CommandLine.arguments.contains("--control") {
+        didSet {
+            UserDefaults.standard.set(controlEnabled, forKey: "answerAgents")
+            applyControl()
+            onChange?()
+        }
+    }
+    @ObservationIgnored private let broker = ControlBroker()
+    /// The switch is on and the listener could not be started (the menu says so, instead of looking fine).
+    var controlFailed = false
+    /// When the cards in the panel last changed places. A click that lands just after is not taken: the card
+    /// under the pointer may not be the one that was read.
+    @ObservationIgnored private var cardsMovedAt = Date.distantPast
+    private static let cardsSettle: TimeInterval = 0.6
+
+    private func applyControl() {
+        guard !demo else { return }
+        if controlEnabled {
+            broker.onChange = { [weak self] in
+                guard let self else { return }
+                let pending = self.broker.pending
+                if pending.map(\.id) != self.requests.map(\.id) { self.cardsMovedAt = Date() }
+                self.requests = pending
+                self.now = Date()
+                self.sendToDevice()
+                self.onChange?()
+            }
+            controlFailed = !broker.start()
+        } else {
+            broker.stop()
+            requests = []
+            controlFailed = false
+        }
+    }
+
+    /// The user's answer to one request, from the panel.
+    func answer(_ id: String, _ decision: ControlDecision) {
+        if demo {
+            requests.removeAll { $0.id == id }
+            onChange?()
+        } else if Date().timeIntervalSince(cardsMovedAt) >= Self.cardsSettle {
+            broker.decide(id: id, decision, source: "panel")
+        }
+    }
+
+    // MARK: The entry for other programs (off unless switched on in the menu or with `--inbox`)
+
+    /// Notices, tasks and questions other programs have sent through `renderdock notify|progress|ask`.
+    var inbox = InboxView.empty
+    /// Whether RenderDock takes them at all. Off by default: until it is on, nothing listens and the commands
+    /// say so and exit.
+    var inboxEnabled = UserDefaults.standard.bool(forKey: "agentInbox") || CommandLine.arguments.contains("--inbox") {
+        didSet {
+            UserDefaults.standard.set(inboxEnabled, forKey: "agentInbox")
+            applyInbox()
+            onChange?()
+        }
+    }
+    @ObservationIgnored private let inboxServer = InboxServer()
+    var inboxFailed = false
+
+    private func applyInbox() {
+        guard !demo else { return }
+        if inboxEnabled {
+            inboxServer.onChange = { [weak self] in
+                guard let self else { return }
+                let view = self.inboxServer.view
+                if view.questions.map(\.id) != self.inbox.questions.map(\.id) { self.cardsMovedAt = Date() }
+                self.inbox = view
+                self.now = Date()
+                self.sendToDevice()
+                self.onChange?()
+            }
+            // A new notice or question is announced on this Mac (if notifications here are on), never further.
+            inboxServer.onArrival = { [weak self] notice, question in
+                guard let self else { return }
+                if let notice { self.notifier.inbox(title: notice.title, body: notice.body, from: notice.from) }
+                if let question { self.notifier.inbox(title: L("有个问题在等你回答", "A question is waiting for you"), body: question.text, from: question.from) }
+            }
+            inboxFailed = !inboxServer.start()
+        } else {
+            inboxServer.stop()
+            inbox = .empty
+            inboxFailed = false
+        }
+    }
+
+    /// The user's pick for a question, from the panel.
+    func answerQuestion(_ id: String, _ index: Int) {
+        if demo {
+            inbox.questions.removeAll { $0.id == id }
+            demoQuestionAnswered = true
+            onChange?()
+        } else if Date().timeIntervalSince(cardsMovedAt) >= Self.cardsSettle {
+            inboxServer.answer(id: id, index: index)
+        }
+    }
+
+    func dismissQuestion(_ id: String) {
+        if demo {
+            inbox.questions.removeAll { $0.id == id }
+            demoQuestionAnswered = true
+            onChange?()
+        } else {
+            inboxServer.dismissQuestion(id)
+        }
+    }
+
+    func dismissNotice(_ id: String) {
+        if demo { inbox.notices.removeAll { $0.id == id }; onChange?() } else { inboxServer.dismissNotice(id) }
+    }
+
+    func dismissTask(_ id: String) {
+        if demo { inbox.tasks.removeAll { $0.id == id }; onChange?() } else { inboxServer.dismissTask(id) }
+    }
+
+    // MARK: A device on the desk (off unless switched on in the menu)
+
+    /// Whether RenderDock looks for a Bluetooth device and feeds it. Off by default; switching it on is what
+    /// makes macOS ask for Bluetooth permission.
+    var deviceEnabled = UserDefaults.standard.bool(forKey: "deviceLink") {
+        didSet {
+            UserDefaults.standard.set(deviceEnabled, forKey: "deviceLink")
+            applyDevice()
+            onChange?()
+        }
+    }
+    /// The device can draw text beyond ASCII (the reference firmware cannot).
+    var deviceUnicode = UserDefaults.standard.bool(forKey: "deviceUnicode") {
+        didSet {
+            UserDefaults.standard.set(deviceUnicode, forKey: "deviceUnicode")
+            sendToDevice()
+        }
+    }
+    /// Whether an agent's permission request may be answered on the device. Off by default, and separate from
+    /// the link itself: a device can show what is going on without being a place where things are approved.
+    /// (Questions from other programs are not approvals and do not depend on this.)
+    var deviceAnswers = UserDefaults.standard.bool(forKey: "deviceAnswers") {
+        didSet {
+            UserDefaults.standard.set(deviceAnswers, forKey: "deviceAnswers")
+            sendToDevice()
+            onChange?()
+        }
+    }
+    var deviceStatus = DeviceLink.Status.off
+    @ObservationIgnored let device = DeviceLink()
+
+    private func applyDevice() {
+        guard !demo else { return }
+        if deviceEnabled {
+            device.onStatus = { [weak self] in
+                guard let self else { return }
+                self.deviceStatus = self.device.status
+                self.onChange?()
+            }
+            device.onReady = { [weak self] in self?.sendToDevice() }
+            // An answer from the device goes through the same broker as one from the panel: it must be for a
+            // request that may be allowed from a display, it counts once, and it is written to the record.
+            device.onAnswer = { [weak self] id, decision in
+                guard let self, self.deviceAnswers else { return }
+                self.broker.decide(id: id, decision, source: "device")
+            }
+            // A pick for another program's question goes to that program and nowhere else.
+            device.onChoice = { [weak self] id, index in self?.inboxServer.answer(id: id, index: index) }
+            device.start()
+        } else {
+            device.stop()
+            deviceStatus = .off
+        }
+    }
+
+    /// Hands the device the current snapshot. What it gets depends on whether the link is encrypted.
+    private func sendToDevice() {
+        guard deviceEnabled, !demo, device.isConnected else { return }
+        device.send(BuddyProtocol.heartbeat(state: snapshot(now: Date()), requests: requests, inbox: inbox,
+                                            options: BuddyProtocol.Options(secure: device.secure, unicode: deviceUnicode || device.unicode,
+                                                                           extended: device.extended, inbox: device.inbox,
+                                                                           offerRequests: deviceAnswers)))
+    }
+
     @ObservationIgnored private let scanner = TaskScanner()
     @ObservationIgnored private let sampler = MetricsSampler()
     @ObservationIgnored private let awake = AwakeHolder()
@@ -110,6 +296,54 @@ final class Store {
     /// Notifications on this Mac and through the channels in notify.json.
     @ObservationIgnored let notifier = Notifier()
 
+    // MARK: MQTT (off unless mqtt.json names a broker and says "enabled": true)
+
+    /// What the menu says about the MQTT connection. Nil when there are no settings, or they are switched off.
+    var mqttStatus: String?
+    @ObservationIgnored private var mqtt: MQTTClient?
+    @ObservationIgnored private var mqttSettings: MQTTSettings?
+    @ObservationIgnored private var mqttChecked = Date.distantPast
+
+    /// Reads the settings file again, and connects, reconnects or disconnects to match it. The file is looked
+    /// at every few seconds, so a change takes effect without restarting.
+    private func applyMQTT() {
+        guard !demo else { return }
+        mqttChecked = Date()
+        let wanted = MQTTSettings.load().flatMap { $0.enabled ? $0 : nil }
+        guard wanted != mqttSettings else { return }
+        mqtt?.stop()
+        mqtt = nil
+        mqttSettings = wanted
+        mqttStatus = nil
+        if let wanted {
+            let client = MQTTClient(settings: wanted, version: StateSnapshot.appVersion)
+            client.onStatus = { [weak self] status in
+                guard let self, self.mqtt === client else { return }
+                switch status {
+                case .connecting: self.mqttStatus = L("正在连接 \(wanted.host)…", "Connecting to \(wanted.host)…")
+                case .connected: self.mqttStatus = L("已连接 \(wanted.host)", "Connected to \(wanted.host)")
+                case .failed(let why): self.mqttStatus = L("连不上 \(wanted.host)：\(why)", "Cannot reach \(wanted.host): \(why)")
+                case .stopped: self.mqttStatus = nil
+                }
+                self.onChange?()
+            }
+            mqtt = client
+            client.start()
+            client.publish(state: snapshot(now: Date()))
+        }
+        onChange?()
+    }
+
+    /// Opens the settings file in the default editor, creating it from the template (owner-only: it may hold a password).
+    func openMQTTSettings() {
+        let url = MQTTSettings.file
+        if !FileManager.default.fileExists(atPath: url.path) {
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            FileManager.default.createFile(atPath: url.path, contents: Data(MQTTSettings.template.utf8), attributes: [.posixPermissions: 0o600])
+        }
+        NSWorkspace.shared.open(url)
+    }
+
     private func applyAPI() {
         if apiEnabled {
             api.onPortChange = { [weak self] port in
@@ -128,6 +362,8 @@ final class Store {
     func publish(outcomes: [String: JobOutcome] = [:]) {
         let events = detector.update(groups, now: now, outcomes: outcomes)
         notifier.handle(events)
+        sendToDevice()
+        mqtt?.publish(state: snapshot(now: now))
         guard apiEnabled else { return }
         api.publish(state: snapshot(now: now).json(), events: events)
     }
@@ -135,6 +371,8 @@ final class Store {
     /// Hand the state to the API again after something other than a job scan changed it, with what happened to the agents.
     private func publishState(events: [RenderEvent] = []) {
         notifier.handle(events)
+        sendToDevice()
+        mqtt?.publish(state: snapshot(now: Date()))
         guard apiEnabled else { return }
         api.publish(state: snapshot(now: Date()).json(), events: events)
     }
@@ -153,6 +391,10 @@ final class Store {
     /// Release the port and the discovery file before the app exits.
     func shutdown() {
         if apiEnabled { api.stop() }
+        if controlEnabled { broker.stop() }   // release anything waiting, so the agents ask in their own windows
+        if inboxEnabled { inboxServer.stop() }   // whoever is waiting for an answer is told there will be none
+        mqtt?.stop()   // says "offline" on the way out
+        if deviceEnabled { device.stop() }
     }
 
     static let historyLength = 60
@@ -187,6 +429,12 @@ final class Store {
 
     /// Demo mode: fictional jobs and metrics, nothing is read from the machine.
     @ObservationIgnored private(set) var demo = false
+    /// Demo mode, for checking layout: push every readout to its widest (see `applyStress`).
+    @ObservationIgnored var stress = false
+    /// Demo mode: the made-up requests of this cycle have been shown already.
+    @ObservationIgnored var demoAnswered = false
+    /// Demo mode: the made-up question of this cycle has been answered or dismissed.
+    @ObservationIgnored var demoQuestionAnswered = false
 
     func startDemo() {
         demo = true
@@ -202,6 +450,10 @@ final class Store {
 
     func start() {
         if apiEnabled { applyAPI() }
+        if controlEnabled { applyControl() }
+        if inboxEnabled { applyInbox() }
+        if deviceEnabled { applyDevice() }
+        applyMQTT()
         work.async { [weak self] in self?.history?.prune() }
         sampleMetrics()
         scanTasks()
@@ -214,6 +466,7 @@ final class Store {
             let lively = self.expanded || (self.apiEnabled && self.api.streamCount > 0)
             if Date().timeIntervalSince(self.now) >= (lively ? 2.9 : 5.9) { self.scanTasks() }
             if Date().timeIntervalSince(self.lastAgentScan) >= (lively ? 2.9 : 5.9) { self.scanAgents() }
+            if Date().timeIntervalSince(self.mqttChecked) >= 5 { self.applyMQTT() }
         })
         timers.forEach { RunLoop.main.add($0, forMode: .common) }
     }

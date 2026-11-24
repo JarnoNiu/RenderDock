@@ -2,7 +2,7 @@
 
 > New in 0.2.
 
-RenderDock shows a percentage only when it knows the total. There are six ways it can know. Use whichever fits how you start renders.
+RenderDock shows a percentage only when it knows the total. There are seven ways it can know. Use whichever fits how you start renders.
 
 | Way | You change | Works when |
 |---|---|---|
@@ -12,6 +12,9 @@ RenderDock shows a percentage only when it knows the total. There are six ways i
 | 4. Write `render-progress.json` | one line in your script | you would rather not wrap the command |
 | 5. Load the Blender hook | one `--python` argument, or an add-on | you render from the Blender window, or cannot wrap the command |
 | 6. Send the output to a log file (from 0.3) | nothing, if you already do | `blender -b … > render.log` |
+| 7. Leave the range in the `.blend` (from 0.3) | nothing | `blender -b file.blend -a`, with a file saved without compression |
+
+An ffmpeg encode has no frames to count on and is its own case: see [ffmpeg](#ffmpeg-from-03) below.
 
 ## `renderdock run`
 
@@ -72,6 +75,8 @@ Any long job started through the wrapper shows up as a card: elapsed time, CPU a
 ```bash
 renderdock run --name "encode trailer" -- ./encode.sh
 ```
+
+An ffmpeg command wrapped this way shows real progress with nothing more to do: see [ffmpeg](#ffmpeg-from-03).
 
 ### What the wrapper writes, and where
 
@@ -148,6 +153,42 @@ It works even when the frame range and the output folder are only in the `.blend
 - Two renders writing to the same log at the same time cannot be told apart. Give each its own file.
 - The file is only ever read.
 
+## The range stored in the `.blend` (from 0.3)
+
+`blender -b file.blend -a` renders the range the scene was saved with, and the command line does not say what it is. RenderDock now reads it from the file: the active scene's start, end and step, or those of the scene named with `-S`. Where the command line gives part of the range (`-s 100 -a`), that part is taken from the command line and the rest from the file.
+
+- The file is only ever read, and only the handful of bytes that hold the range.
+- A file saved with Blender's **Compress** option cannot be read this way. Such a job shows up as before, with frames counted and no total. (Use the wrapper, or put the range on the command line.)
+- If the command line also runs a script (`-P`, `--python`, `--python-expr`), the script may change the range before the render starts. The total is then shown as an estimate, marked `≈`, until something better says otherwise: with the wrapper or a log file, Blender's own "Rendering animation (frames 1..250)" line does.
+- Checked with files saved by Blender 5.2. The older file layout (before Blender 5) is read too; that part is written from the published format and has been run only against files put together in the project's own checks.
+
+## ffmpeg (from 0.3)
+
+An encode is shown by how much of the output has been written, against how long the output will be: `0:12 / 1:30`, a percentage, the speed, and the time left.
+
+RenderDock gets that from ffmpeg's own status line, in either of two ways:
+
+```bash
+renderdock run -- ffmpeg -i in.mov -c:v libx264 out.mp4      # wrapped
+ffmpeg -i in.mov -c:v libx264 out.mp4 2> encode.log          # or with its output sent to a file
+```
+
+An ffmpeg started any other way (in a terminal, in a script that does not redirect it) is listed as before: encoding, with CPU and memory, without a percentage. Its status line goes to the terminal, and RenderDock does not read terminals.
+
+How long the output will be is worked out from what ffmpeg prints about its inputs and from the command line:
+
+| The command line | The length is |
+|---|---|
+| one input, nothing that changes timing | that input's length: exact |
+| `-t 10` shorter than every input | 10 seconds: exact |
+| several inputs of different lengths, a seek (`-ss`, `-to`), `-shortest`, or a filter that changes timing (`setpts`, `trim`, `atempo`, …) | the longest input, as an estimate, marked `≈` |
+| inputs joined with a `concat` filter | their lengths added up, as an estimate |
+| ffmpeg told not to print about its inputs (`-loglevel error -stats`) | not known: the position is shown, without a percentage |
+
+If the output runs past the length it was thought to have, the guess is dropped and only the position is shown. `-progress pipe:1` output is read as well as the status line. With `-nostats` and no `-progress` there is nothing to read.
+
+Checked with ffmpeg 9.0, wrapped and with a log file: video, audio only, `-t`, and `-progress`.
+
 ## Which one wins
 
-When several are present for the same job: `render-progress.json`, then the wrapper's or the hook's report, then the log file, then the command line, then the estimate from an older clip (marked `≈`).
+When several are present for the same job: `render-progress.json`, then the wrapper's or the hook's report, then the log file, then the command line, then the range in the `.blend`, then the estimate from an older clip (marked `≈`).

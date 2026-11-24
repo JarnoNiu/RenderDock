@@ -61,6 +61,20 @@ final class Notifier {
                 event: "test", job: "", project: "", force: true)
     }
 
+    /// Something another program sent through the entry (a notice, or a question). On this Mac only, and only
+    /// if notifications here are on: what other programs say is never passed on to the channels in notify.json.
+    func inbox(title: String, body: String, from: String) {
+        guard systemEnabled, canUseSystem else { return }
+        let content = UNMutableNotificationContent()
+        content.title = title.isEmpty ? (from.isEmpty ? L("渲染坞", "RenderDock") : from) : title
+        if !title.isEmpty, !from.isEmpty { content.subtitle = from }
+        content.body = body
+        content.sound = .default
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)) { error in
+            if let error { self.report(L("系统通知：", "System notification: ") + error.localizedDescription) }
+        }
+    }
+
     private func deliver(title: String, body: String, event: String, job: String, project: String, force: Bool = false) {
         if systemEnabled, canUseSystem, force || Notify.defaultEvents.contains(event) {
             let content = UNMutableNotificationContent()

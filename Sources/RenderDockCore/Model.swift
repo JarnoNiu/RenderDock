@@ -50,6 +50,11 @@ package struct RenderItem: Identifiable, Equatable {
     /// that took far longer than usual (a hard frame, or the job was paused). Hints, not verdicts.
     package var smallFrames: [Int] = []
     package var slowFrames: [Int] = []
+    /// For an encode, which has no frames to count on: seconds of output written, how long the output will be
+    /// (when known; `totalIsEstimate` says if that is a best guess), and seconds of output per second of the clock.
+    package var mediaDone: Double?
+    package var mediaTotal: Double?
+    package var mediaSpeed: Double?
 
     package init(id: String, name: String, state: ItemState) {
         self.id = id
@@ -58,6 +63,7 @@ package struct RenderItem: Identifiable, Equatable {
     }
 
     package var fraction: Double? {
+        if framesTotal == nil, let done = mediaDone, let total = mediaTotal, total > 0 { return min(1, max(0, done / total)) }
         guard let d = framesDone, let t = framesTotal, t > 0 else { return nil }
         var done = Double(d)
         // Count the part of the current frame that is already sampled, so a long frame still moves the bar.
@@ -67,6 +73,9 @@ package struct RenderItem: Identifiable, Equatable {
 
     /// Time remaining (seconds). Only available while running, with a known total and a known time per frame.
     package var eta: TimeInterval? {
+        if state == .encoding, let done = mediaDone, let total = mediaTotal, let speed = mediaSpeed, speed > 0, total > done {
+            return (total - done) / speed
+        }
         guard state == .rendering || state == .compositing,
               let d = framesDone, let t = framesTotal, let s = secPerFrame, t > d else { return nil }
         return Double(t - d) * s
@@ -156,6 +165,12 @@ package enum Fmt {
         if t >= 3600 { return L("\(t / 3600) 时 \(t % 3600 / 60) 分", "\(t / 3600)h \(t % 3600 / 60)m") }
         if t >= 60 { return L("\(t / 60) 分", "\(t / 60)m") }
         return L("\(t) 秒", "\(t)s")
+    }
+
+    /// A position in a clip: "0:05", "12:30", "1:02:03".
+    package static func media(_ s: Double) -> String {
+        let t = Int(max(0, s))
+        return t >= 3600 ? String(format: "%d:%02d:%02d", t / 3600, t % 3600 / 60, t % 60) : String(format: "%d:%02d", t / 60, t % 60)
     }
 
     package static func secPerFrame(_ s: Double) -> String {

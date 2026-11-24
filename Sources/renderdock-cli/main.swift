@@ -4,6 +4,11 @@
 //   renderdock status [--json]                               what is rendering on this Mac right now
 //   renderdock history [--json] [--limit N]                  the shots that ended most recently
 //   renderdock agents [--json]                               what coding agents' sessions are doing right now
+//   renderdock hook                                          an agent's permission hook: asks the app, prints its answer
+//   renderdock hooks status|install|uninstall …              put that hook into a Claude Code settings file, or take it out
+//   renderdock notify TEXT [--title T] [--level L]           put a notice on the dock and on a desk device
+//   renderdock progress NAME [--percent N] [--done|--failed]  show how far a task of your own has got
+//   renderdock ask TEXT --choice A --choice B …              ask the user a question and print the answer they pick
 //
 // `run` passes the command's input and output straight through and exits with the command's own status.
 // It reads the output on the way past, and keeps a small report next to RenderDock's preferences
@@ -25,7 +30,15 @@ usage:
   renderdock status [--json]
   renderdock history [--json] [--limit N]
   renderdock agents [--json]
+  renderdock hooks status|install|uninstall (--project DIR | --global) [--yes]
+  renderdock notify TEXT [--title TITLE] [--level info|done|error] [--from NAME]
+  renderdock progress NAME [--title TITLE] [--percent 0-100] [--eta SECONDS] [--done | --failed] [--from NAME]
+  renderdock ask TEXT --choice A --choice B [--choice C] [--choice D] [--timeout SECONDS] [--from NAME] [--json]
   renderdock version
+
+notify, progress and ask need "Take Notices, Progress and Questions from Other Programs" switched on in
+RenderDock's menu. They exit 0 when it worked (ask: an answer was picked and is printed), 2 when nobody
+answered, 3 when RenderDock is not running or the switch is off, 65 when RenderDock refused it.
 """
 
 // MARK: run
@@ -74,6 +87,11 @@ func run(_ arguments: [String]) -> Never {
     if total == nil, (executable as NSString).lastPathComponent.lowercased() == "blender" {
         let own = Array(command[..<(command.firstIndex(of: "--") ?? command.count)])
         total = TaskScanner.blenderFrames(own)?.count
+        // No range on the command line: it is the one stored in the .blend, unless a script may change it first
+        // (then Blender's own output says what it is rendering, and that is read as it goes by).
+        if total == nil, let fromFile = TaskScanner.blenderFramesFromFile(own, read: { BlendFile.frameRange(at: $0, scene: $1) }), !fromFile.rough {
+            total = fromFile.frames.count
+        }
     }
 
     let process = Process()
@@ -84,8 +102,10 @@ func run(_ arguments: [String]) -> Never {
     process.standardOutput = out
     process.standardError = err
 
+    // An ffmpeg command line may say how long its output will be (`-t`), or that its length cannot be told from the inputs.
+    let isFFmpeg = (executable as NSString).lastPathComponent.lowercased() == "ffmpeg"
     let state = DispatchQueue(label: "renderdock.run")
-    var parser = ProgressParser(totalFromCommandLine: total)
+    var parser = ProgressParser(totalFromCommandLine: total, ffmpegArguments: isFFmpeg ? command : nil)
     var report: JobReport?
     var lastWrite = 0.0
     var splitters = [LineSplitter(), LineSplitter()]
@@ -96,6 +116,7 @@ func run(_ arguments: [String]) -> Never {
             var changed = false
             let before = parser.done
             for line in splitters[stream].feed(data) where parser.feed(line) { changed = true }
+            // (An encode's position moves with every status line; it is written at most twice a second, below.)
             guard changed, var r = report else { return }
             let now = Date().timeIntervalSince1970
             r.absorb(parser, now: now)
@@ -255,6 +276,212 @@ func agents(json: Bool) -> Never {
     exit(0)
 }
 
+// MARK: hook
+
+/// Run by an agent as its PermissionRequest hook. It asks the app and prints the app's answer. If the app is
+/// not running, the feature is off, or nobody answers in time, it prints nothing and the agent asks in its own
+/// window as usual. It always exits 0: this hook never gets in an agent's way.
+func hook() -> Never {
+    let input = FileHandle.standardInput.readDataToEndOfFile()
+    guard let request = HookInput.parse(input), request.event == "PermissionRequest" else { exit(0) }
+    let paths = ControlPaths.standard
+    let wait = TimeInterval(ControlPolicy.load(from: paths.policy).timeoutSec + 5)
+    if let output = HookOutput.permissionRequest(ControlClient.ask(hookJSON: input, paths: paths, timeout: wait)) { print(output) }
+    exit(0)
+}
+
+// MARK: hooks
+
+/// Adds the hook to a Claude Code settings file, or takes it out again. Nothing is written without `--yes`.
+/// By default it is one project's local settings; `--global` is the file every session on this Mac reads.
+func hooks(_ arguments: [String]) -> Never {
+    let verb = arguments.first ?? ""
+    let yes = arguments.contains("--yes")
+    let file: URL
+    if let i = arguments.firstIndex(of: "--project"), i + 1 < arguments.count {
+        file = URL(fileURLWithPath: (arguments[i + 1] as NSString).expandingTildeInPath).appendingPathComponent(".claude/settings.local.json")
+    } else if arguments.contains("--global") {
+        file = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/settings.json")
+    } else {
+        fail("say where: --project DIR (one project's local settings) or --global (every session on this Mac)\n\(usage)")
+    }
+    let fm = FileManager.default
+    // The copy of the file as it was, and the mark that RenderDock created it, are kept in RenderDock's own
+    // directory: nothing extra is left inside a project.
+    let kept = HookSettings.keepsakes(for: file)
+    let backup = kept.backup, created = kept.created
+    let original = try? Data(contentsOf: file)
+    let me = Bundle.main.executableURL?.resolvingSymlinksInPath().path ?? CommandLine.arguments[0]
+    let command = "'\(me)' hook"
+
+    switch verb {
+    case "status":
+        print(HookSettings.isInstalled(in: original) ? "installed in \(file.path)" : "not installed in \(file.path)")
+    case "install":
+        guard let updated = HookSettings.adding(command: command, to: original) else { fail("\(file.path) is not a JSON object; nothing was changed") }
+        print("file:    \(file.path)\(original == nil ? "  (does not exist yet)" : "")")
+        print("adds:    hooks.PermissionRequest → \(command)  (timeout 120 s)")
+        if arguments.contains("--global") { print("note:    this file applies to EVERY Claude Code session on this Mac, including ones already open") }
+        print("effect:  nothing changes until \"Answer Agents' Requests Here\" is switched on in RenderDock's menu; with it off the hook prints nothing")
+        guard yes else {
+            print("nothing written. Run it again with --yes to write the file.")
+            exit(0)
+        }
+        try? fm.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? fm.createDirectory(at: kept.directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        var keptNow = false
+        if let original {
+            // Kept afresh each time the hook goes into a file that does not have it yet. (Putting it in again
+            // over itself keeps the copy from before the first time.)
+            if !HookSettings.isInstalled(in: original) || !fm.fileExists(atPath: backup.path) {
+                try? fm.removeItem(at: backup)
+                keptNow = fm.createFile(atPath: backup.path, contents: original, attributes: [.posixPermissions: 0o600])
+                try? fm.removeItem(at: created)
+            }
+        } else {
+            fm.createFile(atPath: created.path, contents: nil, attributes: [.posixPermissions: 0o600])
+            try? fm.removeItem(at: backup)
+        }
+        do { try updated.write(to: file, options: .atomic) } catch { fail("could not write \(file.path): \(error.localizedDescription)", code: 1) }
+        print("written." + (keptNow ? " The file as it was is kept at \(backup.path)" : ""))
+    case "uninstall":
+        guard let original else {
+            print("nothing to do: \(file.path) does not exist")
+            exit(0)
+        }
+        guard HookSettings.isInstalled(in: original) else {
+            print("nothing to do: the hook is not in \(file.path)")
+            exit(0)
+        }
+        // If the file is still exactly what `install` wrote, put back what was there before, byte for byte.
+        let untouched = HookSettings.adding(command: command, to: try? Data(contentsOf: backup)) == original
+        if fm.fileExists(atPath: created.path), HookSettings.adding(command: command, to: nil) == original {
+            print("removes: \(file.path)  (RenderDock created it, and it holds nothing else)")
+            guard yes else { print("nothing written. Run it again with --yes."); exit(0) }
+            try? fm.removeItem(at: file)
+            try? fm.removeItem(at: created)
+        } else if fm.fileExists(atPath: backup.path), untouched, let before = try? Data(contentsOf: backup) {
+            print("restores: \(file.path) to exactly what it was before the hook was added")
+            guard yes else { print("nothing written. Run it again with --yes."); exit(0) }
+            do { try before.write(to: file, options: .atomic) } catch { fail("could not write \(file.path): \(error.localizedDescription)", code: 1) }
+            try? fm.removeItem(at: backup)
+        } else {
+            guard let updated = HookSettings.removing(from: original) else { fail("\(file.path) is not a JSON object; nothing was changed") }
+            print("removes: the RenderDock hook from \(file.path). The file was edited since, so it is rewritten (same content, formatting may differ)")
+            guard yes else { print("nothing written. Run it again with --yes."); exit(0) }
+            do { try updated.write(to: file, options: .atomic) } catch { fail("could not write \(file.path): \(error.localizedDescription)", code: 1) }
+            try? fm.removeItem(at: created)
+            try? fm.removeItem(at: backup)   // it no longer matches the file, and must not be put back later
+        }
+        print("done.")
+    default:
+        fail("hooks needs status, install or uninstall\n\(usage)")
+    }
+    exit(0)
+}
+
+// MARK: notify, progress, ask (the entry for other programs; see docs/AGENT-ENTRY.md)
+
+/// Splits arguments into plain words and `--name value` options. `--` ends the options, so text may start with dashes.
+func options(_ arguments: [String], valued: Set<String>, flags: Set<String>) -> (words: [String], values: [(name: String, value: String)], flags: Set<String>) {
+    var words: [String] = [], values: [(name: String, value: String)] = [], seen = Set<String>()
+    var rest = arguments[...]
+    while let first = rest.first {
+        rest = rest.dropFirst()
+        if first == "--" {
+            words += rest
+            break
+        }
+        if valued.contains(first) {
+            guard let value = rest.first else { fail("\(first) needs a value\n\(usage)") }
+            values.append((first, value))
+            rest = rest.dropFirst()
+        } else if flags.contains(first) {
+            seen.insert(first)
+        } else if first.hasPrefix("--") {
+            fail("unknown option \(first)\n\(usage)")
+        } else {
+            words.append(first)
+        }
+    }
+    return (words, values, seen)
+}
+
+/// Who is speaking: `--from`, or the RENDERDOCK_FROM environment variable. It is shown as given; nothing checks it.
+func sender(_ values: [(name: String, value: String)]) -> String {
+    values.last { $0.name == "--from" }?.value ?? ProcessInfo.processInfo.environment["RENDERDOCK_FROM"] ?? ""
+}
+
+let notTaking = "RenderDock is not taking this: it is not running, or \"Take Notices, Progress and Questions from Other Programs\" is off in its menu"
+
+func finish(_ sent: InboxClient.Sent) -> Never {
+    switch sent {
+    case .ok: exit(0)
+    case .refused(let reason): fail("refused: \(reason)", code: 65)
+    case .unavailable: fail(notTaking, code: 3)
+    }
+}
+
+func notify(_ arguments: [String]) -> Never {
+    let parsed = options(arguments, valued: ["--title", "--level", "--from"], flags: [])
+    let body = parsed.words.joined(separator: " ")
+    let title = parsed.values.last { $0.name == "--title" }?.value ?? ""
+    guard !body.isEmpty || !title.isEmpty else { fail("nothing to say\n\(usage)") }
+    var level = InboxLevel.info
+    if let text = parsed.values.last(where: { $0.name == "--level" })?.value {
+        guard let known = InboxLevel(rawValue: text) else { fail("--level is info, done or error\n\(usage)") }
+        level = known
+    }
+    finish(InboxClient.notify(title: title, body: body, level: level, from: sender(parsed.values)))
+}
+
+func progress(_ arguments: [String]) -> Never {
+    let parsed = options(arguments, valued: ["--title", "--percent", "--eta", "--from"], flags: ["--done", "--failed"])
+    guard parsed.words.count == 1, let name = parsed.words.first else { fail("progress needs one name for the task\n\(usage)") }
+    guard !(parsed.flags.contains("--done") && parsed.flags.contains("--failed")) else { fail("--done or --failed, not both\n\(usage)") }
+    var percent: Double?
+    if let text = parsed.values.last(where: { $0.name == "--percent" })?.value {
+        guard let n = Double(text), (0...100).contains(n) else { fail("--percent is a number from 0 to 100\n\(usage)") }
+        percent = n
+    }
+    var eta: Int?
+    if let text = parsed.values.last(where: { $0.name == "--eta" })?.value {
+        guard let n = Int(text), n >= 0 else { fail("--eta is a number of seconds\n\(usage)") }
+        eta = n
+    }
+    let state = parsed.flags.contains("--done") ? "done" : parsed.flags.contains("--failed") ? "failed" : "working"
+    finish(InboxClient.progress(name: name, title: parsed.values.last { $0.name == "--title" }?.value, percent: percent, etaSec: eta,
+                                state: state, from: sender(parsed.values)))
+}
+
+/// Prints the answer the user picked, and nothing else, so a script can use it as it is.
+func ask(_ arguments: [String]) -> Never {
+    let parsed = options(arguments, valued: ["--choice", "--timeout", "--from"], flags: ["--json"])
+    let text = InboxLimits.oneLine(parsed.words.joined(separator: " "))
+    let choices = parsed.values.filter { $0.name == "--choice" }.map { InboxLimits.oneLine($0.value) }
+    if let problem = InboxLimits.problem(question: text, choices: choices) { fail("\(problem)\n\(usage)") }
+    var timeout = InboxLimits.askTimeoutDefault
+    if let value = parsed.values.last(where: { $0.name == "--timeout" })?.value {
+        guard let n = Int(value), InboxLimits.askTimeout.contains(n) else {
+            fail("--timeout is a number of seconds from \(InboxLimits.askTimeout.lowerBound) to \(InboxLimits.askTimeout.upperBound)\n\(usage)")
+        }
+        timeout = n
+    }
+    switch InboxClient.ask(text: text, choices: choices, timeoutSec: timeout, from: sender(parsed.values)) {
+    case .chosen(let index, let label):
+        if parsed.flags.contains("--json") {
+            let data = (try? JSONSerialization.data(withJSONObject: ["index": index, "choice": label], options: [.sortedKeys])) ?? Data("{}".utf8)
+            print(String(decoding: data, as: UTF8.self))
+        } else {
+            print(label)
+        }
+        exit(0)
+    case .none(let reason): fail("no answer (\(reason))", code: 2)
+    case .refused(let reason): fail("refused: \(reason)", code: 65)
+    case .unavailable: fail(notTaking, code: 3)
+    }
+}
+
 // MARK: entry
 
 let arguments = Array(CommandLine.arguments.dropFirst())
@@ -265,6 +492,11 @@ case "history":
     let limit = arguments.firstIndex(of: "--limit").flatMap { $0 + 1 < arguments.count ? Int(arguments[$0 + 1]) : nil } ?? 20
     history(json: arguments.contains("--json"), limit: max(1, min(limit, 500)))
 case "agents": agents(json: arguments.contains("--json"))
+case "hook": hook()
+case "hooks": hooks(Array(arguments.dropFirst()))
+case "notify": notify(Array(arguments.dropFirst()))
+case "progress": progress(Array(arguments.dropFirst()))
+case "ask": ask(Array(arguments.dropFirst()))
 case "version", "--version": print("renderdock \(StateSnapshot.appVersion)")
 case "help", "--help", "-h", nil: print(usage)
 default: fail("unknown command \(arguments[0])\n\(usage)")

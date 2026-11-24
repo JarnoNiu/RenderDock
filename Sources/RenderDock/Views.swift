@@ -27,12 +27,16 @@ struct CapsuleView: View {
             .fixedSize()
 
             if !store.agentsNeedingYou.isEmpty { AgentBadge(count: store.agentsNeedingYou.count, failed: store.agents.count(.error) > 0) }
+            if !store.inbox.questions.isEmpty { QuestionBadge(count: store.inbox.questions.count) }
 
             Capsule().fill(.white.opacity(0.13)).frame(width: 1, height: 22)
 
             MiniStat(label: "GPU", value: store.metrics.gpu, tint: Theme.mint)
             MiniStat(label: L("内存", "MEM"), value: store.metrics.memFraction, tint: memTint(store.metrics))
         }
+        // The window is only as wide as the capsule was a moment ago. Without this, content that grows is
+        // squeezed into the old width (text wraps) and the window never learns that it should widen.
+        .fixedSize()
         .padding(.leading, 7)
         .padding(.trailing, 14)
         .frame(height: Layout.capsuleHeight)
@@ -94,6 +98,23 @@ func memTint(_ m: Metrics) -> Color {
     }
 }
 
+/// On the capsule while another program's question is waiting for an answer: how many.
+private struct QuestionBadge: View {
+    let count: Int
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "questionmark.bubble.fill").font(.system(size: 8.5, weight: .bold))
+            Text("\(count)").font(Theme.num(11))
+        }
+        .foregroundStyle(Theme.lilac)
+        .padding(.horizontal, 6).padding(.vertical, 2.5)
+        .background(Capsule().fill(Theme.lilac.opacity(0.18)))
+        .fixedSize()
+        .help(L("有问题在等你回答，展开面板作答", "A question is waiting for your answer: expand the panel"))
+    }
+}
+
 /// On the capsule while a session is waiting for the user (or failed): how many.
 private struct AgentBadge: View {
     let count: Int
@@ -128,14 +149,22 @@ private struct MiniStat: View {
             }
             .frame(width: 3.5, height: 22)
             VStack(alignment: .leading, spacing: 0) {
-                Text(value.map { "\(Int(($0 * 100).rounded()))" } ?? "–")
-                    .font(Theme.num(12.5))
-                    .foregroundStyle(.white)
+                // Room for three digits at all times: the capsule keeps its width when a reading reaches 100,
+                // and the number can never be squeezed onto two lines.
+                ZStack(alignment: .leading) {
+                    Text("100").hidden()
+                    Text(value.map { "\(Int(($0 * 100).rounded()))" } ?? "–")
+                        .foregroundStyle(.white)
+                }
+                .font(Theme.num(12.5))
+                .lineLimit(1)
+                .fixedSize()
                 Text(label)
                     .font(.system(size: 8.5, weight: .semibold))
                     .foregroundStyle(Theme.text(0.5))
+                    .lineLimit(1)
+                    .fixedSize()
             }
-            .frame(minWidth: 21, alignment: .leading)
         }
     }
 }
@@ -170,8 +199,21 @@ struct PanelView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(L("渲染任务", "Render Jobs")).font(.system(size: 14.5, weight: .semibold)).foregroundStyle(.white)
                 Text(store.summary).font(.system(size: 10.5, weight: .medium)).foregroundStyle(Theme.text(0.55)).monospacedDigit()
+                    .lineLimit(1)
             }
             Spacer(minLength: 6)
+            // The agents get a mark up here: with several jobs in the list, their own block is below the fold.
+            if let top = store.agents.top, let summary = store.agentSummary {
+                HStack(spacing: 3) {
+                    Image(systemName: top.state.symbol).font(.system(size: 8.5, weight: .bold))
+                    Text("\(store.agents.count(top.state))").font(Theme.num(11))
+                }
+                .foregroundStyle(top.state.tint)
+                .padding(.horizontal, 7).padding(.vertical, 4)
+                .background(Capsule().fill(top.state.tint.opacity(0.16)))
+                .fixedSize()
+                .help(L("Agent 会话：\(summary)。往下滚能看到每一个", "Agents' sessions: \(summary). Scroll down for each one"))
+            }
             IconButton(symbol: store.pinned ? "pin.fill" : "pin", active: store.pinned,
                        help: store.pinned ? L("取消固定：点别处会自动收起", "Unpin: collapse when you click elsewhere") : L("固定面板：点别处也不收起", "Pin: stay open when you click elsewhere")) {
                 store.pinned.toggle()
@@ -204,10 +246,17 @@ struct TaskListContent: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            if !store.agentsNeedingYou.isEmpty { AgentAttention(sessions: store.agentsNeedingYou) }
+            ForEach(store.requests) { request in
+                RequestCard(request: request, now: store.now) { store.answer(request.id, $0) }
+            }
+            ForEach(store.inbox.questions) { question in
+                QuestionCard(question: question, now: store.now, pick: { store.answerQuestion(question.id, $0) }, dismiss: { store.dismissQuestion(question.id) })
+            }
+            if !store.agentsNeedingYou.isEmpty, store.requests.isEmpty { AgentAttention(sessions: store.agentsNeedingYou) }
+            if !store.inbox.notices.isEmpty || !store.inbox.tasks.isEmpty { InboxSection(inbox: store.inbox, now: store.now, store: store) }
             if store.groups.isEmpty {
-                // With agents to show, a full-height "nothing here" would only push them down.
-                if store.agents.isEmpty { EmptyState(scanned: store.scanned) }
+                // With agents or another program's things to show, a full-height "nothing here" would only push them down.
+                if store.agents.isEmpty, store.inbox.isEmpty { EmptyState(scanned: store.scanned) }
             } else {
                 ForEach(store.groups) { group in
                     GroupCard(group: group, store: store)
@@ -288,6 +337,246 @@ private struct AgentAttention: View {
         let rest = more > 0 ? L("，另有 \(more) 个", ", and \(more) more") : ""
         if s.state == .error { return L("\(who) 出错了\(rest)", "\(who) failed\(rest)") }
         return L("\(who) 在等你\(rest)", "\(who) needs you\(rest)")
+    }
+}
+
+/// An agent is asking whether it may do something. What it would do is shown whole; the answer is for this once.
+private struct RequestCard: View {
+    let request: ControlRequest
+    let now: Date
+    let answer: (ControlDecision) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Image(systemName: "hand.raised.fill").font(.system(size: 10, weight: .bold)).foregroundStyle(Theme.amber)
+                Text("\(AgentTool.displayName(request.tool)) · \(request.project)")
+                    .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                Spacer(minLength: 4)
+                Text(L("还等 \(Fmt.duration(max(0, request.expiresAt.timeIntervalSince(now))))", "\(Fmt.duration(max(0, request.expiresAt.timeIntervalSince(now)))) left"))
+                    .font(.system(size: 10, weight: .medium)).monospacedDigit().foregroundStyle(Theme.text(0.45)).fixedSize()
+                    .help(L("到时间没人答，就回到 agent 自己的窗口里去问", "With no answer by then, the agent asks in its own window"))
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(request.action)
+                    .font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.amber)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Capsule().fill(Theme.amber.opacity(0.16)))
+                    .fixedSize()
+                // What may be allowed is shown whole, however many lines that takes: nothing is cut out of it.
+                // (How long it may be at all is the policy's limit.) What can only be denied here is cut short.
+                Text(request.detail.isEmpty ? L("（没有说明）", "(no details)") : request.detail)
+                    .font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.text(0.88))
+                    .lineLimit(request.approvable ? nil : 2).truncationMode(.tail)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            HStack(spacing: 7) {
+                if request.approvable {
+                    AnswerButton(title: L("允许这一次", "Allow once"), tint: Theme.mint) { answer(.allow) }
+                } else if let reason = request.reason {
+                    Text(reason).font(.system(size: 10, weight: .medium)).foregroundStyle(Theme.text(0.5)).lineLimit(2)
+                }
+                Spacer(minLength: 4)
+                AnswerButton(title: L("拒绝", "Deny"), tint: Theme.coral) { answer(.deny) }
+            }
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 13, style: .continuous).fill(Theme.amber.opacity(0.10))
+            .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).strokeBorder(Theme.amber.opacity(0.35), lineWidth: 0.8)))
+    }
+}
+
+private struct AnswerButton: View {
+    let title: String
+    let tint: Color
+    let action: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold)).foregroundStyle(tint)
+                .padding(.horizontal, 11).padding(.vertical, 5)
+                .background(Capsule().fill(tint.opacity(hover ? 0.28 : 0.16)))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .fixedSize()
+    }
+}
+
+// MARK: From other programs (the entry: `renderdock notify | progress | ask`)
+
+/// Another program is asking the user something. Not a permission request, and drawn so it cannot be taken for
+/// one: nothing is allowed by answering, and the answer goes back to whoever asked.
+private struct QuestionCard: View {
+    let question: InboxQuestion
+    let now: Date
+    let pick: (Int) -> Void
+    let dismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "questionmark.bubble.fill").font(.system(size: 10, weight: .bold)).foregroundStyle(Theme.lilac)
+                Text(question.from.isEmpty ? L("有个程序问你", "A program asks") : L("\(question.from) 问你", "\(question.from) asks"))
+                    .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                Spacer(minLength: 4)
+                Text(L("还等 \(Fmt.duration(max(0, question.expiresAt.timeIntervalSince(now))))", "\(Fmt.duration(max(0, question.expiresAt.timeIntervalSince(now)))) left"))
+                    .font(.system(size: 10, weight: .medium)).monospacedDigit().foregroundStyle(Theme.text(0.45)).fixedSize()
+                    .help(L("到时间没人答，提问的程序会得到「没有回答」", "With no answer by then, the program that asked is told there was none"))
+            }
+            Text(question.text)
+                .font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.text(0.92))
+                .lineLimit(6).fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            // Side by side when they fit; one under another when they do not.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 7) { choices; Spacer(minLength: 4); skip }
+                VStack(alignment: .leading, spacing: 6) { choices; skip }
+            }
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 13, style: .continuous).fill(Theme.lilac.opacity(0.10))
+            .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).strokeBorder(Theme.lilac.opacity(0.35), lineWidth: 0.8)))
+    }
+
+    @ViewBuilder private var choices: some View {
+        ForEach(Array(question.choices.enumerated()), id: \.offset) { index, label in
+            AnswerButton(title: label, tint: Theme.lilac) { pick(index) }
+        }
+    }
+
+    private var skip: some View {
+        Button(action: dismiss) {
+            Text(L("不回答", "No answer")).font(.system(size: 10.5, weight: .medium)).foregroundStyle(Theme.text(0.45))
+                .padding(.horizontal, 6).padding(.vertical, 5).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .help(L("提问的程序会得到「没有回答」", "The program that asked is told there was no answer"))
+    }
+}
+
+/// What other programs report: the tasks they are working through, and what they have said lately.
+private struct InboxSection: View {
+    let inbox: InboxView
+    let now: Date
+    let store: Store
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(L("其他程序报来的", "From Other Programs"))
+                .font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.text(0.45))
+            ForEach(inbox.tasks) { task in InboxTaskRow(task: task, now: now) { store.dismissTask(task.id) } }
+            ForEach(inbox.notices) { notice in InboxNoticeRow(notice: notice, now: now) { store.dismissNotice(notice.id) } }
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 13, style: .continuous).fill(.white.opacity(0.035)))
+    }
+}
+
+/// The name a program gave for itself, as a small tag. It is whatever the program said: nothing checks it.
+private struct SenderTag: View {
+    let name: String
+
+    var body: some View {
+        if !name.isEmpty {
+            Text(name)
+                .font(.system(size: 9.5, weight: .semibold)).foregroundStyle(Theme.text(0.7))
+                .padding(.horizontal, 5).padding(.vertical, 1.5)
+                .background(Capsule().fill(.white.opacity(0.08)))
+                .lineLimit(1).fixedSize()
+        }
+    }
+}
+
+private struct CloseButton: View {
+    let help: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "xmark").font(.system(size: 8, weight: .bold)).foregroundStyle(Theme.text(0.35))
+                .frame(width: 16, height: 16).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+}
+
+private struct InboxTaskRow: View {
+    let task: InboxTask
+    let now: Date
+    let dismiss: () -> Void
+
+    var body: some View {
+        let tint = task.state == "error" ? Theme.coral : task.state == "done" ? Theme.mint : Theme.aqua
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                SenderTag(name: task.from)
+                Text(task.title).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.text(0.92)).lineLimit(1).layoutPriority(1)
+                Spacer(minLength: 4)
+                if let f = task.fraction, task.state == "working" {
+                    Text(Fmt.percent(f)).font(Theme.num(12)).foregroundStyle(.white).fixedSize()
+                }
+                CloseButton(help: L("从这里拿掉（那个程序自己不受影响）", "Take it off this list (the program itself is not affected)"), action: dismiss)
+            }
+            if task.state == "working" { ProgressBar(fraction: task.fraction, state: .rendering) .frame(height: 5) }
+            Text(detail).font(.system(size: 10, weight: .medium)).monospacedDigit().foregroundStyle(tint).lineLimit(1)
+        }
+    }
+
+    private var detail: String {
+        switch task.state {
+        case "done": return L("做完了 · \(Fmt.duration(now.timeIntervalSince(task.updatedAt)))前", "Done · \(Fmt.duration(now.timeIntervalSince(task.updatedAt))) ago")
+        case "error": return L("失败了 · \(Fmt.duration(now.timeIntervalSince(task.updatedAt)))前", "Failed · \(Fmt.duration(now.timeIntervalSince(task.updatedAt))) ago")
+        default:
+            var parts = [L("进行中 · 已 \(Fmt.duration(now.timeIntervalSince(task.startedAt)))", "Working · \(Fmt.duration(now.timeIntervalSince(task.startedAt)))")]
+            if let eta = task.etaSec { parts.append(L("剩约 \(Fmt.duration(TimeInterval(eta)))", "~\(Fmt.duration(TimeInterval(eta))) left")) }
+            // A program that has gone quiet may have stopped without saying so.
+            let quiet = now.timeIntervalSince(task.updatedAt)
+            if quiet > 90 { parts.append(L("\(Fmt.duration(quiet)) 没有新消息", "no word for \(Fmt.duration(quiet))")) }
+            return parts.joined(separator: " · ")
+        }
+    }
+}
+
+private struct InboxNoticeRow: View {
+    let notice: InboxNotice
+    let now: Date
+    let dismiss: () -> Void
+
+    var body: some View {
+        let tint = notice.level == .error ? Theme.coral : notice.level == .done ? Theme.mint : Theme.aqua
+        let symbol = notice.level == .error ? "xmark" : notice.level == .done ? "checkmark" : "bubble.left.fill"
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: symbol).font(.system(size: 9, weight: .bold)).foregroundStyle(tint).frame(width: 11)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    SenderTag(name: notice.from)
+                    if !notice.title.isEmpty {
+                        Text(notice.title).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.text(0.92)).lineLimit(1).layoutPriority(1)
+                    }
+                    Spacer(minLength: 4)
+                    Text(L("\(Fmt.duration(now.timeIntervalSince(notice.at)))前", "\(Fmt.duration(now.timeIntervalSince(notice.at))) ago"))
+                        .font(.system(size: 10, weight: .medium)).monospacedDigit().foregroundStyle(Theme.text(0.4)).fixedSize()
+                }
+                if !notice.body.isEmpty {
+                    Text(notice.body).font(.system(size: 11)).foregroundStyle(Theme.text(0.72))
+                        .lineLimit(4).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            CloseButton(help: L("知道了", "Dismiss"), action: dismiss)
+        }
     }
 }
 
@@ -604,13 +893,18 @@ private struct ItemRow: View {
                         .lineLimit(1)
                     Spacer(minLength: 4)
                     if let f = item.fraction {
-                        Text(L("\(item.framesDone ?? 0)/\(item.totalIsEstimate ? "≈" : "")\(item.framesTotal ?? 0) 帧", "\(item.framesDone ?? 0)/\(item.totalIsEstimate ? "≈" : "")\(item.framesTotal ?? 0) frames"))
+                        // An encode counts in time, not frames: how much of the output is written, of how long it will be.
+                        Text(item.framesTotal == nil && item.mediaTotal != nil
+                             ? "\(Fmt.media(item.mediaDone ?? 0)) / \(item.totalIsEstimate ? "≈" : "")\(Fmt.media(item.mediaTotal ?? 0))"
+                             : L("\(item.framesDone ?? 0)/\(item.totalIsEstimate ? "≈" : "")\(item.framesTotal ?? 0) 帧", "\(item.framesDone ?? 0)/\(item.totalIsEstimate ? "≈" : "")\(item.framesTotal ?? 0) frames"))
                             .font(Theme.num(10, .medium)).foregroundStyle(Theme.text(0.5))
+                            .lineLimit(1).fixedSize()
                         Text("\(item.totalIsEstimate ? "≈" : "")\(Fmt.percent(f))")
                             .font(Theme.num(13)).foregroundStyle(.white)
+                            .lineLimit(1).fixedSize()
                     } else if let d = item.framesDone, item.pid != nil {
-                        Text("\(d)").font(Theme.num(13)).foregroundStyle(.white)
-                        Text(L("帧", "frames")).font(.system(size: 10, weight: .medium)).foregroundStyle(Theme.text(0.5))
+                        Text("\(d)").font(Theme.num(13)).foregroundStyle(.white).lineLimit(1).fixedSize()
+                        Text(L("帧", "frames")).font(.system(size: 10, weight: .medium)).foregroundStyle(Theme.text(0.5)).lineLimit(1).fixedSize()
                     }
                 }
                 if item.pid != nil { ProgressBar(fraction: item.fraction, state: item.state) }
@@ -675,6 +969,9 @@ private struct ItemRow: View {
         }
         if item.state == .rendering, let sd = item.sampleDone, let st = item.sampleTotal { d.append(L("采样 \(sd)/\(st)", "sample \(sd)/\(st)")) }
         if let s = item.secPerFrame { d.append(Fmt.secPerFrame(s)) }
+        // An encode whose length is not known still says how much it has written; one that reports its speed says that too.
+        if item.fraction == nil, let written = item.mediaDone { d.append(L("已写出 \(Fmt.media(written))", "\(Fmt.media(written)) written")) }
+        if item.state == .encoding, let speed = item.mediaSpeed { d.append(String(format: "%.1f×", speed)) }
         if let e = item.eta { d.append(L("剩约 \(Fmt.duration(e))", "~\(Fmt.duration(e)) left")) }
         return d
     }
@@ -765,6 +1062,8 @@ private struct MetricTile: View {
                 Text(value).font(Theme.num(19)).foregroundStyle(.white)
                 Text(unit).font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.text(0.5))
             }
+            .lineLimit(1)
+            .fixedSize()
             .padding(.top, 3)
             Sparkline(values: history, tint: tint)
                 .frame(height: 20)

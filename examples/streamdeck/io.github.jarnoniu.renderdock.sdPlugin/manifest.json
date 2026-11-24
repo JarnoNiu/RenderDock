@@ -1,0 +1,25 @@
+{
+  "Name": "RenderDock",
+  "Version": "0.3.0.0",
+  "Author": "RenderDock",
+  "Description": "Shows on a key how far along the render in front is. Reads RenderDock's local API on this computer.",
+  "URL": "https://github.com/JarnoNiu/RenderDock",
+  "Icon": "imgs/plugin",
+  "UUID": "io.github.jarnoniu.renderdock",
+  "SDKVersion": 2,
+  "Software": { "MinimumVersion": "6.4" },
+  "OS": [{ "Platform": "mac", "MinimumVersion": "13" }],
+  "CodePath": "plugin.js",
+  "Nodejs": { "Version": "20" },
+  "Actions": [
+    {
+      "UUID": "io.github.jarnoniu.renderdock.progress",
+      "Name": "Render progress",
+      "Icon": "imgs/action",
+      "Tooltip": "How far along the render in front is",
+      "Controllers": ["Keypad"],
+      "UserTitleEnabled": false,
+      "States": [{ "Image": "imgs/key" }]
+    }
+  ]
+}

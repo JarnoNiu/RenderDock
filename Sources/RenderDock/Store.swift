@@ -62,7 +62,10 @@ final class Store {
     var agentsEnabled = (UserDefaults.standard.object(forKey: "showAgents") as? Bool) ?? true {
         didSet {
             UserDefaults.standard.set(agentsEnabled, forKey: "showAgents")
-            if agentsEnabled { scanAgents() } else { agents = [] }
+            if agentsEnabled { scanAgents() } else {
+                agents = []
+                agentDetector = AgentEventDetector()   // start afresh: nothing is announced when it is switched back on
+            }
             publishState()
             onChange?()
         }
@@ -78,6 +81,7 @@ final class Store {
     @ObservationIgnored private let agentWork = DispatchQueue(label: "renderdock.agents", qos: .utility)
     @ObservationIgnored private var scanningAgents = false
     @ObservationIgnored private var lastAgentScan = Date.distantPast
+    @ObservationIgnored private var agentDetector = AgentEventDetector()
 
     @ObservationIgnored private let scanner = TaskScanner()
     @ObservationIgnored private let sampler = MetricsSampler()
@@ -125,13 +129,25 @@ final class Store {
         let events = detector.update(groups, now: now, outcomes: outcomes)
         notifier.handle(events)
         guard apiEnabled else { return }
-        api.publish(state: StateSnapshot.make(groups: groups, metrics: metrics, agents: agents, now: now).json(), events: events)
+        api.publish(state: snapshot(now: now).json(), events: events)
     }
 
-    /// Hand the state to the API again after something other than a job scan changed it.
-    private func publishState() {
+    /// Hand the state to the API again after something other than a job scan changed it, with what happened to the agents.
+    private func publishState(events: [RenderEvent] = []) {
+        notifier.handle(events)
         guard apiEnabled else { return }
-        api.publish(state: StateSnapshot.make(groups: groups, metrics: metrics, agents: agents, now: Date()).json(), events: [])
+        api.publish(state: snapshot(now: Date()).json(), events: events)
+    }
+
+    /// Demo mode: run the made-up sessions through the detector, so the event stream shows agent events too.
+    func publishAgentEvents(now: Date) {
+        let events = agentDetector.update(agents, now: now)
+        if !events.isEmpty { publishState(events: events) }
+    }
+
+    /// The state document as it stands. A render that ended a few minutes ago still counts towards the overall state.
+    private func snapshot(now: Date) -> StateSnapshot {
+        StateSnapshot.make(groups: groups, metrics: metrics, agents: agents, recent: recentRuns, now: now)
     }
 
     /// Release the port and the discovery file before the app exits.
@@ -158,10 +174,13 @@ final class Store {
             let found = self.agentScanner.scan()
             DispatchQueue.main.async {
                 self.scanningAgents = false
-                guard self.agentsEnabled, found != self.agents else { return }
-                self.agents = found
-                self.publishState()
-                self.onChange?()
+                guard self.agentsEnabled else { return }
+                // The detector sees every scan, changed or not: a wait is announced only once it has lasted a while.
+                let events = self.agentDetector.update(found)
+                let changed = found != self.agents
+                if changed { self.agents = found }
+                if changed || !events.isEmpty { self.publishState(events: events) }
+                if changed { self.onChange?() }
             }
         }
     }

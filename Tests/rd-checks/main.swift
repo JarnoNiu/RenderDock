@@ -649,6 +649,125 @@ do {
     check("tool names for display", AgentTool.displayName("claude-code") == "Claude Code" && AgentTool.displayName("something-else") == "something-else")
 }
 
+section("summary for small displays")
+do {
+    func agent(_ id: String, _ state: AgentState, tool: String = "claude-code", project: String = "demo-site", waitingFor: String? = nil) -> AgentSession {
+        AgentSession(id: "\(tool):\(id)", tool: tool, project: project, title: "A private title", state: state, waitingFor: waitingFor,
+                     since: agentNow.addingTimeInterval(-20), source: "official")
+    }
+    func run(_ outcome: String, ago: Double) -> HistoryRun {
+        HistoryRun(id: 1, jobId: "j", jobTitle: "Job", project: "demo", script: nil, shot: "s9", startedAt: agentNow.timeIntervalSince1970 - ago - 600,
+                   endedAt: agentNow.timeIntervalSince1970 - ago, framesDone: 10, framesTotal: 10, exact: true, secPerFrame: 1, outcome: outcome, exitCode: outcome == "failed" ? 1 : 0)
+    }
+    func summary(groups: [RenderGroup] = [], agents: [AgentSession] = [], recent: [HistoryRun] = []) -> StateSnapshot.Summary {
+        StateSnapshot.make(groups: groups, metrics: Metrics(), agents: agents, recent: recent, now: agentNow, host: "Test Mac").summary
+    }
+    let nothing = summary()
+    check("nothing going on is idle, with no top item", nothing.state == "idle" && nothing.top == nil && nothing.line == "idle")
+
+    let rendering = summary(groups: [groupA])
+    check("a render alone is working, and the top item is the shot with its percentage",
+          rendering.state == "working" && rendering.top?.kind == "render" && rendering.top?.name == "s2" && rendering.top?.fraction == 0.5 && rendering.line == "render 50%")
+
+    let both = summary(groups: [groupA], agents: [agent("a", .working), agent("b", .idle)])
+    check("render and agent both working: the render is the top item", both.state == "working" && both.top?.kind == "render" && both.line == "render 50% | 1 working")
+    check("agent counts", both.agents.working == 1 && both.agents.idle == 1 && both.agents.waiting == 0)
+
+    let waiting = summary(groups: [groupA], agents: [agent("a", .working), agent("c", .waiting, project: "docs", waitingFor: "permission prompt")])
+    check("a waiting session outranks a running render", waiting.state == "waiting" && waiting.top?.kind == "agent" && waiting.top?.name == "docs")
+    check("the top item says what it waits for", waiting.top?.waitingFor == "permission prompt" && waiting.top?.tool == "claude-code")
+    check("the line puts waiting first and drops what does not fit", waiting.line == "1 waiting | render 50%")
+
+    let failing = summary(agents: [agent("a", .error), agent("c", .waiting)])
+    check("an error outranks waiting", failing.state == "error" && failing.top?.state == "error" && failing.line == "1 failed | 1 waiting")
+
+    let stalled = summary(groups: [job("x", .stalled, [("s1", .stalled)])])
+    check("a stalled render is the renders' way of waiting", stalled.state == "waiting" && stalled.top?.kind == "render" && stalled.top?.name == "s1" && stalled.line == "1 waiting")
+    let paused = summary(groups: [groupC])
+    check("a paused render is not treated as waiting for you", paused.state == "idle" && paused.line == "idle")
+
+    check("a render that failed a minute ago still shows as an error", summary(recent: [run("failed", ago: 60)]).state == "error")
+    check("…and one that finished a minute ago as done", summary(recent: [run("finished", ago: 60)]).state == "done" && summary(recent: [run("finished", ago: 60)]).line == "1 done")
+    check("after a few minutes it no longer counts", summary(recent: [run("finished", ago: 400)]).state == "idle")
+    check("a job that merely vanished is not claimed as done", summary(recent: [run("ended", ago: 60)]).state == "idle")
+    check("an agent that just finished is done", summary(agents: [agent("a", .done)]).state == "done" && summary(agents: [agent("a", .done)]).top?.name == "demo-site")
+
+    let crowded = summary(groups: [groupA], agents: (0..<12).map { agent("w\($0)", .working) } + (0..<11).map { agent("q\($0)", .waiting) } + [agent("e", .error)])
+    check("the line never exceeds 23 characters and is plain ASCII",
+          crowded.line.count <= StateSnapshot.lineLimit && crowded.line.allSatisfy { $0.isASCII } && crowded.line.hasPrefix("1 failed | 11 waiting"))
+    let json = String(decoding: StateSnapshot.make(groups: [groupA], metrics: Metrics(), agents: [agent("a", .waiting)], now: agentNow, host: "Test Mac").json(), as: UTF8.self)
+    check("the summary carries no session title", !json.contains("A private title"))
+}
+
+section("agent events")
+do {
+    func agent(_ id: String, _ state: AgentState, since: Double, waitingFor: String? = nil) -> AgentSession {
+        AgentSession(id: "claude-code:\(id)", tool: "claude-code", project: "demo-site", title: "A private title", state: state,
+                     waitingFor: waitingFor, since: agentNow.addingTimeInterval(since), source: "official")
+    }
+    func at(_ seconds: Double) -> Date { agentNow.addingTimeInterval(seconds) }
+    var d = AgentEventDetector()
+    check("the first scan announces nothing, not even a session already waiting",
+          d.update([agent("a", .working, since: -300), agent("z", .waiting, since: -900)], now: at(0)).isEmpty)
+    check("still nothing for the old wait", d.update([agent("a", .working, since: -300), agent("z", .waiting, since: -900)], now: at(6)).isEmpty)
+
+    var e = d.update([agent("a", .waiting, since: 10, waitingFor: "permission prompt"), agent("z", .waiting, since: -900)], now: at(12))
+    check("a wait of two seconds is not announced yet", e.isEmpty)
+    e = d.update([agent("a", .waiting, since: 10, waitingFor: "permission prompt"), agent("z", .waiting, since: -900)], now: at(18))
+    check("after eight seconds it is", e.map(\.type) == [.agentWaiting] && e.first?.jobId == "claude-code:a")
+    check("the event names the tool and the project, and what it waits for",
+          e.first?.jobTitle == "Claude Code" && e.first?.tool == "claude-code" && e.first?.project == "demo-site" && e.first?.waitingFor == "permission prompt")
+    check("the session's own title is not in the event", !String(decoding: e.first?.json() ?? Data(), as: UTF8.self).contains("A private title"))
+    e = d.update([agent("a", .waiting, since: 10, waitingFor: "permission prompt"), agent("z", .waiting, since: -900)], now: at(24))
+    check("one wait, one announcement", e.isEmpty)
+
+    e = d.update([agent("a", .working, since: 30), agent("z", .waiting, since: -900)], now: at(30))
+    check("answering it announces nothing", e.isEmpty)
+    e = d.update([agent("a", .done, since: 200), agent("z", .waiting, since: -900)], now: at(204))
+    check("finishing the turn is announced with how long it ran", e.map(\.type) == [.agentDone] && e.first?.durationSec == 500)
+    e = d.update([agent("a", .done, since: 200), agent("z", .waiting, since: -900)], now: at(210))
+    check("…once", e.isEmpty)
+
+    e = d.update([agent("a", .waiting, since: 300), agent("z", .waiting, since: -900)], now: at(309))
+    check("a second wait of the same session is announced again", e.map(\.type) == [.agentWaiting])
+    e = d.update([agent("a", .error, since: 320), agent("z", .idle, since: 320)], now: at(326))
+    check("an error is announced, and with nothing working or waiting any more, so is that",
+          e.map(\.type) == [.agentError, .agentsIdle])
+    e = d.update([agent("a", .error, since: 320), agent("z", .idle, since: 320)], now: at(332))
+    check("neither is repeated", e.isEmpty)
+    check("a session that appears already finished is not announced", d.update([agent("n", .done, since: 330)], now: at(338)).isEmpty)
+
+    var quick = AgentEventDetector()
+    _ = quick.update([agent("a", .idle, since: -50)], now: at(0))
+    _ = quick.update([agent("a", .working, since: 2)], now: at(6))
+    let short = quick.update([agent("a", .done, since: 32)], now: at(36))
+    check("a short turn still raises the event; it was the only busy session, so everything has stopped too",
+          short.map(\.type) == [.agentDone, .agentsIdle] && short.first?.durationSec == 30)
+    check("…but is not worth a notification", short.first.flatMap { Notify.message(for: $0) } == nil)
+}
+
+section("agent notifications")
+do {
+    func event(_ kind: RenderEvent.Kind, waitingFor: String? = nil, duration: Int? = nil) -> RenderEvent {
+        RenderEvent(type: kind, jobId: "claude-code:a", jobTitle: "Claude Code", project: "demo-site", at: "2027-01-15T08:00:00Z",
+                    tool: "claude-code", waitingFor: waitingFor, durationSec: duration)
+    }
+    let waiting = Notify.message(for: event(.agentWaiting, waitingFor: "permission prompt"))
+    check("needs you: the tool in the title, the project and the reason in the body",
+          waiting?.title.contains("Claude Code") == true && waiting?.body == "demo-site · permission prompt")
+    check("without a reason, the project alone", Notify.message(for: event(.agentWaiting))?.body == "demo-site")
+    check("a long turn that finished says how long it took",
+          Notify.message(for: event(.agentDone, duration: 600))?.body.hasPrefix("demo-site") == true)
+    check("a turn of unknown length is not announced", Notify.message(for: event(.agentDone)) == nil)
+    check("an error is announced", Notify.message(for: event(.agentError))?.body == "demo-site")
+    check("agent events are among the defaults, except 'all stopped'",
+          ["agent.waiting", "agent.error", "agent.done"].allSatisfy { Notify.defaultEvents.contains($0) } && !Notify.defaultEvents.contains("agents.idle"))
+    var hook = NotifyChannel(type: "webhook")
+    hook.url = "http://127.0.0.1:9/hook"
+    check("a channel with its own event list can leave agents out", { hook.events = ["job.ended"]; return !hook.wants("agent.waiting") }())
+    check("agent events know what they are", RenderEvent.Kind.agentWaiting.isAgent && RenderEvent.Kind.agentsIdle.isAgent && !RenderEvent.Kind.jobEnded.isAgent)
+}
+
 // MARK: HTTP parsing and the Host check
 
 section("HTTP request parsing")

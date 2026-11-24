@@ -14,6 +14,12 @@ final class Notifier {
         set { UserDefaults.standard.set(newValue, forKey: "notifySystem") }
     }
 
+    /// Whether agents' sessions are announced too. On by default; it only matters once notifications are on at all.
+    var agentsEnabled: Bool {
+        get { (UserDefaults.standard.object(forKey: "notifyAgents") as? Bool) ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "notifyAgents") }
+    }
+
     /// Channels that are switched on in the settings file.
     var activeChannels: [NotifyChannel] { Notify.loadConfig().channels.filter { $0.enabled != false } }
 
@@ -41,6 +47,7 @@ final class Notifier {
         let endsQueue = events.contains { $0.type == .allEnded }
         let jobsEnded = events.filter { $0.type == .jobEnded }
         for e in events {
+            if e.type.isAgent, !agentsEnabled { continue }
             if e.type == .allEnded, !jobsEnded.isEmpty { continue }
             let last = endsQueue && e.type == .jobEnded && e == jobsEnded.last
             guard let m = Notify.message(for: e, lastOne: last) else { continue }

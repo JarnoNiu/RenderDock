@@ -2,7 +2,7 @@
 
 > New in 0.2. Everything here is off until you turn it on.
 
-RenderDock can tell you when a job ends, when one stalls, and when the queue is empty: on the Mac, and on your phone through a service you already use.
+RenderDock can tell you when a job ends, when one stalls, and when the queue is empty: on the Mac, and on your phone through a service you already use. From 0.3 it can also tell you when a coding agent's session starts to need you, fails, or finishes a long turn.
 
 Menu-bar icon → **Notifications**.
 
@@ -35,7 +35,7 @@ Menu-bar icon → **Notifications**.
 
 Every channel also takes:
 
-- `"events": ["job.ended", "job.stalled", "all.ended", "shot.done"]` — which events it announces. The default is the first three; `shot.done` is left out because a long queue would be noisy.
+- `"events": ["job.ended", "job.stalled", "all.ended", "agent.waiting", "agent.error", "agent.done", "shot.done", "agents.idle"]` — which events it announces. The default is the first six. `shot.done` is left out because a long queue would be noisy, and `agents.idle` because with one session it says the same as `agent.done`.
 - `"enabled": false` — keep the entry but send nothing.
 
 The file is read each time a notification goes out, so there is nothing to restart. **Send a Test Notification** sends one message to every enabled channel; if a channel answers with an error, the menu shows it.
@@ -63,12 +63,24 @@ Placeholders: `{title}`, `{body}`, `{event}`, `{job}`, `{project}`. In a JSON bo
 | `job.stalled` | **Render may be stalled** |
 | the last job ends | the same message, with "nothing else is running" added |
 | `all.ended` on its own | **All render jobs have ended** |
+| `agent.waiting` | **Claude Code needs you** — the project, and what it waits for when the tool says |
+| `agent.error` | **Claude Code failed** — the project |
+| `agent.done`, after a turn of two minutes or more | **Claude Code finished** — the project and how long the turn took |
+| `agents.idle` (only if you list it) | **All agents have stopped** |
 
 To get "finished" and "failed", start the job through the wrapper: see [EXACT-PROGRESS.md](EXACT-PROGRESS.md).
 
+### About agents' sessions
+
+- The tool's name stands where the examples say Claude Code. See [AGENT-TASKS.md](AGENT-TASKS.md) for which agents are read and what can be seen of each.
+- **A session's own title is never in a notification.** The message has the tool, the project's directory name, and the reason for waiting in the tool's own words.
+- A session is announced as waiting once it has waited 8 seconds. If you answer the prompt before that, nothing is sent. In practice the message goes out 8 to 14 seconds after the session stops.
+- The end of a turn is announced only when the turn ran for two minutes or more, and only when RenderDock saw it begin. Shorter turns are conversation, and you are presumably there.
+- **Notify About Agents' Sessions Too**, in the same menu, switches all of these off without touching the render notifications. It is on by default, and matters only once notifications are on at all.
+
 ## What leaves your Mac
 
-Nothing, unless you add a channel. With a channel configured, each notification is one HTTPS request to that service containing the message text, which includes the job's title. These are the only outbound connections RenderDock ever makes.
+Nothing, unless you add a channel. With a channel configured, each notification is one HTTPS request to that service containing the message text, which includes the job's title, or for an agent's session the tool's name and the project's directory name. These are the only outbound connections RenderDock ever makes.
 
 ## What has and has not been checked
 

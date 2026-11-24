@@ -94,6 +94,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             failed.isEnabled = false
             sub.addItem(failed)
         }
+        add(sub, L("Agent 会话也通知", "Notify About Agents' Sessions Too"), #selector(toggleAgentNotifications), on: store.notifier.agentsEnabled)
         add(sub, L("编辑推送设置…", "Edit Push Settings…"), #selector(editPushSettings))
         add(sub, L("发送测试通知", "Send a Test Notification"), #selector(sendTestNotification))
         notify.submenu = sub
@@ -130,6 +131,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc private func toggleAPI() { store.apiEnabled.toggle() }
     @objc private func toggleAgents() { store.agentsEnabled.toggle() }
     @objc private func toggleAgentTitles() { store.agentTitles.toggle() }
+    @objc private func toggleAgentNotifications() { store.notifier.agentsEnabled.toggle() }
     @objc private func editPushSettings() { store.notifier.openSettings() }
     @objc private func sendTestNotification() { store.notifier.sendTest() }
 

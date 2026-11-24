@@ -53,7 +53,11 @@ package struct OutgoingRequest: Equatable {
 
 package enum Notify {
     /// What is announced unless a channel says otherwise. `shot.done` is left out: a long queue would be noisy.
-    package static let defaultEvents = ["job.ended", "job.stalled", "all.ended"]
+    /// For agents: a session that starts to need you, one that fails, and the end of a long turn (see `longTurn`).
+    package static let defaultEvents = ["job.ended", "job.stalled", "all.ended", "agent.waiting", "agent.error", "agent.done"]
+
+    /// An agent's turn must have run this long for its end to be worth a notification. Shorter ones are conversation.
+    package static let longTurn = 120
 
     /// Override with the RENDERDOCK_NOTIFY environment variable (used when testing).
     package static var configFile: URL {
@@ -103,6 +107,18 @@ package enum Notify {
             return (L("全部渲染任务已结束", "All render jobs have ended"), "")
         case .jobStarted, .jobPaused, .jobResumed:
             return nil
+        // For agents, `jobTitle` is the tool's name. The session's own title is never part of a notification.
+        case .agentWaiting:
+            let what = [e.project, e.waitingFor ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")
+            return (L("\(e.jobTitle) 在等你", "\(e.jobTitle) needs you"), what)
+        case .agentError:
+            return (L("\(e.jobTitle) 出错了", "\(e.jobTitle) failed"), e.project)
+        case .agentDone:
+            guard let seconds = e.durationSec, seconds >= longTurn else { return nil }
+            return (L("\(e.jobTitle) 做完了", "\(e.jobTitle) finished"),
+                    e.project + L(" · 用了 \(Fmt.duration(Double(seconds)))", " · took \(Fmt.duration(Double(seconds)))"))
+        case .agentsIdle:
+            return (L("所有 agent 都停下了", "All agents have stopped"), "")
         }
     }
 

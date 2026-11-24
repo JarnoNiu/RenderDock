@@ -60,7 +60,11 @@ curl -s http://127.0.0.1:47600/v1/state
     "focus": {
       "name": "s040_explode", "state": "rendering",
       "framesDone": 452, "framesTotal": 720, "fraction": 0.628, "exact": true, "etaSec": 1662
-    }
+    },
+    "agents": {"error": 0, "waiting": 1, "working": 1, "done": 0, "idle": 0, "stale": 0},
+    "state": "waiting",
+    "top": {"kind": "agent", "name": "demo-site", "state": "waiting", "tool": "claude-code", "waitingFor": "permission prompt"},
+    "line": "1 waiting | render 62%"
   },
   "jobs": [
     {
@@ -94,6 +98,7 @@ curl -s http://127.0.0.1:47600/v1/state
 | Field | Meaning |
 |---|---|
 | `summary.focus` | The one shot a small display should show: the furthest-along running shot, otherwise a stalled or paused one. Absent when nothing is going on |
+| `summary.state`, `summary.top`, `summary.line`, `summary.agents` | From 0.3: renders and agents' sessions together, for a light or a small screen: one word, the one thing it is about, one line of ASCII, and counts. See [SMALL-DISPLAYS.md](SMALL-DISPLAYS.md) |
 | `fraction` | 0–1. Present only when a total is known |
 | `exact` | `true` when `framesTotal` is exact (from `render-progress.json` or the command line). `false` when it is an estimate or unknown. **Show `≈` or no percentage when this is false** |
 | `etaSec` | Seconds left for this shot. Present only while it is running with a known total and a measured frame time |
@@ -126,6 +131,12 @@ A [server-sent events](https://html.spec.whatwg.org/multipage/server-sent-events
 | `job.paused`, `job.resumed` | The job's processes were stopped or continued | |
 | `job.ended` | The job's processes are gone | Plus `outcome` (`finished` or `failed`) and `exitCode` when the job was started with `renderdock run` |
 | `all.ended` | The last job has gone: nothing is rendering or queued | `{type, at}`, the other fields are empty |
+| `agent.waiting` | From 0.3: an agent's session has been waiting for you for 8 seconds | `{type, jobId, jobTitle, project, tool, at}`, plus `waitingFor` when the tool says what for |
+| `agent.done` | A session that was working has finished its turn | The same, plus `durationSec` when the start of the turn was seen |
+| `agent.error` | A session failed | The same |
+| `agents.idle` | Sessions were working or waiting, and now none is | `{type, at}`, the other fields are empty |
+
+In the agent events, `jobId` is the session's id as in `agents`, `jobTitle` is the tool's name ("Claude Code"), and `project` is the project it works in. The session's own title is never sent. A wait that is over within 8 seconds raises no event: a prompt answered at once is not news.
 
 `job.ended` is deliberately not called "done": from the outside, RenderDock cannot tell a finished render from a crashed one. A job started through the wrapper records its exit status, and then the event says which it was ([EXACT-PROGRESS.md](EXACT-PROGRESS.md)). Jobs that were already running when RenderDock started are not announced as `job.started`.
 
@@ -215,4 +226,4 @@ with urllib.request.urlopen("http://127.0.0.1:47600/v1/events") as stream:
 
 `version` is 1. Within version 1, fields are added and never renamed or removed. Ignore fields you do not know.
 
-Not in the API yet: access from other devices, thumbnails of the latest frame, events for agents' sessions, and anything that changes a job or answers an agent.
+Not in the API yet: access from other devices, thumbnails of the latest frame, and anything that changes a job or answers an agent.

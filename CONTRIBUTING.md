@@ -29,8 +29,8 @@ The checks inject synthetic clicks and drags and read the window state back. The
 | `RenderDockCore/Scanner.swift` | Process tree → job chains → shots; frame counting; where totals come from |
 | `RenderDockCore/Proc.swift` | Thin wrappers over `libproc` and `sysctl` |
 | `RenderDockCore/Metrics.swift` | CPU, GPU, memory, temperature, power, sleep assertions |
-| `RenderDockCore/Snapshot.swift` | The state document every display reads (the wire format of the API) |
-| `RenderDockCore/Events.swift` | What changed between two scans: `job.started`, `shot.done`, … |
+| `RenderDockCore/Snapshot.swift` | The state document every display reads (the wire format of the API), with the summary for small displays ([docs/SMALL-DISPLAYS.md](docs/SMALL-DISPLAYS.md)) |
+| `RenderDockCore/Events.swift` | What changed between two scans: `job.started`, `shot.done`, `agent.waiting`, … |
 | `RenderDockCore/APIServer.swift` | The local read-only API on `127.0.0.1` ([docs/API.md](docs/API.md)) |
 | `RenderDockCore/Progress.swift` | Reading a renderer's output for progress; the report a wrapped job keeps ([docs/EXACT-PROGRESS.md](docs/EXACT-PROGRESS.md)) |
 | `RenderDockCore/History.swift` | What is remembered (SQLite), queue estimates from it ([docs/HISTORY.md](docs/HISTORY.md)) |

@@ -218,6 +218,7 @@ extension Store {
         recentRuns = Demo.recentRuns(now: date)
         agents = agentsEnabled ? Demo.agents(t, now: date) : []
         publish()
+        publishAgentEvents(now: date)
         onChange?()
     }
 }

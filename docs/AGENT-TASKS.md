@@ -13,7 +13,9 @@ It only reads. It installs no hooks, changes no agent's configuration, and sends
 - **In the panel**: an **Agents** block. Sessions that are doing something get a row each, with the tool, the project, the state and how long it has been in it. Idle sessions are folded into one line.
 - **In the menu**: the same lines, and two switches: **Show Agents' Sessions (read-only)** and **Show Session Titles**.
 - **On the command line**: `renderdock agents`, or `renderdock agents --json`.
-- **In the API**: the `agents` block of `GET /v1/state` (see [API.md](API.md)).
+- **In the API**: the `agents` block of `GET /v1/state`, and agent events on `GET /v1/events` (see [API.md](API.md)).
+- **As notifications**, if you have turned notifications on: when a session starts to need you, fails, or finishes a long turn (see [NOTIFICATIONS.md](NOTIFICATIONS.md)).
+- **For a light or a small screen**: the summary in the state document counts agents and renders together (see [SMALL-DISPLAYS.md](SMALL-DISPLAYS.md)).
 
 Clicking a row does nothing yet.
 
@@ -66,7 +68,7 @@ An agent that is not installed costs one directory check per scan.
 ## What is not read, and what stays on the Mac
 
 - **Nothing that was said in a session is kept or shown.** Claude Code's command does not carry it. Codex's records do contain it; RenderDock looks only for task events in them and keeps a type and a time.
-- **Session titles stay on this Mac.** They appear in the panel, where you can switch them off. They are never in the API, in `renderdock agents --json`, or in a notification.
+- **Session titles stay on this Mac.** They appear in the panel, where you can switch them off. They are never in the API, in an event, in `renderdock agents --json`, or in a notification.
 - **No paths.** A session's project is the repository's directory name.
 - **Nothing is recorded.** Agent sessions are not written to the history database.
 

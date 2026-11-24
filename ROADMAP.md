@@ -88,7 +88,7 @@ Not checked yet:
 - [x] Time-left estimates for a whole queue, based on history *(done 2026-11-24, unreleased)*
 - [x] Flag odd frames: a sudden jump in frame time, an unusually small file *(done 2026-11-24, unreleased)*
 - [x] Coding agents' sessions, read-only: which are working, which just finished, which need you (Claude Code, Codex, Hermes) — [docs/AGENT-TASKS.md](docs/AGENT-TASKS.md) *(done 2026-11-24, unreleased)*
-- [ ] Events and notifications when a session starts to need you or finishes; a compact summary for small displays
+- [x] Events and notifications when a session starts to need you, fails or finishes a long turn; a summary for small displays — [docs/SMALL-DISPLAYS.md](docs/SMALL-DISPLAYS.md) *(done 2026-11-24, unreleased)*
 - [ ] ffmpeg encodes with real progress
 - [ ] ComfyUI queues
 - [x] Follow the log file when a render's output is redirected to one *(done 2026-11-24, unreleased)*

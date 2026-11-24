@@ -16,6 +16,31 @@ package struct StateSnapshot: Codable, Equatable {
         package var etaSec: Int?
     }
 
+    /// How many agent sessions are in each state.
+    package struct AgentCounts: Codable, Equatable {
+        package var error: Int
+        package var waiting: Int
+        package var working: Int
+        package var done: Int
+        package var idle: Int
+        package var stale: Int
+    }
+
+    /// The one thing a small display should show.
+    package struct Top: Codable, Equatable {
+        /// agent | render
+        package var kind: String
+        /// An agent session's project, or a shot's name.
+        package var name: String
+        /// error | waiting | working | done, in the vocabulary agents and renders share.
+        package var state: String
+        package var tool: String?
+        package var waitingFor: String?
+        package var fraction: Double?
+        package var exact: Bool?
+        package var etaSec: Int?
+    }
+
     package struct Summary: Codable, Equatable {
         package var rendering: Int
         package var paused: Int
@@ -23,6 +48,13 @@ package struct StateSnapshot: Codable, Equatable {
         package var queued: Int
         /// The shot a small display should show: the furthest-along running one, if any.
         package var focus: Focus?
+        package var agents: AgentCounts
+        /// Renders and agents together, as one word: error | waiting | working | done | idle. What a single light shows.
+        package var state: String
+        /// What that word is about. Absent when idle.
+        package var top: Top?
+        /// One line of plain ASCII, at most 23 characters, for the smallest displays: "1 waiting | render 62%".
+        package var line: String
     }
 
     package struct Shot: Codable, Equatable {
@@ -108,7 +140,10 @@ package struct StateSnapshot: Codable, Equatable {
 
     package static let appVersion = "0.2.0"
 
-    package static func make(groups: [RenderGroup], metrics m: Metrics, agents: [AgentSession] = [], now: Date = Date(), host: String? = nil) -> StateSnapshot {
+    /// - Parameter recent: the shots that ended most recently. One that ended in the last few minutes still counts
+    ///   towards the overall state: a light stays green for a while after a render finishes.
+    package static func make(groups: [RenderGroup], metrics m: Metrics, agents: [AgentSession] = [], recent: [HistoryRun] = [],
+                             now: Date = Date(), host: String? = nil) -> StateSnapshot {
         let iso = ISO8601DateFormatter()
         func shot(_ i: RenderItem) -> Shot {
             Shot(id: i.id, name: i.name, state: i.state.wireName, framesDone: i.framesDone, framesTotal: i.framesTotal,
@@ -132,8 +167,7 @@ package struct StateSnapshot: Codable, Equatable {
         return StateSnapshot(
             version: 1, app: "RenderDock \(appVersion)", host: host ?? (Host.current().localizedName ?? "Mac"),
             updatedAt: iso.string(from: now),
-            summary: Summary(rendering: groups.activeCount, paused: groups.pausedCount, stalled: groups.stalledCount,
-                             queued: groups.waitingCount, focus: focus),
+            summary: summary(groups: groups, agents: agents, recent: recent, focus: focus, now: now),
             jobs: jobs,
             agents: agents.byUrgency.map { a in
                 Agent(id: a.id, tool: a.tool, project: a.project, state: a.state.rawValue, waitingFor: a.waitingFor,
@@ -142,6 +176,80 @@ package struct StateSnapshot: Codable, Equatable {
             metrics: Machine(cpu: round3(m.cpu), gpu: m.gpu.map(round3), gpuMemBytes: m.gpuMemBytes, memUsed: m.memUsed,
                              memTotal: m.memTotal, memPressure: m.memPressure, swapUsed: m.swapUsed, swapTotal: m.swapTotal,
                              tempC: m.tempC.map { ($0 * 10).rounded() / 10 }, diskFree: m.diskFree, onAC: m.onAC, awake: m.awakeHeld))
+    }
+
+    /// How long a finished or failed render keeps counting towards the overall state.
+    package static let recentWindow: TimeInterval = 300
+    /// The longest `summary.line`.
+    package static let lineLimit = 23
+
+    private static func summary(groups: [RenderGroup], agents: [AgentSession], recent: [HistoryRun], focus: Focus?, now: Date) -> Summary {
+        let fresh = recent.filter { run in run.endedAt.map { now.timeIntervalSince1970 - $0 < recentWindow && now.timeIntervalSince1970 >= $0 } ?? false }
+        let failedRun = fresh.first { $0.outcome == "failed" }
+        // Only an exit status of 0 is a finish. A job that merely vanished is not claimed as done.
+        let finishedRun = groups.isEmpty ? fresh.first { $0.outcome == "finished" } : nil
+        let stalledItem = groups.allItems.first { $0.state == .stalled }
+        let urgent = agents.byUrgency
+        func agentTop(_ state: AgentState) -> Top? {
+            urgent.first { $0.state == state }.map {
+                Top(kind: "agent", name: $0.project, state: state.rawValue, tool: $0.tool, waitingFor: state == .waiting ? $0.waitingFor : nil)
+            }
+        }
+        func renderTop(_ name: String, _ state: AgentState) -> Top { Top(kind: "render", name: name, state: state.rawValue) }
+
+        let state: AgentState
+        let top: Top?
+        if agents.count(.error) > 0 || failedRun != nil {
+            state = .error
+            top = agentTop(.error) ?? failedRun.map { renderTop($0.shot, .error) }
+        } else if agents.count(.waiting) > 0 || stalledItem != nil {
+            state = .waiting
+            top = agentTop(.waiting) ?? stalledItem.map { renderTop($0.name, .waiting) }
+        } else if groups.activeCount > 0 || agents.count(.working) > 0 {
+            state = .working
+            // A render has a percentage, which says more on a small screen than "working".
+            if groups.activeCount > 0, let f = focus {
+                top = Top(kind: "render", name: f.name, state: AgentState.working.rawValue, fraction: f.fraction, exact: f.exact, etaSec: f.etaSec)
+            } else {
+                top = agentTop(.working)
+            }
+        } else if agents.count(.done) > 0 || finishedRun != nil {
+            state = .done
+            top = agentTop(.done) ?? finishedRun.map { renderTop($0.shot, .done) }
+        } else {
+            state = .idle
+            top = nil
+        }
+
+        // The line: most urgent first, as many parts as fit.
+        var parts: [String] = []
+        let failed = agents.count(.error) + (failedRun == nil ? 0 : 1)
+        if failed > 0 { parts.append("\(failed) failed") }
+        let waiting = agents.count(.waiting) + groups.stalledCount
+        if waiting > 0 { parts.append("\(waiting) waiting") }
+        if groups.activeCount > 0 {
+            if let f = focus, let fraction = f.fraction {
+                parts.append("render \(f.exact ? "" : "~")\(Int((fraction * 100).rounded(.down)))%")
+            } else {
+                parts.append("\(groups.activeCount) rendering")
+            }
+        }
+        if agents.count(.working) > 0 { parts.append("\(agents.count(.working)) working") }
+        let done = agents.count(.done) + (finishedRun == nil ? 0 : 1)
+        if done > 0 { parts.append("\(done) done") }
+        var line = ""
+        for part in parts {
+            let next = line.isEmpty ? part : line + " | " + part
+            if next.count > lineLimit { break }
+            line = next
+        }
+        if line.isEmpty { line = "idle" }
+
+        return Summary(rendering: groups.activeCount, paused: groups.pausedCount, stalled: groups.stalledCount,
+                       queued: groups.waitingCount, focus: focus,
+                       agents: AgentCounts(error: agents.count(.error), waiting: agents.count(.waiting), working: agents.count(.working),
+                                           done: agents.count(.done), idle: agents.count(.idle), stale: agents.count(.stale)),
+                       state: state.rawValue, top: top, line: line)
     }
 
     /// Compact single-line JSON (safe to send as one server-sent-event line).

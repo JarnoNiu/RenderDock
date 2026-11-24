@@ -174,14 +174,21 @@ func status(json: Bool) -> Never {
     Thread.sleep(forTimeInterval: 1.2)   // CPU and per-process figures need two samples
     var groups = scanner.scan()
     // Reading history only: the app is the one that records.
-    if let history = HistoryStore(readOnly: true) { for i in groups.indices { groups[i].queueETA = history.queueETA(for: groups[i]) } }
-    let snapshot = StateSnapshot.make(groups: groups, metrics: sampler.sample())
+    let history = HistoryStore(readOnly: true)
+    if let history { for i in groups.indices { groups[i].queueETA = history.queueETA(for: groups[i]) } }
+    let snapshot = StateSnapshot.make(groups: groups, metrics: sampler.sample(), agents: AgentScanner().scan(),
+                                      recent: history?.recent(limit: 4) ?? [])
     if json {
         print(String(decoding: snapshot.json(pretty: true), as: UTF8.self))
         exit(0)
     }
     let s = snapshot.summary
     print("\(s.rendering) rendering · \(s.paused) paused · \(s.stalled) stalled · \(s.queued) queued")
+    if !snapshot.agents.isEmpty {
+        let a = s.agents
+        print("agents: \(a.error) failed · \(a.waiting) waiting · \(a.working) working · \(a.done) just finished · \(a.idle) idle")
+    }
+    print("overall: \(s.state)  [\(s.line)]")
     for job in snapshot.jobs {
         let shots = job.shotsTotal > 1 ? "  \(job.shotsDone)/\(job.shotsTotal) shots" : ""
         print("● \(job.title)  [\(job.state)]  \(job.project)\(shots)")

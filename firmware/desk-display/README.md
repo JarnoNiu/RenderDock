@@ -240,6 +240,8 @@ On one board, with the `debug` build and made-up snapshots fed over USB:
 
 ## Things learned the hard way
 
+An independent read of the 0.4 firmware, before release, found what running it had not. A peer on Wi-Fi that accepted the connection and then said nothing restarted the board after five seconds, again and again: the framework's `readStringUntil` spins without a pause, the Wi-Fi task starved the idle task, and the watchdog did its job. Every test until then had been against a computer that answers. The lines are now read by a reader of our own that sleeps between looks and gives up at a deadline. The same read found that "forget Wi-Fi" left the network's name and password in the radio driver's own store (the driver keeps a copy unless told not to), that one network name in an old encoding made the whole list of networks unreadable for the Mac, and that a peer on Wi-Fi could set the board's clock and with it the hours it keeps quiet.
+
 The first real display to read over Wi-Fi was cut off every ten seconds and came back three seconds later. RenderDock's API drops a connection that has not asked for anything within ten seconds, and the list of connections exempt from that had the event stream in it and not the display's. The checks had read the display's stream for a second and found it good. It took a board on a real network, and its log saying "the stream ended" again and again, to see it. **A stream is not checked until it has been left open for longer than every timeout on the way.** The check now does that, with the timeout turned down.
 
 A frame asked for with `shot` came back torn and in the wrong colours while the board was reading over Wi-Fi. The frame goes out over the console as raw bytes; the Wi-Fi task runs beside the main loop and wrote a log line into the middle of it, shifting every pixel after. Nothing was wrong on the glass. The Wi-Fi task now keeps quiet while a frame goes out.
@@ -262,6 +264,9 @@ Measured on the board: one whole frame takes about 60 ms to reach the panel, so 
 
 ## Known limits
 
+- The Bluetooth pairing asks for Secure Connections but does not refuse the older kind (the framework's build of the Bluetooth stack has no switch for "only"). A Mac always uses the newer kind with a device that offers it. This was so in 0.3 as well, and is not changed here.
+- "Forgetting" Wi-Fi marks what was kept as erased, the radio's own copy too. Flash keeps old bytes until that part is reused: `esptool erase-flash` is the way to be sure.
+- Over Wi-Fi the board makes no sound, and takes the time only if it has none. A network's name that is not text in UTF-8 is left out of the list the Mac is shown.
 - **Wi-Fi has only been tried with Bluetooth still there**: the takeover was put on from the console. Nobody has carried the board out of Bluetooth's reach and back, the everyday build has not run it, and how long the battery lasts with the radio on is not known. The board joins 2.4 GHz networks only, and no network that asks for more than a name and a password (no sign-in page, no enterprise login).
 - The network's password and the API's token are kept in the board's flash as they are. This build does not encrypt its flash.
 - The draw in watts and the fans on the computer's own page were checked from made-up lines and then live against the Mac's own readings. **The board's own battery in the corner was checked with values put in from the console** (`battery N`: ordinary, under a fifth, under a tenth with its notice, hidden on USB, absent from a list); the real thing, pulling the cable and watching the number appear and fall, has not been watched yet.

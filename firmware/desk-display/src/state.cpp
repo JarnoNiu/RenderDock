@@ -122,6 +122,8 @@ static void sendStatus() {
   data["utf8"] = screensReady();
   // Whether Wi-Fi has been set up here and how it is doing (the numbers of NetState). Never what was set.
   data["wifi"] = (int)netState();
+  // …and how its last use went, which is all that is left to ask once a computer is back on Bluetooth.
+  if (netLast() != NET_UNSET) data["wifiWas"] = (int)netLast();
   String out;
   serializeJson(doc, out);
   linkSendLine(out);
@@ -398,6 +400,9 @@ void protoHandle(const String& line, bool fromNetwork) {
   s_fromNetwork = fromNetwork;
 
   if (doc["time"].is<JsonArray>()) {
+    // Over Wi-Fi the time is taken only by a board that has none yet. The clock decides the hours the board
+    // keeps quiet, and that is not for whatever answers at the computer's address to set.
+    if (fromNetwork && s_clockSet) return;
     s_clockEpoch = doc["time"][0] | 0;
     s_clockOffset = doc["time"][1] | 0;
     s_clockAt = millis();
@@ -419,11 +424,12 @@ void protoHandle(const String& line, bool fromNetwork) {
         netScanRequest();
         return;
       }
+      bool ok = true;
       if (doc["off"] | false) netConfigure("", "", "", "", 0, "");
       // Without a network's name: only where the computer is now (its address, port or token changed).
       else if (doc["ssid"].isNull()) netPlace(doc["host"] | "", doc["ip"] | "", doc["port"] | 47600, doc["token"] | "");
-      else netConfigure(doc["ssid"] | "", doc["pass"] | "", doc["host"] | "", doc["ip"] | "", doc["port"] | 47600, doc["token"] | "");
-      ack(command, true);
+      else ok = netConfigure(doc["ssid"] | "", doc["pass"] | "", doc["host"] | "", doc["ip"] | "", doc["port"] | 47600, doc["token"] | "");
+      ack(command, ok);
       return;
     }
     if (!strcmp(command, "status")) sendStatus();

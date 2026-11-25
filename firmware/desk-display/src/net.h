@@ -11,7 +11,8 @@
 void netBegin();
 // Takes new settings and keeps them. An empty `ssid` forgets everything and switches Wi-Fi off.
 // `host` is the computer's name (ending in ".local") or address; `ip` is tried when the name cannot be found.
-void netConfigure(const char* ssid, const char* pass, const char* host, const char* ip, uint16_t port, const char* token);
+// False if the settings could not be written to where they are kept (they are still used until the next start).
+bool netConfigure(const char* ssid, const char* pass, const char* host, const char* ip, uint16_t port, const char* token);
 // Where the computer is now, for a device that already has a network: the network stays as it was. Does nothing
 // when nothing has been set, or when nothing differs.
 void netPlace(const char* host, const char* ip, uint16_t port, const char* token);
@@ -39,3 +40,6 @@ enum NetState {
   NET_NO_COMPUTER  // on the network, and the computer is not answering there
 };
 NetState netState();
+// How the last use of Wi-Fi went: NET_READING, or one of the three ways it can fail. NET_UNSET if it has not
+// been used since it was set up. For the computer to ask once it is back on Bluetooth.
+NetState netLast();

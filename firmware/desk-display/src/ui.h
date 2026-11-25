@@ -8,9 +8,11 @@ void uiTick();
 
 // Bring-up only: show what arrives over USB as if a paired computer had sent it. A request fed this way is marked
 // as made up, and an answer to it is not sent anywhere.
+#if RD_DEBUG_SERIAL
 void uiDebugFeed(bool on);
 // Bring-up only: behave as if no computer were on Bluetooth.
 void uiDebugAway(bool on);
+#endif
 #if RD_DEBUG_SERIAL
 // Whether snapshots fed in over USB may make the board sound. Off unless asked for.
 void uiDebugLoud(bool on);

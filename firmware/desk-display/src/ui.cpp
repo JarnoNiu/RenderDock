@@ -73,8 +73,12 @@ static Battery s_battery = {-1, 0, true};
 static uint32_t s_batteryAt = 0;
 static float s_batteryEven = -1;
 static bool s_batteryWarned = false;
+#if RD_DEBUG_SERIAL
 static int s_fakeBattery = -2;   // from the bring-up console: -2 is "use the real one"
 void uiDebugBattery(int percent) { s_fakeBattery = percent; }
+#else
+static const int s_fakeBattery = -2;
+#endif
 static uint32_t s_lastTouchAt = 0;
 static uint32_t s_lastContactAt = 0;   // when the touch controller last reported a finger
 static uint32_t s_lastDrawAt = 0;
@@ -83,13 +87,24 @@ static char s_lastPrompt[40] = "";
 static bool s_lastAllowed = false;     // what was answered, for the confirmation
 static uint32_t s_answeredAt = 0;
 static bool s_wasConnected = false;
+// Bring-up only, and only in the build that has the console: what is fed in over USB is shown as if a paired
+// computer had sent it ("feed"), and the screen behaves as if no computer were on Bluetooth ("net force on").
+// The everyday build has neither switch: there they are constants, and nothing can turn them.
+#if RD_DEBUG_SERIAL
 static bool s_debugFeed = false;
-
 void uiDebugFeed(bool on) { s_debugFeed = on; }
-// Bring-up only ("net force on"): the screen behaves as if no computer were on Bluetooth, to watch Wi-Fi take over.
 static bool s_debugAway = false;
 void uiDebugAway(bool on) { s_debugAway = on; }
+#else
+static const bool s_debugFeed = false;
+static const bool s_debugAway = false;
+#endif
 static bool bluetoothUp() { return linkConnected() && !s_debugAway; }
+// A paired computer is on the link. Whether Wi-Fi stands in goes by this (as in main.cpp), so what says
+// "this is coming over Wi-Fi" has to go by it too: a computer that connected and has not paired changes nothing.
+static bool pairedUp() { return linkSecure() && !s_debugAway; }
+// What is on the screen arrived over Wi-Fi. Such a thing is shown and makes no sound.
+static bool s_overWiFi = false;
 #if RD_DEBUG_SERIAL
 // What is fed in over USB is made up, and may set the clock to any hour: it makes no sound unless asked to.
 static bool s_debugLoud = false;
@@ -539,6 +554,7 @@ static void ping(Sound sound) {
   if (s_mute || s_dnd) return;
   int hour, minute;
   if (protoClock(hour, minute) && (hour >= 23 || hour < 8)) return;
+  if (s_overWiFi) return;   // over Wi-Fi the board only shows
 #if RD_DEBUG_SERIAL
   if (s_debugFeed && !s_debugLoud) {
     Serial.printf("sound %d not played: what is on the screen was fed in over USB (\"feed loud\" to hear it)\n", (int)sound);
@@ -1005,7 +1021,7 @@ void uiTick() {
 
   // A computer is there if it is on the Bluetooth link, or if its lines are arriving over Wi-Fi.
   bool connected = bluetoothUp() || netLive() || s_debugFeed;
-  switch (bluetoothUp() ? NET_UNSET : netState()) {
+  switch (pairedUp() ? NET_UNSET : netState()) {
     case NET_IDLE: screensNetWords("蓝牙不在，稍后改走 Wi-Fi", ""); break;
     case NET_JOINING: screensNetWords("正在连 Wi-Fi…", ""); break;
     case NET_READING: screensNetWords("Wi-Fi 连上了", "正在等电脑的数据…"); break;
@@ -1015,7 +1031,8 @@ void uiTick() {
     default: screensNetWords("", ""); break;
   }
   static bool s_wasOverWiFi = false;
-  bool overWiFi = netLive() && !bluetoothUp();
+  bool overWiFi = netLive() && !pairedUp();
+  s_overWiFi = overWiFi;
   if (overWiFi != s_wasOverWiFi) {
     s_wasOverWiFi = overWiFi;
     screensOverWiFi(overWiFi);
@@ -1107,8 +1124,12 @@ void uiTick() {
         if (sessionsCall && s_page != 1) turnPage(1 - s_page);
         else if (rendersCall && !sessionsCall && s_page != 0) turnPage(-s_page);
       }
-      s_lastRenders = s.r.overall;
-      s_lastSessions = s.a.overall;
+      // With a finger on the glass the page is not turned under it, and the change is not forgotten either: it
+      // is still a change when the finger has gone.
+      if (!s_down || !s_knowState) {
+        s_lastRenders = s.r.overall;
+        s_lastSessions = s.a.overall;
+      }
     }
     if (!s_knowState) {
       s_knowState = true;

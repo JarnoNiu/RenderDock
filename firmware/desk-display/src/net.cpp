@@ -3,6 +3,7 @@
 #include <ESPmDNS.h>
 #include <Preferences.h>
 #include <WiFi.h>
+#include <nvs.h>
 
 #if RD_DEBUG_SERIAL
 // What happens, never what was set: no name, no password, no token, no address.
@@ -19,6 +20,17 @@ static volatile bool s_set = false;         // there are settings (the strings t
 static volatile bool s_wanted = false;
 static volatile bool s_changed = false;     // the settings changed: whatever is open is dropped
 static volatile NetState s_state = NET_UNSET;
+// How the last use of Wi-Fi went (reading, or one of the three ways of failing). Once a computer is back on
+// Bluetooth the state itself is "set, not in use" within a moment, and the reason a display stood dark in the
+// next room would be gone before anybody could ask for it.
+static volatile NetState s_last = NET_UNSET;
+// The radio's own copy of a network's name and password is to be wiped (see wipeDriverStore).
+static volatile bool s_wipe = false;
+static volatile bool s_wiped = false;
+static void is(NetState state) {
+  s_state = state;
+  if (state == NET_READING || state == NET_NO_NETWORK || state == NET_REFUSED || state == NET_NO_COMPUTER) s_last = state;
+}
 static volatile uint32_t s_lineAt = 0;
 static SemaphoreHandle_t s_lock = nullptr;
 
@@ -40,6 +52,10 @@ static void push(const String& line) {
 }
 
 bool netReadLine(String& line) {
+  if (s_wiped) {   // noted here, on the main loop, where everything else that is kept is written
+    s_wiped = false;
+    s_kept.putBool("clean", true);
+  }
   if (!s_lock || s_count == 0 || xSemaphoreTake(s_lock, 0) != pdTRUE) return false;
   bool got = s_count > 0;
   if (got) {
@@ -54,6 +70,7 @@ bool netReadLine(String& line) {
 bool netConfigured() { return s_set; }
 bool netLive() { return s_state == NET_READING && s_lineAt != 0 && millis() - s_lineAt < 30000; }
 NetState netState() { return s_state; }
+NetState netLast() { return s_last; }
 void netWanted(bool wanted) { s_wanted = wanted; }
 
 // Waits, in small steps, for as long as Wi-Fi is still wanted and the settings are the same. False if it was cut short.
@@ -71,6 +88,72 @@ static void radioOff() {
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
   }
+}
+
+// The radio's driver keeps a copy of the last network's name and password in its own store unless told not to,
+// and "forget" used to leave that copy where it was. It is told not to (WiFi.persistent(false), in netBegin);
+// this empties what an earlier build, or an earlier use, left there.
+static void wipeDriverStore() {
+  radioOff();
+  nvs_handle_t store;
+  if (nvs_open("nvs.net80211", NVS_READWRITE, &store) == ESP_OK) {   // the driver's own part of the store
+    nvs_erase_all(store);
+    nvs_commit(store);
+    nvs_close(store);
+  }
+  s_wiped = true;
+  NET_LOG("net: the radio's own copy emptied\n");
+}
+
+// One line from the computer, without its ending. At most `limit` bytes of it are kept; the rest of a longer
+// line is read and dropped. False once `deadline` (in millis) has passed, the connection has ended, or Wi-Fi is
+// no longer wanted.
+//
+// It sleeps between looks. The framework's own readStringUntil does not: it spins, and a peer that accepted the
+// connection and then said nothing for five seconds starved the idle task until the watchdog restarted the board.
+static bool readLine(WiFiClient& client, String& line, size_t limit, uint32_t deadline) {
+  line = "";
+  for (;;) {
+    if (!s_wanted || s_changed || (int32_t)(millis() - deadline) > 0) return false;
+    int waiting = client.available();
+    if (waiting <= 0) {
+      if (!client.connected()) return false;
+      vTaskDelay(pdMS_TO_TICKS(20));
+      continue;
+    }
+    if (waiting > 512) waiting = 512;
+    while (waiting-- > 0) {
+      int c = client.read();
+      if (c < 0) break;
+      if (c == '\n') return true;
+      if (c != '\r' && line.length() < limit) line += (char)c;
+    }
+    vTaskDelay(1);   // a peer that never stops sending must not keep this task from ever sleeping
+  }
+}
+
+// Whether a network's name can go into a line for the computer as it is: text in UTF-8 with nothing in it that a
+// line of JSON cannot carry. A name in another encoding, or with a control byte in it, made the whole list
+// unreadable on the Mac, and the sheet showed no network at all.
+static bool sayable(const String& name) {
+  const uint8_t* p = (const uint8_t*)name.c_str();
+  size_t n = name.length();
+  for (size_t i = 0; i < n;) {
+    uint8_t c = p[i];
+    size_t more = 0;
+    if (c < 0x20 || c == 0x7F) return false;
+    if (c < 0x80) more = 0;
+    else if (c >= 0xC2 && c <= 0xDF) more = 1;
+    else if (c >= 0xE0 && c <= 0xEF) more = 2;
+    else if (c >= 0xF0 && c <= 0xF4) more = 3;
+    else return false;
+    if (i + more >= n + (more ? 0 : 1)) return false;
+    for (size_t k = 1; k <= more; k++) if ((p[i + k] & 0xC0) != 0x80) return false;
+    // The forms no text is written in: longer than needed, the halves of a pair, beyond the last character.
+    if ((c == 0xE0 && p[i + 1] < 0xA0) || (c == 0xED && p[i + 1] > 0x9F) || (c == 0xF0 && p[i + 1] < 0x90) || (c == 0xF4 && p[i + 1] > 0x8F)) return false;
+    i += more + 1;
+  }
+  return true;
 }
 
 // Where the computer is: by its name on the local network if that can be found, else at the address it gave.
@@ -110,7 +193,7 @@ static void scan() {
   int kept = 0;
   for (int i = 0; i < found && kept < 12; i++) {
     String name = WiFi.SSID(i);
-    if (!name.length()) continue;
+    if (!name.length() || !sayable(name)) continue;
     bool twice = false;
     for (int k = 0; k < kept; k++) twice = twice || seen[k] == name;
     if (twice) continue;
@@ -145,6 +228,10 @@ static void run(void*) {
   for (;;) {
     s_changed = false;
     if (!s_wanted || !netConfigured()) {
+      if (s_wipe) {
+        s_wipe = false;
+        wipeDriverStore();
+      }
       if (s_scanAsked) {
         s_scanAsked = false;
         scan();
@@ -161,7 +248,7 @@ static void run(void*) {
     uint16_t port = s_port;
     xSemaphoreGive(s_lock);
 
-    s_state = NET_JOINING;
+    is(NET_JOINING);
     NET_LOG("net: joining\n");
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(false);
@@ -170,7 +257,7 @@ static void run(void*) {
     while (WiFi.status() != WL_CONNECTED && millis() - started < 20000 && s_wanted && !s_changed) vTaskDelay(pdMS_TO_TICKS(150));
     if (WiFi.status() != WL_CONNECTED) {
       if (s_wanted && !s_changed) {
-        s_state = NET_NO_NETWORK;
+        is(NET_NO_NETWORK);
         NET_LOG("net: could not join\n");
       }
       radioOff();
@@ -185,43 +272,53 @@ static void run(void*) {
       IPAddress address;
       WiFiClient client;
       if (!find(host, ip, address) || !client.connect(address, port, 4000)) {
-        s_state = NET_NO_COMPUTER;
+        is(NET_NO_COMPUTER);
         NET_LOG("net: the computer is not answering\n");
         if (!pause(wait)) break;
         wait = min<uint32_t>(wait * 2, 60000);
         continue;
       }
-      client.setTimeout(6000);
       client.printf("GET /v1/device HTTP/1.1\r\nHost: %s:%u\r\nAuthorization: Bearer %s\r\nAccept: text/event-stream\r\n\r\n", host.c_str(), (unsigned)port, token.c_str());
-      String status = client.readStringUntil('\n');
-      if (!status.startsWith("HTTP/1.1 200")) {
-        bool refused = status.indexOf(" 401") > 0;
-        s_state = refused ? NET_REFUSED : NET_NO_COMPUTER;
-        NET_LOG("net: %s\n", refused ? "the token was refused" : "an answer that is not the stream");
+      // The answer's first line and its headers: eight seconds for all of it, forty headers at most.
+      uint32_t deadline = millis() + 8000;
+      String status;
+      bool answered = readLine(client, status, 64, deadline);
+      bool stream = answered && status.startsWith("HTTP/1.1 200");
+      if (stream) {
+        stream = false;
+        String header;
+        for (int headers = 0; headers < 40 && readLine(client, header, 8, deadline); headers++) {
+          if (header.length() == 0) {
+            stream = true;
+            break;
+          }
+        }
+      }
+      if (!stream) {
+        bool refused = answered && status.indexOf(" 401") > 0;
+        is(refused ? NET_REFUSED : NET_NO_COMPUTER);
+        NET_LOG("net: %s\n", refused ? "the token was refused" : (answered ? "an answer that is not the stream" : "no answer to the request"));
         client.stop();
         // A refused token will be refused again: ask seldom. (It is put right from the computer, over Bluetooth.)
         if (!pause(refused ? 120000 : wait)) break;
         wait = min<uint32_t>(wait * 2, 60000);
         continue;
       }
-      while (client.connected()) {
-        String header = client.readStringUntil('\n');
-        if (header.length() <= 1) break;
-      }
-      s_state = NET_READING;
-      wait = 3000;
+      is(NET_READING);
       NET_LOG("net: reading the stream\n");
       String partial;
       uint32_t heardAt = millis();
+      bool heard = false;   // a line has come: only then is the next try allowed to be soon again
       while (s_wanted && !s_changed && client.connected() && WiFi.status() == WL_CONNECTED) {
         int waiting = client.available();
         if (waiting <= 0) {
-          // The computer says everything again every ten seconds. Half a minute of nothing is a dead link.
+          // The computer says everything again every ten seconds. Half a minute without a line is a dead link.
           if (millis() - heardAt > 35000) break;
           vTaskDelay(pdMS_TO_TICKS(25));
           continue;
         }
-        heardAt = millis();
+        if (millis() - heardAt > 35000) break;
+        if (waiting > 2048) waiting = 2048;
         while (waiting-- > 0) {
           int c = client.read();
           if (c < 0) break;
@@ -229,16 +326,22 @@ static void run(void*) {
             if (partial.startsWith("data: ")) {
               NET_LOG("net: line in, %u bytes\n", (unsigned)partial.length() - 6);
               push(partial.substring(6));
+              heard = true;
+              heardAt = millis();   // a line, not just bytes: a peer that sends for ever and never ends a line is a dead link too
             }
             partial = "";
           } else if (c != '\r' && partial.length() < 6200) {
             partial += (char)c;
           }
         }
+        vTaskDelay(1);   // however fast it comes, this task sleeps between pieces (see readLine)
       }
       client.stop();
       NET_LOG("net: the stream ended\n");
-      if (s_wanted && !s_changed) s_state = NET_NO_COMPUTER;
+      if (s_wanted && !s_changed) is(NET_NO_COMPUTER);
+      // A stream that gave lines is tried again soon. One that opened and closed with nothing is not: a
+      // computer that answers so every time was asked every three seconds for ever.
+      wait = heard ? 3000 : min<uint32_t>(wait * 2, 60000);
       if (!pause(wait)) break;
     }
     radioOff();
@@ -256,13 +359,18 @@ void netBegin() {
   s_port = s_kept.getUShort("port", 47600);
   s_set = s_ssid.length() > 0;
   s_state = netConfigured() ? NET_IDLE : NET_UNSET;
+  // The radio's driver is not to keep its own copy of a network's name and password: what is kept is kept here,
+  // and goes when it is forgotten. A board that ran a build from before this has such a copy: emptied once.
+  WiFi.persistent(false);
+  if (!s_kept.getBool("clean", false)) s_wipe = true;
   // Its own task: joining a network and waiting for a computer take seconds, and the screen and the touch must
   // not wait with them.
   xTaskCreatePinnedToCore(run, "net", 8192, nullptr, 1, nullptr, 0);
 }
 
-void netConfigure(const char* ssid, const char* pass, const char* host, const char* ip, uint16_t port, const char* token) {
+bool netConfigure(const char* ssid, const char* pass, const char* host, const char* ip, uint16_t port, const char* token) {
   bool forget = !ssid || !*ssid;
+  bool kept = true;
   xSemaphoreTake(s_lock, portMAX_DELAY);
   s_ssid = forget ? "" : ssid;
   s_pass = forget ? "" : (pass ? pass : "");
@@ -274,16 +382,20 @@ void netConfigure(const char* ssid, const char* pass, const char* host, const ch
   xSemaphoreGive(s_lock);
   if (forget) {
     s_kept.clear();
+    s_kept.putBool("clean", false);
+    s_wipe = true;   // and the radio's own copy, if it has one
   } else {
-    s_kept.putString("ssid", s_ssid);
+    kept = s_kept.putString("ssid", s_ssid) > 0;
     s_kept.putString("pass", s_pass);
     s_kept.putString("host", s_host);
     s_kept.putString("ip", s_ip);
-    s_kept.putString("token", s_token);
+    kept = (s_kept.putString("token", s_token) > 0 || s_token.length() == 0) && kept;
     s_kept.putUShort("port", s_port);
   }
+  s_last = NET_UNSET;
   s_changed = true;
-  NET_LOG("net: settings %s\n", forget ? "forgotten" : "taken");
+  NET_LOG("net: settings %s\n", forget ? "forgotten" : (kept ? "taken" : "taken, but not kept"));
+  return kept;
 }
 
 void netPlace(const char* host, const char* ip, uint16_t port, const char* token) {
@@ -303,6 +415,7 @@ void netPlace(const char* host, const char* ip, uint16_t port, const char* token
   s_kept.putString("ip", s_ip);
   s_kept.putString("token", s_token);
   s_kept.putUShort("port", s_port);
+  s_last = NET_UNSET;
   s_changed = true;
   NET_LOG("net: the computer's place taken\n");
 }

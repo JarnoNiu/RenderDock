@@ -52,6 +52,8 @@ final class DeviceLink: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
 
     /// All four are called on the main queue.
     var onStatus: (() -> Void)?
+    /// The device answered "which networks do you see".
+    var onNetworks: (([BuddyProtocol.SeenNetwork]) -> Void)?
     /// The device is ready for a snapshot, or what may be sent to it has changed.
     var onReady: (() -> Void)?
     /// The user answered, on the device, a request this link offered there.
@@ -76,6 +78,7 @@ final class DeviceLink: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     private var deviceUnicode = false
     private var deviceInbox = false
     private var devicePages = false
+    private var deviceWiFi: Int?
     private var lastMac: Data?
     /// Connections in a row that ended before the link was encrypted. Each one waits longer before the next try,
     /// so a pairing the user dismissed does not come back every two seconds.
@@ -119,10 +122,33 @@ final class DeviceLink: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     var inbox: Bool { queue.sync { deviceInbox } }
     /// …and that it keeps renders and agents on pages of their own, with one for this Mac.
     var pages: Bool { queue.sync { devicePages } }
+    /// How the device says its Wi-Fi is doing (see `BuddyProtocol.DeviceStatus.wifi`); nil if it has none.
+    var wifi: Int? { queue.sync { deviceWiFi } }
+    /// The device RenderDock goes back to, as macOS knows it on this Mac. Nil when none is remembered.
+    var identifier: String? { UserDefaults.standard.string(forKey: Self.rememberedKey) }
+
+    /// Sends the device a line that is not a snapshot: its Wi-Fi settings, or the word to forget them. Only on
+    /// an encrypted link; false if there is none. Then asks how it is doing, so the menu can say.
+    @discardableResult
+    func sendSettings(_ line: Data) -> Bool {
+        queue.sync {
+            guard case .connected(_, true, _) = self.state, let p = self.peripheral, self.rx != nil, p.state == .connected else { return false }
+            self.write(line)
+            self.note("sent the device a line about its Wi-Fi (\(line.count) bytes)")
+            self.queue.asyncAfter(deadline: .now() + 1) { [weak self] in self?.write(BuddyProtocol.statusRequest) }
+            return true
+        }
+    }
 
     /// `~/Library/Application Support/RenderDock/device-link.log`: the last hundred or so events, rewritten whole.
-    static let logURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("RenderDock/device-link.log")
+    /// Nil for a copy that is not an app bundle: it cannot use Bluetooth, so it has nothing to report, and a
+    /// copy started for testing must not write over the installed app's log. (One did, once: a test instance
+    /// with the link "on" noted "switched off" on its way out.) RENDERDOCK_DEVICE_LOG names another file.
+    static let logURL: URL? = {
+        if let path = ProcessInfo.processInfo.environment["RENDERDOCK_DEVICE_LOG"], !path.isEmpty { return URL(fileURLWithPath: path) }
+        guard Bundle.main.bundlePath.hasSuffix(".app") else { return nil }
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("RenderDock/device-link.log")
+    }()
 
     func start() {
         queue.async {
@@ -210,8 +236,9 @@ final class DeviceLink: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         formatter.dateFormat = "HH:mm:ss"
         trace.append("\(formatter.string(from: Date())) \(text)")
         if trace.count > 120 { trace.removeFirst(trace.count - 120) }
-        try? FileManager.default.createDirectory(at: Self.logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? (trace.joined(separator: "\n") + "\n").write(to: Self.logURL, atomically: true, encoding: .utf8)
+        guard let url = Self.logURL else { return }
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? (trace.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
     }
 
     private var isSecure: Bool {
@@ -232,6 +259,7 @@ final class DeviceLink: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         deviceUnicode = false
         deviceInbox = false
         devicePages = false
+        deviceWiFi = nil
     }
 
     private func look() {
@@ -461,6 +489,10 @@ final class DeviceLink: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
                 deviceUnicode = device.unicode
                 deviceInbox = device.inbox
                 devicePages = device.pages
+                if device.wifi != deviceWiFi {
+                    deviceWiFi = device.wifi
+                    DispatchQueue.main.async { self.onStatus?() }
+                }
                 set(.connected(name: device.name ?? name, secure: device.secure, battery: device.batteryPercent))
                 if changed {
                     note("the device says: encrypted \(device.secure), RenderDock's fields \(device.extended), beyond ASCII \(device.unicode), questions and notices \(device.inbox), pages \(device.pages)")
@@ -472,6 +504,10 @@ final class DeviceLink: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
                     lastMac = nil
                     DispatchQueue.main.async { self.onReady?() }
                 }
+            case .networks(let list):
+                guard isSecure else { continue }
+                note("the device sees \(list.count) networks")
+                DispatchQueue.main.async { self.onNetworks?(list) }
             case .ack, .unknown:
                 continue
             }

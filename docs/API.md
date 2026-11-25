@@ -33,13 +33,32 @@ A demo instance does not write the discovery file.
 
 ## What keeps it safe
 
-- It binds to the loopback interface only. Nothing else on your network can connect.
+- It binds to the loopback interface only. Nothing else on your network can connect, unless you switch on what the next section describes.
 - It answers `GET` and nothing else.
 - It checks the `Host` header and answers only `127.0.0.1:<port>` and `localhost:<port>`, so a web page cannot reach it through DNS rebinding.
 - It sends no CORS headers, so a web page cannot read its responses.
 - The state carries no file-system paths.
 
-Access from other devices on the network is not available yet. When it comes it will be a separate switch, off by default, with a token.
+## From the local network (0.4, off by default)
+
+A display on a shelf, a phone, another computer: something that is not this Mac can read the same API, behind a second switch.
+
+Menu-bar icon → **The API from the Local Network** → **Allow Devices on the Local Network, with the Token**. (The item is there once **Local API** is on. Or `defaults write io.github.jarnoniu.renderdock lanAPI -bool true`, then relaunch.) The submenu then shows the addresses to use, such as `http://192.168.1.20:47600`, and has **Copy the Token**.
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" http://192.168.1.20:47600/v1/state
+```
+
+- **Every request that does not come from this Mac itself needs the token**, in an `Authorization: Bearer` header. Without it, or with a wrong one, the answer is `401` and nothing else: no state, no list of endpoints. A request from this Mac to one of its own network addresses counts as coming from the network.
+- From `127.0.0.1` everything is as before, token or no token.
+- The token is 32 characters, made by the system's random generator the first time access is switched on, and kept in `~/Library/Application Support/RenderDock/api-token`, readable by your user only. `renderdock api token` prints it; `renderdock api` says where the API is and whether the network may reach it. **New Token** in the menu replaces it, and whatever was using the old one is shut out from that moment.
+- A token in the address (`?token=…`) is not read, on purpose: addresses end up in logs and browser histories.
+- It is still `GET` only, still sends no CORS headers, and listens on IPv4 only.
+- The discovery file gains `"lan": true` or `false`. It never holds the token.
+
+**It is plain HTTP.** The token and the state (your projects' and shots' names) cross the network unencrypted, so anyone who can listen on that network can read both. That is acceptable on a network you trust, your own at home or in the studio, and not on a shared or public one. Switch it off when you take the Mac elsewhere. If the Mac's firewall is on, macOS asks once whether RenderDock may accept incoming connections.
+
+Not there: encryption (TLS), a token per device, and anything but reading.
 
 ## `GET /v1/state`
 
@@ -116,6 +135,8 @@ curl -s http://127.0.0.1:47600/v1/state
 | `metrics.cpu`, `metrics.gpu` | 0–1 |
 | `metrics.memPressure` | 1 normal, 2 warning, 4 critical |
 | `metrics.awake` | Something is holding a sleep assertion: the Mac will not idle-sleep |
+| `metrics.fanRpm`, `metrics.fanFraction` | From 0.4, on a Mac that reports them: each fan's turns a minute, and how far the hardest-working fan is between its slowest and its fastest (0–1). Absent on a Mac with no fan or one that does not say |
+| `metrics.powerW` | From 0.4: what the whole Mac is drawing, in watts, as its own controller reports it. Not measured at the wall. Absent where the Mac does not say |
 
 Missing values are omitted, not sent as `null`. State names are always English, whatever the UI language.
 
@@ -157,6 +178,24 @@ data: {"at":"2026-11-24T04:31:47Z","jobId":"g41872-1795400000","jobTitle":"Produ
 
 Up to 16 streams can be open at once. While at least one is, RenderDock scans every 3 seconds instead of every 6.
 
+## `GET /v1/device` (0.4)
+
+For a desk display that reads over Wi-Fi where Bluetooth does not reach ([DEVICES.md](DEVICES.md#over-wi-fi-where-bluetooth-does-not-reach-04)). It is the same kind of stream as `/v1/events`, without event names: each `data:` line is one line exactly as a display is sent it over Bluetooth.
+
+```
+data: {"time":[1795647000,28800]}
+
+data: {"total":2,"running":1,"waiting":0,"msg":"…","rd":{"r":{…},"a":{…}}}
+
+data: {"mac":{"cpu":47,"gpu":93,"mem":[41.2,64],"t":71,"w":118, …}}
+```
+
+- On opening: the time, then the latest snapshot and the latest line about this Mac.
+- After that: the snapshot whenever it changes, this Mac's line every three seconds or so, and all three again every ten seconds. A reader that has heard nothing for half a minute can take the link for dead.
+- **It is built for a display that only shows.** No request for permission is offered for an answer in it, and no question from another program is in it; notices and the tasks other programs report on are. Nothing can be sent back: like the rest of the API it is `GET` only.
+- From the network it needs the token, like everything else. It counts towards the 16 streams.
+- The lines are worked out only while somebody is reading.
+
 ## `GET /v1/history`
 
 From 0.3. The fifty shots that ended most recently, newest first.
@@ -176,6 +215,8 @@ From 0.3. The fifty shots that ended most recently, newest first.
 ```
 
 `startedAt` and `endedAt` are seconds since 1970. `outcome` is `done`, `finished`, `failed` or `ended`; `exitCode` is present when a wrapper recorded one. No paths.
+
+From 0.4 a run may carry `energyWh`: what the Mac drew while that shot was rendering, in watt-hours. It is the whole machine's draw shared equally among the shots rendering at that moment, so it is neither what the render alone added nor a reading from the wall; [HISTORY.md](HISTORY.md) says what it can and cannot be used for. Absent for shots from before 0.4 and on a Mac that does not report its draw.
 
 ## Without the app
 

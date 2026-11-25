@@ -109,6 +109,37 @@ If it exits with status 2 or 3, ask me in the conversation instead.
 
 Nothing is installed into any agent's settings by RenderDock, and no agent uses these commands unless you tell it to.
 
+## As tools instead of commands: an MCP server (0.4)
+
+Some agents would rather call a tool than run a command, and a tool comes with its own description, so nothing has to be written into the agent's instructions. `renderdock mcp` is the same entry as a [Model Context Protocol](https://modelcontextprotocol.io) server on standard input and output. The agent's client starts it and keeps it running; you add it to that client once. For Claude Code:
+
+```bash
+claude mcp add renderdock -- /Applications/RenderDock.app/Contents/Helpers/renderdock mcp
+```
+
+For a client configured with a file, the entry is a command with one argument:
+
+```json
+{ "mcpServers": { "renderdock": { "command": "/Applications/RenderDock.app/Contents/Helpers/renderdock", "args": ["mcp"] } } }
+```
+
+| Tool | What it does | Takes |
+|---|---|---|
+| `notify` | The same as `renderdock notify` | `body`, and optionally `title` and `level` (`info`, `done`, `error`) |
+| `progress` | The same as `renderdock progress` | `name`, and optionally `title`, `percent`, `eta_seconds`, `state` (`working`, `done`, `failed`) |
+| `ask` | The same as `renderdock ask`: waits, and returns the text of the answer picked | `question`, `choices` (two to four), and optionally `timeout_seconds` |
+| `status` | What is rendering and what the agents' sessions are doing, as `renderdock status` prints it | nothing |
+
+- The limits are the ones above: a notice is cut to fit, a question or an answer that is too long is refused with the reason, and the same "too many in a minute" applies.
+- **A question nobody answered comes back as "no answer", in words, and is not an error.** It is none of the answers, and the tool's description tells the agent so.
+- `ask` is a choice, not a permission: nothing is approved by answering it, here as with the command.
+- What RenderDock shows as the sender is the client's own name from its first message (`claude-code`, say). `renderdock mcp --from NAME`, or `RENDERDOCK_FROM`, says otherwise. Nothing checks it, here as with the commands.
+- When RenderDock is not running, or **Take Notices, Progress and Questions from Other Programs** is off, each tool answers with an error that says so; the server itself starts regardless.
+- Messages are answered one after another. While a question waits for you, whatever the client sends next waits too.
+- It speaks the protocol's revisions `2025-06-18`, `2025-03-26` and `2024-11-05`, and offers tools only: no resources, no prompts.
+
+RenderDock adds itself to no client. The line above is for you to run, or not.
+
 ## On a desk device
 
 Any other device is told how many things are running and waiting, and one line that says a question is waiting. It is not sent a word of what was asked, said or reported.
@@ -133,10 +164,10 @@ A question is answered on the device by **holding** one of its answers for a sec
 - **Checked**, by checks that run the real command against the real listener: every command with its exit statuses, the limits, a question being answered, dismissed, timing out, and the app going away while one waits; what a device is sent and what is held back; a pick coming back.
 - **Checked on one device** with made-up snapshots fed over USB: every screen, and holding an answer with a finger put down from the console.
 - **Checked once, the whole way round over Bluetooth**, with the installed app and the desk display in [`firmware/desk-display`](../firmware/desk-display/README.md): a notice and a task sent with the commands showed on the device; a question asked with `ask` came up there, was answered by a real finger held on one of its answers, and the command printed that answer. A first hold of 0.9 seconds picked nothing, as it should.
-- **Not checked yet**: a question running out of time or being put aside on a real device; several questions at once on a device.
+- **Checked (0.4)**: the MCP server's every path, by checks that feed it messages and look at what it answers and what it passes on; and once the whole way round with a stand-in client speaking the protocol to `renderdock mcp` and a test copy of the app behind it: a notice, a task, a question nobody answered, a question answered in the app, the status, a refusal.
+- **Not checked yet**: a question running out of time or being put aside on a real device; several questions at once on a device; **the MCP server with a real agent's client** (Claude Code or any other), which is the part that matters and needs somebody to add it to theirs.
 
 ## Not there yet
 
-- An MCP server, for agents that would rather call a tool than run a command.
 - Anything over the network. The entry is for programs on this Mac.
 - Free-text answers. A question has two to four fixed answers.

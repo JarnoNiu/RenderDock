@@ -626,6 +626,36 @@ package final class TaskScanner {
         return frames.isEmpty ? nil : frames
     }
 
+    /// One rendered frame on disk: its number, and the file to show for it.
+    package struct FrameFile: Equatable {
+        package var number: Int
+        package var path: String
+
+        package init(number: Int, path: String) {
+            self.number = number
+            self.path = path
+        }
+    }
+
+    /// The frames in an output folder, in the order of their numbers, one file for each. Where a frame has
+    /// several files (passes written beside the picture), the choice is the one the thumbnail makes: not a
+    /// shadow or a mask if there is anything else, and then the larger file. Only reads the folder's listing.
+    package static func frameFiles(in dir: String) -> [FrameFile] {
+        let keys: [URLResourceKey] = [.fileSizeKey]
+        let files = (try? FileManager.default.contentsOfDirectory(at: URL(fileURLWithPath: dir), includingPropertiesForKeys: keys, options: [.skipsHiddenFiles])) ?? []
+        var best: [Int: (path: String, rank: Int)] = [:]
+        for file in files {
+            let name = file.lastPathComponent
+            guard !name.hasPrefix("_"), imageExts.contains(file.pathExtension.lowercased()), let number = frameIndex(name) else { continue }
+            let lower = name.lowercased()
+            let size = (try? file.resourceValues(forKeys: Set(keys)))?.fileSize ?? 0
+            let rank = (lower.contains("shadow") || lower.contains("mask") ? 0 : 1_000_000_000) + size
+            if let current = best[number], current.rank >= rank { continue }
+            best[number] = (file.path, rank)
+        }
+        return best.keys.sorted().map { FrameFile(number: $0, path: best[$0]!.path) }
+    }
+
     package static func frameIndex(_ name: String) -> Int? {
         let stem = (name as NSString).deletingPathExtension
         var best = "", cur = ""

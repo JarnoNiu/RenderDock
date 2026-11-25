@@ -1,6 +1,7 @@
 // Checks for RenderDockCore. Run with `swift run rd-checks`; exits non-zero if anything fails.
 // A plain executable rather than an XCTest bundle so it works with the Command Line Tools alone.
 import Foundation
+import Network
 import SQLite3
 import RenderDockCore
 
@@ -491,6 +492,346 @@ if let store = HistoryStore(file: parallelFile) {
 }
 for suffix in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: parallelFile.path + suffix) }
 // what the estimates said, against what happened
+section("controls: stopping and letting go, on a process of our own")
+do {
+    // A stand-in that does nothing. No other process is touched by these checks.
+    let standIn = Process()
+    standIn.executableURL = URL(fileURLWithPath: "/bin/sleep")
+    standIn.arguments = ["600"]
+    try? standIn.run()
+    let pid = standIn.processIdentifier
+    Thread.sleep(forTimeInterval: 0.2)
+    if let ref = ProcessControl.ref(for: pid) {
+        check("a process is named by its number and its start", ref.pid == pid && abs(ref.startedAt - Date().timeIntervalSince1970) < 30 && ProcessControl.problem(with: ref) == nil)
+        check("the same number with another start is not the same process: nothing is done to it",
+              ProcessControl.pause(ProcessRef(pid: pid, startedAt: ref.startedAt - 3600)) == .notTheSame && ProcessControl.isStopped(pid) == false)
+        // A process of another user's, found by asking whether a signal could be sent to it (signal 0 sends none).
+        let foreign = (Int32(2)...Int32(3000)).first { errno = 0; return kill($0, 0) == -1 && errno == EPERM }
+        check("a process of another user's is refused before anything is tried",
+              foreign != nil && foreign.map { ProcessControl.pause(ProcessRef(pid: $0, startedAt: 0)) } == .notOurs
+              && foreign.map { ProcessControl.setYielding(ProcessRef(pid: $0, startedAt: 0), true) } == .notOurs && foreign.flatMap(ProcessControl.ref(for:)) == nil)
+        check("the first process, and no process at all, are refused", ProcessControl.pause(ProcessRef(pid: 1, startedAt: 0)) == .gone
+              && ProcessControl.resume(ProcessRef(pid: 0, startedAt: 0)) == .gone && ProcessControl.pause(ProcessRef(pid: -1, startedAt: 0)) == .gone)
+        check("paused: it is stopped where it is", ProcessControl.pause(ref) == nil && { Thread.sleep(forTimeInterval: 0.15); return ProcessControl.isStopped(pid) == true }())
+        check("let go: it runs again", ProcessControl.resume(ref) == nil && { Thread.sleep(forTimeInterval: 0.15); return ProcessControl.isStopped(pid) == false }())
+        let before = ProcessControl.schedulingPriority(pid) ?? -1
+        check("moved out of the way: the scheduler has it in the background band",
+              ProcessControl.setYielding(ref, true) == nil && { Thread.sleep(forTimeInterval: 0.4); return (ProcessControl.schedulingPriority(pid) ?? 99) <= 6 }())
+        check("and back: it is where it was, or higher", ProcessControl.setYielding(ref, false) == nil
+              && { Thread.sleep(forTimeInterval: 0.4); return (ProcessControl.schedulingPriority(pid) ?? -1) >= max(before, 10) }())
+        standIn.terminate()
+        standIn.waitUntilExit()
+        check("once it has ended there is nothing to act on", ProcessControl.pause(ref) == .gone && ProcessControl.setYielding(ref, true) == .gone)
+    } else {
+        check("the stand-in process could be started", false)
+        standIn.terminate()
+    }
+}
+
+section("controls: what the rules ask for")
+do {
+    func job(_ id: String, at start: Double, active: Bool = true, pids: [Int32] = [1000]) -> ControlJob {
+        ControlJob(id: id, title: id.uppercased(), startedAt: start, active: active, processes: pids.map { ProcessRef(pid: $0, startedAt: 1) })
+    }
+    func held(_ reasons: Set<HoldReason>) -> Hold { Hold(reasons: reasons, processes: [ProcessRef(pid: 1000, startedAt: 1)], since: 0) }
+    let a = job("a", at: 100), b = job("b", at: 200), c = job("c", at: 300)
+    func wanted(_ jobs: [ControlJob], held: [String: Hold] = [:], freed: Set<String> = [], _ settings: ControlSettings, battery: Bool = false, hot: Bool = false) -> [String: Set<HoldReason>] {
+        ControlPlanner.wanted(jobs: jobs, held: held, freed: freed, settings: settings, onBattery: battery, hot: hot).filter { !$0.value.isEmpty }
+    }
+    check("every switch off: nothing is asked for, on battery and hot or not", wanted([a, b, c], ControlSettings(), battery: true, hot: true).isEmpty)
+    check("on battery with that rule on: every job at work is held for it", wanted([a, b], ControlSettings(pauseOnBattery: true), battery: true) == ["a": [.battery], "b": [.battery]])
+    check("on mains, or with only the other rule on: not", wanted([a, b], ControlSettings(pauseOnBattery: true), battery: false).isEmpty
+          && wanted([a, b], ControlSettings(pauseWhenHot: true), battery: true).isEmpty)
+    check("hot with that rule on: held for heat; both at once: for both", wanted([a], ControlSettings(pauseWhenHot: true), hot: true) == ["a": [.heat]]
+          && wanted([a], ControlSettings(pauseOnBattery: true, pauseWhenHot: true), battery: true, hot: true) == ["a": [.battery, .heat]])
+    check("one at a time: the oldest goes on, the others wait", wanted([c, a, b], ControlSettings(turns: true)) == ["b": [.turns], "c": [.turns]])
+    check("…and the next oldest goes on once the first is gone", wanted([c, b], held: ["b": held([.turns]), "c": held([.turns])], ControlSettings(turns: true)) == ["c": [.turns]])
+    check("a job waiting its turn stays in the queue though it is not at work", wanted([a, job("b", at: 200, active: false)], held: ["b": held([.turns])], ControlSettings(turns: true)) == ["b": [.turns]])
+    check("a job held by hand is not waited for: the next one goes on",
+          wanted([job("a", at: 100, active: false), b, c], held: ["a": held([.manual])], ControlSettings(manual: true, turns: true)) == ["c": [.turns]])
+    check("a job the user let go on by hand is held by no rule", wanted([a, b], freed: ["b"], ControlSettings(turns: true, pauseOnBattery: true), battery: true) == ["a": [.battery]])
+    check("a job stopped by somebody else (not at work, not held here) is nobody's to hold or let go",
+          wanted([job("a", at: 100, active: false), b], ControlSettings(turns: true, pauseOnBattery: true), battery: true) == ["b": [.battery]])
+    check("a job with no process of its own is left out", wanted([job("a", at: 100, pids: []), b], ControlSettings(turns: true)).isEmpty)
+}
+
+section("controls: doing it, undoing it, and remembering")
+do {
+    // A made-up world: jobs, and which of their processes are stopped. The engine reaches it through the same
+    // three calls it uses on real processes.
+    final class World {
+        var jobs: [(id: String, start: Double, pids: [Int32])] = []
+        var stopped = Set<Int32>()
+        var background = Set<Int32>()
+        var calls: [String] = []
+        var refuse = Set<Int32>()
+        func ref(_ pid: Int32) -> ProcessRef { ProcessRef(pid: pid, startedAt: 1) }
+        var view: [ControlJob] {
+            jobs.map { j in ControlJob(id: j.id, title: "Job \(j.id.uppercased())", startedAt: j.start, active: !j.pids.allSatisfy(stopped.contains), processes: j.pids.map(ref)) }
+        }
+        func job(_ id: String) -> ControlJob { view.first { $0.id == id }! }
+        var actuator: ControlEngine.Actuator {
+            ControlEngine.Actuator(
+                pause: { [unowned self] p in
+                    if self.refuse.contains(p.pid) { return .refused(1) }
+                    self.calls.append("pause \(p.pid)"); self.stopped.insert(p.pid); return nil
+                },
+                resume: { [unowned self] p in self.calls.append("resume \(p.pid)"); self.stopped.remove(p.pid); return nil },
+                yield: { [unowned self] p, on in
+                    self.calls.append("\(on ? "yield" : "unyield") \(p.pid)")
+                    if on { self.background.insert(p.pid) } else { self.background.remove(p.pid) }
+                    return nil
+                })
+        }
+    }
+    func at(_ seconds: Double) -> Date { t0.addingTimeInterval(seconds) }
+
+    let quiet = World()
+    quiet.jobs = [("a", 100, [11]), ("b", 200, [21, 22])]
+    let off = ControlEngine(actuator: quiet.actuator)
+    off.tick(jobs: quiet.view, onBattery: true, hot: true, now: at(0))
+    check("every switch off: nothing is ever done, and nothing by hand either",
+          quiet.calls.isEmpty && !off.pause(quiet.job("a")) && !off.resume(quiet.job("a")) && !off.setYielding(quiet.job("a"), true) && quiet.calls.isEmpty && off.isIdle)
+
+    // On battery.
+    let w = World()
+    w.jobs = [("a", 100, [11]), ("b", 200, [21, 22])]
+    var lines: [String] = []
+    let engine = ControlEngine(settings: ControlSettings(pauseOnBattery: true), actuator: w.actuator, log: { lines.append($0) })
+    engine.tick(jobs: w.view, onBattery: false, hot: false, now: at(0))
+    check("on mains: nothing", w.calls.isEmpty)
+    engine.tick(jobs: w.view, onBattery: true, hot: false, now: at(2))
+    check("the Mac goes onto its battery: every render process is stopped, once", w.calls == ["pause 11", "pause 21", "pause 22"] && w.stopped == [11, 21, 22])
+    check("each job says why it is held", engine.reasons(for: "a") == [.battery] && engine.reasons(for: "b") == [.battery] && engine.reasons(for: "z").isEmpty)
+    engine.tick(jobs: w.view, onBattery: true, hot: false, now: at(4))
+    check("looking again changes nothing", w.calls.count == 3)
+    engine.tick(jobs: w.view, onBattery: false, hot: false, now: at(6))
+    check("back on mains: they go on, and nothing is held", Array(w.calls.suffix(3)).sorted() == ["resume 11", "resume 21", "resume 22"] && w.stopped.isEmpty && engine.isIdle)
+    check("what was done is written down, with the job's name and the reason",
+          lines.contains("paused \"Job A\" (1 process): the Mac is on its battery") && lines.contains("paused \"Job B\" (2 processes): the Mac is on its battery")
+          && lines.contains("let \"Job A\" go on: the Mac is on mains again"))
+
+    // By hand, and how it sits with a rule.
+    engine.settings.manual = true
+    check("paused by hand", engine.pause(w.job("a"), now: at(10)) && w.stopped == [11] && engine.reasons(for: "a") == [.manual])
+    engine.tick(jobs: w.view, onBattery: true, hot: false, now: at(12))
+    check("a rule adds its reason to a job held by hand without stopping it twice", engine.reasons(for: "a") == [.manual, .battery] && w.calls.filter { $0 == "pause 11" }.count == 2)
+    engine.tick(jobs: w.view, onBattery: false, hot: false, now: at(14))
+    check("the rule's reason goes; what was paused by hand stays paused", engine.reasons(for: "a") == [.manual] && w.stopped == [11])
+    check("let go by hand", engine.resume(w.job("a")) && w.stopped.isEmpty && engine.reasons(for: "a").isEmpty)
+    engine.tick(jobs: w.view, onBattery: true, hot: false, now: at(16))
+    check("a job let go by hand is not held again by the rule; the other one is", !w.stopped.contains(11) && w.stopped == [21, 22])
+    engine.settings.pauseOnBattery = false
+    engine.tick(jobs: w.view, onBattery: true, hot: false, now: at(18))
+    check("a rule switched off lets go of what it held", w.stopped.isEmpty && engine.isIdle)
+    check("pausing by hand, then the switch for it going off: the job goes on", {
+        _ = engine.pause(w.job("b"), now: at(20))
+        engine.settings.manual = false
+        engine.tick(jobs: w.view, onBattery: false, hot: false, now: at(22))
+        return w.stopped.isEmpty && engine.isIdle
+    }())
+
+    // Heat: slow to let go.
+    let h = World()
+    h.jobs = [("a", 100, [11])]
+    let heat = ControlEngine(settings: ControlSettings(pauseWhenHot: true), actuator: h.actuator)
+    heat.tick(jobs: h.view, onBattery: false, hot: true, now: at(0))
+    heat.tick(jobs: h.view, onBattery: false, hot: false, now: at(10))
+    heat.tick(jobs: h.view, onBattery: false, hot: false, now: at(60))
+    check("slowed down for heat: stopped, and still stopped a minute short of cool", h.stopped == [11] && heat.reasons(for: "a") == [.heat])
+    heat.tick(jobs: h.view, onBattery: false, hot: true, now: at(65))
+    heat.tick(jobs: h.view, onBattery: false, hot: false, now: at(70))
+    heat.tick(jobs: h.view, onBattery: false, hot: false, now: at(125))
+    check("hot again in between starts the minute afresh", h.stopped == [11])
+    heat.tick(jobs: h.view, onBattery: false, hot: false, now: at(131))
+    check("cool for a whole minute: it goes on", h.stopped.isEmpty && heat.isIdle)
+
+    // One at a time.
+    let q = World()
+    q.jobs = [("b", 200, [21]), ("a", 100, [11]), ("c", 300, [31])]
+    let turns = ControlEngine(settings: ControlSettings(turns: true), actuator: q.actuator)
+    turns.tick(jobs: q.view, onBattery: false, hot: false, now: at(0))
+    check("one at a time: the oldest goes on, the others are stopped", q.stopped == [21, 31] && turns.reasons(for: "b") == [.turns] && turns.reasons(for: "a").isEmpty)
+    q.jobs.removeAll { $0.id == "a" }
+    turns.tick(jobs: q.view, onBattery: false, hot: false, now: at(10))
+    check("the first one ends: the next oldest goes on, the last still waits", q.stopped == [31] && turns.reasons(for: "b").isEmpty && turns.reasons(for: "c") == [.turns])
+    q.jobs.append(("d", 50, [41]))   // a job that turns up later, though it began before the others
+    turns.tick(jobs: q.view, onBattery: false, hot: false, now: at(12))
+    check("order is by when each began, whenever it was first seen", q.stopped == [21, 31])
+    q.jobs = q.jobs.map { $0.id == "c" ? ("c", 300, [31, 32]) : $0 }   // the waiting job's script starts another process
+    q.stopped.remove(32)
+    turns.tick(jobs: q.view, onBattery: false, hot: false, now: at(14))
+    check("a waiting job that starts another process has that one stopped too", q.stopped == [21, 31, 32])
+    turns.releaseEverything(why: "RenderDock is quitting")
+    check("quitting lets go of everything it stopped", q.stopped.isEmpty && turns.isIdle)
+
+    // Out of the way.
+    let y = World()
+    y.jobs = [("a", 100, [11, 12])]
+    let yielding = ControlEngine(settings: ControlSettings(yield: true), actuator: y.actuator)
+    check("moved out of the way by hand, and back", yielding.setYielding(y.job("a"), true) && y.background == [11, 12] && yielding.isYielding("a")
+          && !yielding.setYielding(y.job("a"), true) && yielding.setYielding(y.job("a"), false) && y.background.isEmpty && !yielding.isYielding("a"))
+    _ = yielding.setYielding(y.job("a"), true)
+    yielding.settings.yield = false
+    yielding.tick(jobs: y.view, onBattery: false, hot: false, now: at(0))
+    check("the switch going off moves it back", y.background.isEmpty && yielding.isIdle)
+
+    // A process that will not be stopped.
+    let r = World()
+    r.jobs = [("a", 100, [11, 12])]
+    r.refuse = [12]
+    var said: [String] = []
+    let partial = ControlEngine(settings: ControlSettings(pauseOnBattery: true), actuator: r.actuator, log: { said.append($0) })
+    partial.tick(jobs: r.view, onBattery: true, hot: false, now: at(0))
+    check("a process the system will not stop is said so, and is not counted as stopped by RenderDock",
+          r.stopped == [11] && partial.held["a"]?.processes.map(\.pid) == [11] && said.contains { $0.hasPrefix("could not pause a process of \"Job A\"") })
+
+    // Across a restart.
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent("rd-checks-controls-\(ProcessInfo.processInfo.processIdentifier).json")
+    try? FileManager.default.removeItem(at: file)
+    let p = World()
+    p.jobs = [("a", 100, [11])]
+    let first = ControlEngine(settings: ControlSettings(pauseOnBattery: true), actuator: p.actuator, stateFile: file)
+    first.tick(jobs: p.view, onBattery: true, hot: false, now: at(0))
+    check("what is held is written to a file", p.stopped == [11] && FileManager.default.fileExists(atPath: file.path))
+    let second = ControlEngine(settings: ControlSettings(pauseOnBattery: true), actuator: p.actuator, stateFile: file)
+    check("a new start knows what the last one held", second.reasons(for: "a") == [.battery])
+    second.tick(jobs: p.view, onBattery: true, hot: false, now: at(5))
+    check("…and does not stop it a second time", p.calls.filter { $0 == "pause 11" }.count == 1)
+    let third = ControlEngine(settings: ControlSettings(), actuator: p.actuator, stateFile: file)
+    third.tick(jobs: p.view, onBattery: true, hot: false, now: at(10))
+    check("started with every switch off, it lets go of what an earlier start held, and the file goes", p.stopped.isEmpty && !FileManager.default.fileExists(atPath: file.path))
+    try? FileManager.default.removeItem(at: file)
+}
+
+section("the frames in an output folder, for looking back through them")
+do {
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("rd-checks-frames-\(ProcessInfo.processInfo.processIdentifier)")
+    try? FileManager.default.removeItem(at: folder)
+    try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    func write(_ name: String, bytes: Int) { FileManager.default.createFile(atPath: folder.appendingPathComponent(name).path, contents: Data(repeating: 1, count: bytes)) }
+    write("shot_0010.png", bytes: 400)
+    write("shot_0002.png", bytes: 400)
+    write("shot_0001.png", bytes: 400)
+    write("shot_shadow_0002.png", bytes: 9000)      // a pass beside the picture, larger than it
+    write("shot_0003.exr", bytes: 300)
+    write("shot_0003.png", bytes: 500)              // two pictures of one frame: the larger
+    write("_tmp_0004.png", bytes: 400)              // still being written
+    write(".hidden_0005.png", bytes: 400)
+    write("notes_0006.txt", bytes: 400)             // not a picture
+    write("preview.png", bytes: 400)                // no number
+    write("mask_0007.png", bytes: 200)              // a mask with nothing else for that frame is still its frame
+    let frames = TaskScanner.frameFiles(in: folder.path)
+    func name(_ n: Int) -> String? { frames.first { $0.number == n }.map { ($0.path as NSString).lastPathComponent } }
+    check("one file for each frame, in the order of the numbers", frames.map(\.number) == [1, 2, 3, 7, 10])
+    check("the picture, not the shadow pass beside it, however large", name(2) == "shot_0002.png")
+    check("of two pictures of one frame, the larger", name(3) == "shot_0003.png")
+    check("a mask that is all there is of a frame still stands for it", name(7) == "mask_0007.png")
+    check("what is half-written, hidden, not a picture or not numbered is left out",
+          !frames.contains { $0.path.contains("_tmp_") || $0.path.contains(".hidden") || $0.path.hasSuffix(".txt") || $0.path.hasSuffix("preview.png") })
+    check("a folder that is not there has no frames", TaskScanner.frameFiles(in: folder.appendingPathComponent("nowhere").path).isEmpty)
+    try? FileManager.default.removeItem(at: folder)
+}
+
+section("fans and power: what the controller's bytes say")
+do {
+    func float(_ value: Float) -> [UInt8] { withUnsafeBytes(of: value) { Array($0) } }
+    check("a float is read as the processor keeps it", SMCReader.decode(type: "flt ", bytes: float(5353)) == 5353 && SMCReader.decode(type: "flt ", bytes: float(142.5)) == 142.5)
+    check("the older fixed-point kinds are read high byte first", SMCReader.decode(type: "fpe2", bytes: [0x53, 0xA4]) == 5353
+          && SMCReader.decode(type: "sp78", bytes: [0x47, 0x80]) == 71.5 && SMCReader.decode(type: "sp78", bytes: [0xFF, 0x00]) == -1)
+    check("whole numbers of one, two and four bytes", SMCReader.decode(type: "ui8 ", bytes: [2]) == 2 && SMCReader.decode(type: "ui16", bytes: [0x5C, 0x2C]) == 23596
+          && SMCReader.decode(type: "ui32", bytes: [0, 0, 1, 0]) == 256)
+    check("a kind that is not read here, or too few bytes, is nothing rather than nought",
+          SMCReader.decode(type: "si16", bytes: [0xFB, 0x02]) == nil && SMCReader.decode(type: "flt ", bytes: [1, 2]) == nil
+          && SMCReader.decode(type: "ui8 ", bytes: []) == nil && SMCReader.decode(type: "flt ", bytes: float(.nan)) == nil)
+    check("a key is its four letters, both ways", SMCReader.code("PSTR") == 0x50535452 && SMCReader.text(0x46304163) == "F0Ac")
+    check("a fan between its slowest and its fastest", Fan(rpm: 3350, min: 1350, max: 5350).fraction == 0.5 && Fan(rpm: 5787, min: 1350, max: 5777).fraction == 1
+          && Fan(rpm: 900, min: 1350, max: 5350).fraction == 0 && Fan(rpm: 2000).fraction == nil && Fan(rpm: 2000, min: 1350, max: 1350).fraction == nil)
+    var working = Metrics()
+    working.fans = [Fan(rpm: 3350, min: 1350, max: 5350), Fan(rpm: 5777, min: 1350, max: 5777)]
+    working.powerW = 142.94
+    check("of several fans: the fastest, and the one working hardest", working.fanRpm == 5777 && working.fanFraction == 1 && Metrics().fanRpm == nil && Metrics().fanFraction == nil)
+    let busy = StateSnapshot.make(groups: [], metrics: working, now: agentNow, host: "Test Mac").metrics
+    check("the snapshot has each fan, how hard they work, and the draw to a tenth of a watt", busy.fanRpm == [3350, 5777] && busy.fanFraction == 1 && busy.powerW == 142.9)
+    let silent = StateSnapshot.make(groups: [], metrics: Metrics(), now: agentNow, host: "Test Mac")
+    check("a Mac that does not say has none of the three, and the JSON leaves them out",
+          silent.metrics.fanRpm == nil && silent.metrics.powerW == nil && !String(decoding: silent.json(), as: UTF8.self).contains("powerW"))
+    let line = String(decoding: BuddyProtocol.mac(working, cores: 10), as: UTF8.self)
+    check("a device is told the draw in whole watts and the fans as a percentage", line.contains("\"w\":143") && line.contains("\"fan\":100"))
+    check("what a shot drew, in as few figures as say enough", Fmt.energy(0.42) == "0.4 Wh" && Fmt.energy(8.26) == "8.3 Wh" && Fmt.energy(118.4) == "118 Wh"
+          && Fmt.energy(994) == "994 Wh" && Fmt.energy(1240) == "1.2 kWh")
+}
+
+section("history: what a shot drew")
+do {
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent("rd-checks-energy-\(ProcessInfo.processInfo.processIdentifier).sqlite")
+    try? FileManager.default.removeItem(at: file)
+    func shot(_ name: String, _ state: ItemState, done: Int? = nil) -> RenderItem {
+        var item = RenderItem(id: "w/stream/\(name)", name: name, state: state)
+        item.framesDone = done
+        item.framesTotal = 100
+        return item
+    }
+    func group(_ shots: [RenderItem]) -> RenderGroup {
+        RenderGroup(id: "w", title: "Queue", script: "queue.sh", scriptPath: nil, note: nil, project: "watts", cwd: "/", startedAt: t0,
+                    keepAwake: false, state: .running, items: shots)
+    }
+    func at(_ seconds: Double) -> Date { t0.addingTimeInterval(seconds) }
+    if let store = HistoryStore(file: file) {
+        // Shot a alone for 20 s at 180 W; then a and b together for 20 s at 360 W; then a is done and b goes on
+        // alone for 10 s at 180 W. Looks are 10 s apart, so every stretch counts in full.
+        store.record([group([shot("a", .rendering, done: 0), shot("b", .pending)])], powerW: 180, now: at(0))
+        store.record([group([shot("a", .rendering, done: 10), shot("b", .pending)])], powerW: 180, now: at(10))
+        store.record([group([shot("a", .rendering, done: 20), shot("b", .rendering, done: 0)])], powerW: 180, now: at(20))
+        store.record([group([shot("a", .rendering, done: 30), shot("b", .rendering, done: 10)])], powerW: 360, now: at(30))
+        store.record([group([shot("a", .rendering, done: 40), shot("b", .rendering, done: 20)])], powerW: 360, now: at(40))
+        store.record([group([shot("a", .done), shot("b", .rendering, done: 30)])], powerW: 180, now: at(50))
+        store.record([group([shot("a", .done), shot("b", .rendering, done: 40)])], powerW: 180, now: at(60))
+        // A long silence (the Mac slept): only the first quarter of a minute of it is counted.
+        store.record([group([shot("a", .done), shot("b", .rendering, done: 50)])], powerW: 180, now: at(3660))
+        store.record([], powerW: 180, now: at(3670))
+        let runs = store.recent(limit: 10)
+        let a = runs.first { $0.shot == "a" }?.energyWh ?? -1, b = runs.first { $0.shot == "b" }?.energyWh ?? -1
+        // a: 10 s at 180 alone, 10 s at 180 alone (b had not been seen rendering before that look), 10 s and 10 s
+        // at 360 shared in two = 0.5 + 0.5 + 0.5 + 0.5 = 2.0 Wh. It was done by the look at 50 s, which adds nothing.
+        check("a shot alone gets all the Mac drew; two together share it equally", abs(a - 2.0) < 0.0001)
+        // b: from the look at 30 s: 0.5 + 0.5 shared; 10 s at 180 alone = 0.5, twice... 50 s and 60 s; then 15 s of the hour = 0.75.
+        check("the other shot's share, and no more than a quarter of a minute of a long silence", abs(b - (0.5 + 0.5 + 0.5 + 0.5 + 0.75)) < 0.0001)
+        check("a look with no reading adds nothing", {
+            let before = store.recent(limit: 10).compactMap(\.energyWh).reduce(0, +)
+            store.record([group([shot("c", .rendering, done: 0)])], powerW: nil, now: at(4000))
+            store.record([group([shot("c", .rendering, done: 10)])], powerW: nil, now: at(4010))
+            store.record([], now: at(4020))
+            let c = store.recent(limit: 10).first { $0.shot == "c" }
+            return c != nil && c?.energyWh == nil && store.recent(limit: 10).compactMap(\.energyWh).reduce(0, +) == before
+        }())
+    } else {
+        check("the history file for what a shot drew can be made", false)
+    }
+    try? FileManager.default.removeItem(at: file)
+
+    // A file made by 0.3 has no such column.
+    let old = FileManager.default.temporaryDirectory.appendingPathComponent("rd-checks-energy-old-\(ProcessInfo.processInfo.processIdentifier).sqlite")
+    try? FileManager.default.removeItem(at: old)
+    var db: OpaquePointer?
+    sqlite3_open(old.path, &db)
+    sqlite3_exec(db, """
+        CREATE TABLE runs (id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL UNIQUE, job_id TEXT NOT NULL, job_title TEXT NOT NULL,
+          project TEXT NOT NULL, script TEXT, shot TEXT NOT NULL, started_at REAL NOT NULL, updated_at REAL NOT NULL, ended_at REAL,
+          frames_done INTEGER, frames_total INTEGER, exact INTEGER NOT NULL DEFAULT 0, sec_per_frame REAL, outcome TEXT, exit_code INTEGER);
+        CREATE TABLE samples (run_id INTEGER NOT NULL, at REAL NOT NULL, frames_done INTEGER NOT NULL);
+        INSERT INTO runs (item_id, job_id, job_title, project, shot, started_at, updated_at, ended_at, frames_done, frames_total, exact, outcome)
+          VALUES ('o/1', 'o', 'Old queue', 'old', 'before', 100, 200, 200, 50, 50, 1, 'done');
+        """, nil, nil, nil)
+    sqlite3_close(db)
+    let readOld = HistoryStore(file: old, readOnly: true)?.recent(limit: 5)
+    check("an older file that is only read still gives its shots, with nothing said about what they drew",
+          readOld?.count == 1 && readOld?.first?.shot == "before" && readOld?.first?.energyWh == nil)
+    let opened = HistoryStore(file: old)
+    check("opened to write, it gains the column and keeps what was there", opened?.recent(limit: 5).first?.shot == "before" && opened?.recent(limit: 5).first?.energyWh == nil)
+    try? FileManager.default.removeItem(at: old)
+}
+
 section("history: estimates against what happened")
 let estimatesFile = FileManager.default.temporaryDirectory.appendingPathComponent("rd-checks-estimates-\(ProcessInfo.processInfo.processIdentifier).sqlite")
 try? FileManager.default.removeItem(at: estimatesFile)
@@ -1616,6 +1957,32 @@ do {
     jitter.cpu = 0.3712
     jitter.memUsed += 20_000_000
     check("numbers that would show the same make the same line (so it is not sent again)", BuddyProtocol.mac(jitter, cores: 10) == BuddyProtocol.mac(machine, cores: 10))
+    let handed = (try? JSONSerialization.jsonObject(with: BuddyProtocol.wifi(ssid: "Studio 5G", password: "p\"w \\d", host: "studio-mac.local", ip: "192.168.1.20", port: 47600, token: "tok"))) as? [String: Any]
+    check("the Wi-Fi settings go as one command, with every piece as it was given (quotes and all)",
+          handed?["cmd"] as? String == "wifi" && handed?["ssid"] as? String == "Studio 5G" && handed?["pass"] as? String == "p\"w \\d"
+          && handed?["host"] as? String == "studio-mac.local" && handed?["ip"] as? String == "192.168.1.20" && handed?["port"] as? Int == 47600 && handed?["token"] as? String == "tok"
+          && BuddyProtocol.wifi(ssid: "a", password: "b", host: "c", ip: "d", port: 1, token: "e").last == 0x0A)
+    let placed = (try? JSONSerialization.jsonObject(with: BuddyProtocol.wifiPlace(host: "studio-mac.local", ip: "192.168.1.21", port: 47601, token: "new"))) as? [String: Any]
+    check("telling a device where the Mac is now carries no network name and no password",
+          placed?["cmd"] as? String == "wifi" && placed?["ssid"] == nil && placed?["pass"] == nil && placed?["off"] == nil
+          && placed?["host"] as? String == "studio-mac.local" && placed?["ip"] as? String == "192.168.1.21" && placed?["port"] as? Int == 47601 && placed?["token"] as? String == "new")
+    check("asking a device which networks it sees is one short line", String(decoding: BuddyProtocol.wifiScan, as: UTF8.self) == "{\"cmd\":\"wifi\",\"scan\":true}\n")
+    check("what it sees comes back as names in its order, each once, with strength and whether a password is asked", {
+        let line = "{\"ack\":\"wifi\",\"ok\":true,\"nets\":[{\"n\":\"Studio-2.4G\",\"r\":-48,\"o\":false},{\"n\":\"隔壁\",\"r\":-80,\"o\":true},{\"n\":\"Studio-2.4G\",\"r\":-70},{\"n\":\"\"},{\"r\":-50},{\"n\":7},{\"n\":\"\(String(repeating: "x", count: 33))\"},{\"n\":\"bare\"}]}"
+        guard case .networks(let list) = BuddyProtocol.parse(Data(line.utf8)) else { return false }
+        return list == [.init(name: "Studio-2.4G", signal: -48, open: false), .init(name: "隔壁", signal: -80, open: true), .init(name: "bare", signal: nil, open: false)]
+    }())
+    check("a device that found nothing says so with an empty list, and one that could not look is not a list", {
+        guard case .networks(let none) = BuddyProtocol.parse(Data("{\"ack\":\"wifi\",\"ok\":true,\"nets\":[]}".utf8)) else { return false }
+        return none.isEmpty && BuddyProtocol.parse(Data("{\"ack\":\"wifi\",\"ok\":false,\"nets\":[]}".utf8)) == .ack("wifi", ok: false)
+            && BuddyProtocol.parse(Data("{\"ack\":\"wifi\",\"ok\":true}".utf8)) == .ack("wifi", ok: true)
+    }())
+    check("forgetting them is one short line", String(decoding: BuddyProtocol.wifiOff, as: UTF8.self) == "{\"cmd\":\"wifi\",\"off\":true}\n")
+    check("a device says how its Wi-Fi is doing, or nothing if it has none", {
+        guard case .status(let withWiFi) = BuddyProtocol.parse(Data("{\"ack\":\"status\",\"ok\":true,\"data\":{\"sec\":true,\"rd\":3,\"wifi\":3}}".utf8)),
+              case .status(let without) = BuddyProtocol.parse(Data("{\"ack\":\"status\",\"ok\":true,\"data\":{\"sec\":true,\"rd\":3}}".utf8)) else { return false }
+        return withWiFi.wifi == 3 && without.wifi == nil
+    }())
     check("a device says it has pages with \"rd\" 3, and not with 2",
           BuddyProtocol.parse(Data("{\"ack\":\"status\",\"ok\":true,\"data\":{\"sec\":true,\"rd\":3,\"utf8\":true}}".utf8))
           == .status(BuddyProtocol.DeviceStatus(name: nil, secure: true, batteryPercent: nil, onUSB: nil, extended: true, unicode: true, inbox: true, pages: true))
@@ -2026,6 +2393,148 @@ check("wrong port refused", !LocalAPIServer.hostAllowed("127.0.0.1:8080", port: 
 check("missing Host refused", !LocalAPIServer.hostAllowed("", port: 47600))
 check("event framing", String(decoding: LocalAPIServer.sse(event: "state", data: Data("{}".utf8)), as: UTF8.self) == "event: state\ndata: {}\n\n")
 
+section("the API from the local network: who is let in")
+do {
+    typealias API = LocalAPIServer
+    func request(_ headers: String) -> API.Request? { API.parseRequest(Data("GET /v1/state HTTP/1.1\r\nHost: 192.168.1.20:47600\r\n\(headers)\r\n".utf8)) }
+    check("the token is read from \"Authorization: Bearer\"", request("Authorization: Bearer abc-DEF_123\r\n")?.token == "abc-DEF_123")
+    check("…whatever the case of the words, whatever the spaces", request("authorization:   bEaReR    abc\r\n")?.token == "abc")
+    check("another scheme is not a token, nor is a bare word, nor three words",
+          request("Authorization: Basic abc\r\n")?.token == nil && request("Authorization: abc\r\n")?.token == nil && request("Authorization: Bearer a b\r\n")?.token == nil)
+    check("a token in the address is not read",
+          API.parseRequest(Data("GET /v1/state?token=abc HTTP/1.1\r\nHost: x\r\n\r\n".utf8)) == .init(method: "GET", path: "/v1/state", host: "x"))
+    let secret = "0123456789abcdefghijklmnopqrstuv"
+    func access(here: Bool, host: String = "192.168.1.20:47600", lan: Bool, token: String? = secret, shown: String?) -> API.Access {
+        API.access(fromThisMac: here, host: host, port: 47600, lan: lan, token: token, presented: shown)
+    }
+    check("from this Mac: as before, no token asked", access(here: true, host: "127.0.0.1:47600", lan: false, token: nil, shown: nil) == .allowed
+          && access(here: true, host: "localhost:47600", lan: true, shown: nil) == .allowed)
+    check("from this Mac under another name: still refused", access(here: true, host: "evil.example:47600", lan: true, shown: secret) == .forbiddenHost)
+    check("from the network with the token: let in", access(here: false, lan: true, shown: secret) == .allowed)
+    check("from the network without it, or with another: 401",
+          access(here: false, lan: true, shown: nil) == .unauthorized && access(here: false, lan: true, shown: "") == .unauthorized
+          && access(here: false, lan: true, shown: secret + "x") == .unauthorized && access(here: false, lan: true, shown: String(secret.dropLast())) == .unauthorized
+          && access(here: false, lan: true, shown: secret.uppercased()) == .unauthorized)
+    check("from the network while that is off: nothing, token or no token",
+          access(here: false, lan: false, shown: secret) == .closed && access(here: false, lan: false, shown: nil) == .closed)
+    check("switched on without a token is not switched on", access(here: false, lan: true, token: nil, shown: nil) == .closed
+          && access(here: false, lan: true, token: "", shown: "") == .closed)
+    check("tokens are compared whole", API.same("abc", "abc") && !API.same("abc", "abd") && !API.same("abc", "abcd") && !API.same("", "a") && API.same("", ""))
+
+    let one = API.newToken(), two = API.newToken()
+    check("a new token is 32 characters that are safe in a header", one.count == 32 && one.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") })
+    check("and not the same twice", one != two && !two.isEmpty)
+
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("rd-checks-token-\(ProcessInfo.processInfo.processIdentifier)")
+    let file = folder.appendingPathComponent("api-token")
+    let made = API.token(at: file)
+    let mode = (try? FileManager.default.attributesOfItem(atPath: file.path))?[.posixPermissions] as? Int
+    check("the token is made on first use, in a file only its owner can read", made.count == 32 && mode == 0o600)
+    check("and is the same the next time", API.token(at: file) == made)
+    let renewed = API.token(at: file, renew: true)
+    check("a new one replaces it", renewed.count == 32 && renewed != made && API.token(at: file) == renewed)
+    try? Data("short\n".utf8).write(to: file)
+    check("a file that holds no token is replaced, not used", API.token(at: file).count == 32)
+    try? FileManager.default.removeItem(at: folder)
+
+    func endpoint(_ text: String) -> NWEndpoint { .hostPort(host: NWEndpoint.Host(text), port: 5000) }
+    check("the other end is this Mac only at a loopback address",
+          API.isLoopback(endpoint("127.0.0.1")) && API.isLoopback(endpoint("127.8.9.10")) && API.isLoopback(endpoint("::1")) && API.isLoopback(endpoint("::ffff:127.0.0.1"))
+          && !API.isLoopback(endpoint("192.168.1.20")) && !API.isLoopback(endpoint("10.0.0.1")) && !API.isLoopback(endpoint("fe80::1")) && !API.isLoopback(endpoint("localhost")))
+}
+
+section("the entry for other programs, as an MCP server")
+do {
+    var notices: [(String, String, InboxLevel, String)] = []
+    var reports: [(String, String?, Double?, Int?, String, String)] = []
+    var questions: [(String, [String], Int, String)] = []
+    var answer = InboxClient.Answer.chosen(index: 1, label: "Keep")
+    var sent = InboxClient.Sent.ok(id: "n1")
+    var server = MCPServer(backend: MCPServer.Backend(
+        notify: { notices.append(($0, $1, $2, $3)); return sent },
+        progress: { reports.append(($0, $1, $2, $3, $4, $5)); return sent },
+        ask: { questions.append(($0, $1, $2, $3)); return answer },
+        status: { "2 rendering · 0 paused" }))
+    func send(_ text: String) -> [String: Any]? {
+        server.handle(Data(text.utf8)).flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] }
+    }
+    func result(_ text: String) -> [String: Any]? { send(text)?["result"] as? [String: Any] }
+    func errorCode(_ text: String) -> Int? { (send(text)?["error"] as? [String: Any])?["code"] as? Int }
+    func toolText(_ reply: [String: Any]?) -> String? { ((reply?["content"] as? [[String: Any]])?.first)?["text"] as? String }
+
+    let hello = result(#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"claude-code","version":"9"}}}"#)
+    check("initialize: the version asked for when it is one this speaks, the tools capability, who this is",
+          hello?["protocolVersion"] as? String == "2025-03-26" && (hello?["capabilities"] as? [String: Any])?["tools"] != nil
+          && (hello?["serverInfo"] as? [String: Any])?["name"] as? String == "renderdock")
+    var other = MCPServer(backend: MCPServer.Backend(notify: { _, _, _, _ in .unavailable }, progress: { _, _, _, _, _, _ in .unavailable }, ask: { _, _, _, _ in .unavailable }, status: { "" }))
+    let newest = other.handle(Data(#"{"jsonrpc":"2.0","id":"a","method":"initialize","params":{"protocolVersion":"1999-01-01"}}"#.utf8))
+        .flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] }
+    check("a version this does not speak is answered with the newest it does, and the id comes back as it was sent",
+          (newest?["result"] as? [String: Any])?["protocolVersion"] as? String == MCPServer.versions[0] && newest?["id"] as? String == "a")
+    check("a notification is never answered", server.handle(Data(#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.utf8)) == nil
+          && server.handle(Data(#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"notify","arguments":{"body":"x"}}}"#.utf8)) == nil && notices.isEmpty)
+    check("ping is answered with nothing in it", result(#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#)?.isEmpty == true)
+    let listed = result(#"{"jsonrpc":"2.0","id":3,"method":"tools/list"}"#)?["tools"] as? [[String: Any]]
+    check("four tools, each with a name, a description and the shape of what it takes",
+          listed?.compactMap { $0["name"] as? String } == ["notify", "progress", "ask", "status"]
+          && listed?.allSatisfy { ($0["description"] as? String)?.isEmpty == false && ($0["inputSchema"] as? [String: Any])?["type"] as? String == "object" } == true)
+
+    let shown = result(#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"notify","arguments":{"title":"Build","body":"Finished in 48 s","level":"done"}}}"#)
+    check("notify reaches the entry as it was given, from the client that said hello",
+          notices.count == 1 && notices.first?.0 == "Build" && notices.first?.1 == "Finished in 48 s" && notices.first?.2 == .done && notices.first?.3 == "claude-code"
+          && shown?["isError"] as? Bool == false && toolText(shown) == "shown")
+    let badLevel = result(#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"notify","arguments":{"body":"x","level":"urgent"}}}"#)
+    check("a level it does not know is a tool error that says which are known, and nothing is sent",
+          badLevel?["isError"] as? Bool == true && toolText(badLevel)?.contains("info") == true && notices.count == 1)
+    check("nothing to say is a tool error", result(#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"notify","arguments":{}}}"#)?["isError"] as? Bool == true)
+
+    _ = result(#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"progress","arguments":{"name":"import","title":"Importing the catalogue","percent":48.5,"eta_seconds":140}}}"#)
+    let ended = result(#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"progress","arguments":{"name":"import","state":"done"}}}"#)
+    check("progress: the name, the percentage, the time left; then how it ended",
+          reports.count == 2 && reports[0].0 == "import" && reports[0].1 == "Importing the catalogue" && reports[0].2 == 48.5 && reports[0].3 == 140 && reports[0].4 == "working"
+          && reports[1].4 == "done" && reports[1].2 == nil && toolText(ended) == "shown as done")
+    check("a percentage out of range, one given as text, a state it does not know: tool errors, nothing sent",
+          result(#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"progress","arguments":{"name":"x","percent":140}}}"#)?["isError"] as? Bool == true
+          && result(#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"progress","arguments":{"name":"x","percent":"50"}}}"#)?["isError"] as? Bool == true
+          && result(#"{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"progress","arguments":{"name":"x","state":"paused"}}}"#)?["isError"] as? Bool == true
+          && result(#"{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"progress","arguments":{}}}"#)?["isError"] as? Bool == true && reports.count == 2)
+
+    let picked = result(#"{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"ask","arguments":{"question":"Delete the old export too?","choices":["Delete","Keep","Let me look"],"timeout_seconds":60}}}"#)
+    check("ask: the question and its answers go through whole, and the answer picked comes back as its text",
+          questions.count == 1 && questions.first?.0 == "Delete the old export too?" && questions.first?.1 == ["Delete", "Keep", "Let me look"] && questions.first?.2 == 60
+          && toolText(picked) == "Keep" && picked?["isError"] as? Bool == false)
+    answer = .none("timeout")
+    let unanswered = result(#"{"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"ask","arguments":{"question":"Go on?","choices":["Yes","No"]}}}"#)
+    check("nobody answering is said in so many words, is not an error, and is none of the answers",
+          unanswered?["isError"] as? Bool == false && toolText(unanswered)?.hasPrefix("no answer (timeout)") == true && toolText(unanswered) != "Yes" && questions.last?.2 == InboxLimits.askTimeoutDefault)
+    let before = questions.count
+    check("a question that cannot be asked as it stands is refused here: one answer, five, a long one, two the same, not text",
+          result(#"{"jsonrpc":"2.0","id":15,"method":"tools/call","params":{"name":"ask","arguments":{"question":"Go on?","choices":["Yes"]}}}"#)?["isError"] as? Bool == true
+          && result(#"{"jsonrpc":"2.0","id":16,"method":"tools/call","params":{"name":"ask","arguments":{"question":"Go on?","choices":["1","2","3","4","5"]}}}"#)?["isError"] as? Bool == true
+          && result(#"{"jsonrpc":"2.0","id":17,"method":"tools/call","params":{"name":"ask","arguments":{"question":"Go on?","choices":["Yes","An answer far too long to fit"]}}}"#)?["isError"] as? Bool == true
+          && result(#"{"jsonrpc":"2.0","id":18,"method":"tools/call","params":{"name":"ask","arguments":{"question":"Go on?","choices":["Yes","Yes"]}}}"#)?["isError"] as? Bool == true
+          && result(#"{"jsonrpc":"2.0","id":19,"method":"tools/call","params":{"name":"ask","arguments":{"question":"Go on?","choices":["Yes",2]}}}"#)?["isError"] as? Bool == true
+          && result(#"{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"ask","arguments":{"question":"","choices":["Yes","No"]}}}"#)?["isError"] as? Bool == true
+          && questions.count == before)
+    sent = .unavailable
+    let nobody = result(#"{"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"notify","arguments":{"body":"x"}}}"#)
+    check("the app not listening is a tool error that says how to switch it on", nobody?["isError"] as? Bool == true && toolText(nobody) == MCPServer.notTaking)
+    sent = .refused("too many notices")
+    check("a refusal comes back with its reason", toolText(result(#"{"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"notify","arguments":{"body":"x"}}}"#)) == "refused: too many notices")
+    check("status answers with the text it was given", toolText(result(#"{"jsonrpc":"2.0","id":23,"method":"tools/call","params":{"name":"status","arguments":{}}}"#)) == "2 rendering · 0 paused")
+
+    check("what is not JSON: a parse error with no id", errorCode("not json") == -32700)
+    check("a list of messages is refused", errorCode(#"[{"jsonrpc":"2.0","id":1,"method":"ping"}]"#) == -32600)
+    check("a method it does not have, a tool it does not have", errorCode(#"{"jsonrpc":"2.0","id":24,"method":"resources/list"}"#) == -32601
+          && errorCode(#"{"jsonrpc":"2.0","id":25,"method":"tools/call","params":{"name":"shell","arguments":{}}}"#) == -32602)
+    check("somebody's answer to a request this never made is let pass", server.handle(Data(#"{"jsonrpc":"2.0","id":9,"result":{}}"#.utf8)) == nil)
+    var named = MCPServer(backend: MCPServer.Backend(notify: { notices.append(($0, $1, $2, $3)); return .ok(id: nil) }, progress: { _, _, _, _, _, _ in .unavailable },
+                                                     ask: { _, _, _, _ in .unavailable }, status: { "" }), from: "nightly build")
+    _ = named.handle(Data(#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"claude-code"}}}"#.utf8))
+    _ = named.handle(Data(#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"notify","arguments":{"body":"x"}}}"#.utf8))
+    check("a name given when it was started wins over the client's own", notices.last?.3 == "nightly build")
+}
+
 // MARK: The server itself, on a spare port with its own discovery file
 
 section("local API server")
@@ -2059,6 +2568,141 @@ if let port {
     let info = (try? JSONSerialization.jsonObject(with: Data(contentsOf: discovery))) as? [String: Any]
     check("discovery file names the port and this process",
           info?["port"] as? Int == Int(port) && info?["pid"] as? Int == Int(ProcessInfo.processInfo.processIdentifier))
+    // From the network. This Mac's own network address stands in for another device: a connection to it does
+    // not come from the loopback, so it is asked for the token like any other.
+    func fetch(_ address: String, _ path: String, token: String?) -> Int {
+        var status = 0
+        let done = DispatchSemaphore(value: 0)
+        var request = URLRequest(url: URL(string: "http://\(address):\(port)\(path)")!, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 3)
+        if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        URLSession.shared.dataTask(with: request) { _, response, _ in
+            status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            done.signal()
+        }.resume()
+        _ = done.wait(timeout: .now() + 4)
+        return status
+    }
+    check("the discovery file says access from the network is off, and holds no token",
+          info?["lan"] as? Bool == false && info?.keys.contains { $0.lowercased().contains("token") } == false)
+    if let address = LocalAPIServer.networkAddresses().first {
+        check("off by default: nothing answers at the Mac's network address", fetch(address, "/v1/state", token: nil) == 0)
+        let secret = LocalAPIServer.newToken()
+        server.setLAN(true, token: secret)
+        var open = false
+        for _ in 0..<100 where !open {
+            Thread.sleep(forTimeInterval: 0.03)
+            open = server.lanOpen && fetch(address, "/v1/state", token: secret) == 200
+        }
+        check("switched on: the token gets the state", open)
+        check("without the token, or with another: 401", fetch(address, "/v1/state", token: nil) == 401 && fetch(address, "/v1/state", token: secret + "x") == 401
+              && fetch(address, "/", token: nil) == 401 && fetch(address, "/v1/history", token: "nope") == 401)
+        check("from this Mac's loopback it is as before, with no token", get("/v1/state").0 == 200)
+        let other = LocalAPIServer.newToken()
+        server.setLAN(true, token: other)
+        Thread.sleep(forTimeInterval: 0.1)
+        check("a new token shuts the old one out at once", fetch(address, "/v1/state", token: secret) == 401 && fetch(address, "/v1/state", token: other) == 200)
+        server.setLAN(false, token: nil)
+        var closed = false
+        for _ in 0..<100 where !closed {
+            Thread.sleep(forTimeInterval: 0.03)
+            closed = !server.lanOpen && fetch(address, "/v1/state", token: other) == 0
+        }
+        check("switched off again: nothing answers there, and the loopback still does", closed && get("/v1/state").0 == 200)
+        server.setLAN(true, token: nil)
+        Thread.sleep(forTimeInterval: 0.2)
+        check("asked to switch on without a token: it stays off", !server.lanOpen && fetch(address, "/v1/state", token: nil) == 0)
+    } else {
+        print("  (this Mac is on no network: the checks that reach the API through a network address were skipped)")
+    }
+    // The stream a display reads over Wi-Fi: read here with a plain socket, the way a small device would.
+    func readStream(host: String, token: String?, for seconds: Double, then act: (() -> Void)? = nil) -> String {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        defer { close(fd) }
+        var address = sockaddr_in()
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = in_port_t(port).bigEndian
+        inet_pton(AF_INET, host, &address.sin_addr)
+        let connected = withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
+        guard connected == 0 else { return "" }
+        var request = "GET /v1/device HTTP/1.1\r\nHost: \(host):\(port)\r\n"
+        if let token { request += "Authorization: Bearer \(token)\r\n" }
+        request += "\r\n"
+        _ = request.withCString { write(fd, $0, strlen($0)) }
+        var timeout = timeval(tv_sec: 0, tv_usec: 100_000)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        var out = Data()
+        let end = Date().addingTimeInterval(seconds)
+        var acted = false
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while Date() < end {
+            let n = read(fd, &buffer, buffer.count)
+            if n > 0 { out.append(contentsOf: buffer.prefix(n)) }
+            if n == 0 { break }
+            if !acted, out.count > 20 { acted = true; act?() }
+        }
+        return String(decoding: out, as: UTF8.self)
+    }
+    let beat = BuddyProtocol.heartbeat(state: snapshot, requests: [], options: .overWiFi).line()
+    var machine = Metrics()
+    machine.cpu = 0.5
+    let stream = readStream(host: "127.0.0.1", token: nil, for: 1.2) {
+        server.publish(deviceSnapshot: beat, deviceMac: BuddyProtocol.mac(machine, cores: 8))
+    }
+    let lines = stream.components(separatedBy: "\n").filter { $0.hasPrefix("data: ") }.map { String($0.dropFirst(6)) }
+    check("the stream for a display opens as a stream", stream.hasPrefix("HTTP/1.1 200 OK") && stream.contains("text/event-stream"))
+    check("it is greeted with the time, then gets the snapshot and the Mac's line as they are published",
+          lines.first?.hasPrefix("{\"time\":[") == true && lines.contains(String(decoding: beat.dropLast(), as: UTF8.self)) && lines.contains { $0.hasPrefix("{\"mac\":{") })
+    check("each is one line of JSON after \"data: \", as the device's reader takes it",
+          lines.allSatisfy { !$0.contains("\n") && (try? JSONSerialization.jsonObject(with: Data($0.utf8))) != nil } && lines.count >= 3)
+    let wifiLine = String(decoding: beat, as: UTF8.self)
+    check("what goes to a display over Wi-Fi offers nothing to answer: no request, no question",
+          !wifiLine.contains("\"prompt\"") && !wifiLine.contains("\"ask\"") && BuddyProtocol.Options.overWiFi.offerRequests == false && BuddyProtocol.Options.overWiFi.readOnly)
+    check("a line that has not changed is not sent a second time at once", {
+        let again = readStream(host: "127.0.0.1", token: nil, for: 0.8) { server.publish(deviceSnapshot: beat); server.publish(deviceSnapshot: beat) }
+        return again.components(separatedBy: "\n").filter { $0 == "data: " + String(decoding: beat.dropLast(), as: UTF8.self) }.count <= 1
+    }())
+    // A connection that asks for nothing is dropped after a while; a stream that was opened is not. (A display
+    // reading over Wi-Fi was: the first real one was cut off every ten seconds.)
+    server.requestDeadline = 0.4
+    var later = Metrics()
+    later.cpu = 0.25
+    let laterLine = BuddyProtocol.mac(later, cores: 8)
+    let kept = readStream(host: "127.0.0.1", token: nil, for: 1.6) {
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.9) { server.publish(deviceMac: laterLine) }
+    }
+    check("a display's stream stays open past the time an idle connection is given",
+          kept.contains("data: " + String(decoding: laterLine.dropLast(), as: UTF8.self)))
+    check("a connection that asks for nothing is still dropped", {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        defer { close(fd) }
+        var address = sockaddr_in()
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = in_port_t(port).bigEndian
+        inet_pton(AF_INET, "127.0.0.1", &address.sin_addr)
+        guard withUnsafePointer(to: &address, { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }) == 0 else { return false }
+        var timeout = timeval(tv_sec: 2, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        var byte = [UInt8](repeating: 0, count: 1)
+        let started = Date()
+        let n = read(fd, &byte, 1)   // 0: the other end closed
+        return n <= 0 && Date().timeIntervalSince(started) < 1.5
+    }())
+    server.requestDeadline = 10
+    if let address = LocalAPIServer.networkAddresses().first {
+        let secret = LocalAPIServer.newToken()
+        server.setLAN(true, token: secret)
+        var up = false
+        for _ in 0..<100 where !up {
+            Thread.sleep(forTimeInterval: 0.03)
+            up = server.lanOpen
+        }
+        Thread.sleep(forTimeInterval: 0.2)
+        check("from the network the stream needs the token like everything else",
+              readStream(host: address, token: nil, for: 0.6).hasPrefix("HTTP/1.1 401") && readStream(host: address, token: "wrong", for: 0.6).hasPrefix("HTTP/1.1 401")
+              && readStream(host: address, token: secret, for: 0.8).hasPrefix("HTTP/1.1 200 OK"))
+        server.setLAN(false, token: nil)
+        Thread.sleep(forTimeInterval: 0.3)
+    }
     server.stop()
     check("stop removes the discovery file", !FileManager.default.fileExists(atPath: discovery.path))
     check("stop releases the port", get("/v1/state").0 == 0)

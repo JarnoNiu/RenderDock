@@ -139,6 +139,11 @@ package struct StateSnapshot: Codable, Equatable {
         package var onAC: Bool?
         /// Something is holding a sleep assertion: the Mac will not idle-sleep.
         package var awake: Bool
+        /// From 0.4, where the Mac says: each fan's turns a minute; how far the hardest-working fan is between
+        /// its slowest and its fastest (0…1); and what the whole machine is drawing, in watts.
+        package var fanRpm: [Int]?
+        package var fanFraction: Double?
+        package var powerW: Double?
     }
 
     package var version: Int
@@ -151,7 +156,7 @@ package struct StateSnapshot: Codable, Equatable {
     package var agents: [Agent]
     package var metrics: Machine
 
-    package static let appVersion = "0.3.1-dev"
+    package static let appVersion = "0.4.0-dev"
 
     /// - Parameter recent: the shots that ended most recently. One that ended in the last few minutes still counts
     ///   towards the overall state: a light stays green for a while after a render finishes.
@@ -188,7 +193,9 @@ package struct StateSnapshot: Codable, Equatable {
             },
             metrics: Machine(cpu: round3(m.cpu), gpu: m.gpu.map(round3), gpuMemBytes: m.gpuMemBytes, memUsed: m.memUsed,
                              memTotal: m.memTotal, memPressure: m.memPressure, swapUsed: m.swapUsed, swapTotal: m.swapTotal,
-                             tempC: m.tempC.map { ($0 * 10).rounded() / 10 }, diskFree: m.diskFree, onAC: m.onAC, awake: m.awakeHeld))
+                             tempC: m.tempC.map { ($0 * 10).rounded() / 10 }, diskFree: m.diskFree, onAC: m.onAC, awake: m.awakeHeld,
+                             fanRpm: m.fans.isEmpty ? nil : m.fans.map { Int($0.rpm.rounded()) }, fanFraction: m.fanFraction.map(round3),
+                             powerW: m.powerW.map { ($0 * 10).rounded() / 10 }))
     }
 
     /// How long a finished or failed render keeps counting towards the overall state.

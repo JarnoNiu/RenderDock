@@ -43,6 +43,10 @@ enum Demo {
         m.diskTotal = 1000 * 1_073_741_824
         m.onAC = true
         m.awakeHeld = true
+        // The fans and the draw follow how busy the made-up machine is.
+        let load = (cpu(t) + gpu(t)) / 2
+        m.fans = [Fan(rpm: 1350 + 3300 * load, min: 1350, max: 5350), Fan(rpm: 1350 + 3600 * load, min: 1350, max: 5780)]
+        m.powerW = 24 + 128 * load
         return m
     }
 
@@ -283,6 +287,8 @@ extension Store {
         metrics.gpu = 1
         metrics.memUsed = metrics.memTotal
         metrics.tempC = 100
+        metrics.fans = [Fan(rpm: 5350, min: 1350, max: 5350), Fan(rpm: 5780, min: 1350, max: 5780)]
+        metrics.powerW = 160
         cpuHistory = cpuHistory.map { _ in 1 }
         gpuHistory = gpuHistory.map { _ in 1 }
         memHistory = memHistory.map { _ in 1 }

@@ -205,6 +205,118 @@ final class Store {
         if demo { inbox.tasks.removeAll { $0.id == id }; onChange?() } else { inboxServer.dismissTask(id) }
     }
 
+    // MARK: Hands on (0.4): pausing, letting go, moving out of the way. Every switch is off unless turned on in the menu.
+
+    /// The five switches (see `ControlSettings`). Each is its own; a switch going off undoes what was done under it.
+    var handsSettings = ControlSettings(manual: UserDefaults.standard.bool(forKey: "handsPause"), yield: UserDefaults.standard.bool(forKey: "handsYield"),
+                                        turns: UserDefaults.standard.bool(forKey: "handsTurns"), pauseOnBattery: UserDefaults.standard.bool(forKey: "handsOnBattery"),
+                                        pauseWhenHot: UserDefaults.standard.bool(forKey: "handsWhenHot")) {
+        didSet {
+            guard handsSettings != oldValue else { return }
+            let d = UserDefaults.standard
+            d.set(handsSettings.manual, forKey: "handsPause")
+            d.set(handsSettings.yield, forKey: "handsYield")
+            d.set(handsSettings.turns, forKey: "handsTurns")
+            d.set(handsSettings.pauseOnBattery, forKey: "handsOnBattery")
+            d.set(handsSettings.pauseWhenHot, forKey: "handsWhenHot")
+            hands.settings = handsSettings
+            tickHands()
+            onChange?()
+        }
+    }
+    /// Goes up whenever something is held, let go or moved, so that what shows it is drawn again.
+    private(set) var handsVersion = 0
+    /// For the debug hook: as if the Mac were on its battery, or slowed down for heat, whatever it really is.
+    @ObservationIgnored var debugOnBattery: Bool?
+    @ObservationIgnored var debugHot: Bool?
+    @ObservationIgnored private(set) lazy var hands: ControlEngine = makeHands()
+
+    /// Where what is held is remembered, and where what was done is written down.
+    static var handsFolder: URL {
+        if let path = ProcessInfo.processInfo.environment["RENDERDOCK_HANDS"], !path.isEmpty { return URL(fileURLWithPath: path) }
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("RenderDock")
+    }
+    static var handsLog: URL { handsFolder.appendingPathComponent("controls.log") }
+
+    private func makeHands() -> ControlEngine {
+        // Only the installed app reaches real processes. In demo mode the jobs are made up, so "stopping" one
+        // changes nothing but what is shown; and a copy started from a build folder for testing is refused
+        // outright, so that no test can ever stop a real render, whatever switches it is started with.
+        let actuator: ControlEngine.Actuator
+        if demo {
+            actuator = ControlEngine.Actuator(pause: { _ in nil }, resume: { _ in nil }, yield: { _, _ in nil })
+        } else if Bundle.main.bundlePath.hasSuffix(".app") {
+            actuator = .system
+        } else {
+            actuator = ControlEngine.Actuator(pause: { _ in .refused(0) }, resume: { _ in .refused(0) }, yield: { _, _ in .refused(0) })
+        }
+        let keep = demo ? nil : Self.handsFolder.appendingPathComponent("controls.json")
+        return ControlEngine(settings: handsSettings, actuator: actuator, stateFile: keep, log: { [weak self] line in self?.noteHands(line) })
+    }
+
+    /// One line in the log of what was done, with the time. The log is kept to its last few hundred lines.
+    private func noteHands(_ line: String) {
+        handsLines.append(line)
+        if handsLines.count > 50 { handsLines.removeFirst(handsLines.count - 50) }
+        guard !demo || ProcessInfo.processInfo.environment["RENDERDOCK_HANDS"] != nil else { return }
+        let stamp = DateFormatter()
+        stamp.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        let url = Self.handsLog
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        var text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        text += "\(stamp.string(from: Date())) \(line)\n"
+        let kept = text.split(separator: "\n", omittingEmptySubsequences: true).suffix(400).joined(separator: "\n") + "\n"
+        try? kept.write(to: url, atomically: true, encoding: .utf8)
+    }
+    /// The last lines of that log, for the debug hook.
+    @ObservationIgnored private(set) var handsLines: [String] = []
+
+    /// The jobs as the rules see them. In demo mode the processes are made up to match the made-up jobs.
+    private var handsJobs: [ControlJob] {
+        guard demo else { return groups.map(ControlJob.from) }
+        return groups.map { g in
+            let working = g.items.filter { $0.pid != nil }
+            let stopped = hands.held[g.id] != nil
+            return ControlJob(id: g.id, title: g.title, startedAt: g.startedAt.timeIntervalSince1970,
+                              active: !stopped && working.contains { $0.state.isActive }, processes: working.compactMap { $0.pid }.map { ProcessRef(pid: $0, startedAt: 1) })
+        }
+    }
+
+    /// Applies the rules that are on. With every switch off and nothing held, it does not so much as look.
+    func tickHands() {
+        guard handsSettings.any || !hands.isIdle else { return }
+        let before = (hands.held, hands.yielding)
+        hands.tick(jobs: handsJobs, onBattery: debugOnBattery ?? (metrics.onAC == false),
+                   hot: debugHot ?? (metrics.thermal == .serious || metrics.thermal == .critical))
+        if before.0 != hands.held || before.1 != hands.yielding { handsVersion += 1 }
+    }
+
+    /// Whether the dock may offer its buttons for this job: it has a render process of its own.
+    func canHandle(_ group: RenderGroup) -> Bool { group.items.contains { $0.pid != nil && ($0.state.isActive || $0.state == .paused || $0.state == .stalled) } }
+    func holdReasons(_ id: String) -> [HoldReason] { hands.reasons(for: id) }
+    func isYielding(_ id: String) -> Bool { hands.isYielding(id) }
+
+    func pauseJob(_ id: String) {
+        guard let job = handsJobs.first(where: { $0.id == id }) else { return }
+        hands.pause(job)
+        handsVersion += 1
+        onChange?()
+    }
+
+    func resumeJob(_ id: String) {
+        guard let job = handsJobs.first(where: { $0.id == id }) else { return }
+        hands.resume(job)
+        handsVersion += 1
+        onChange?()
+    }
+
+    func toggleYield(_ id: String) {
+        guard let job = handsJobs.first(where: { $0.id == id }) else { return }
+        hands.setYielding(job, !hands.isYielding(id))
+        handsVersion += 1
+        onChange?()
+    }
+
     // MARK: A device on the desk (off unless switched on in the menu)
 
     /// Whether RenderDock looks for a Bluetooth device and feeds it. Off by default; switching it on is what
@@ -234,6 +346,98 @@ final class Store {
         }
     }
     var deviceStatus = DeviceLink.Status.off
+
+    /// Why the display could not be given a network, in words for the user.
+    enum WiFiProblem: Error {
+        case notLinked, noNetwork, noAPI
+
+        var text: String {
+            switch self {
+            case .notLinked: return L("小屏现在没有通过蓝牙加密连着。先让它连上再试。", "The display is not on an encrypted Bluetooth link right now. Connect it first.")
+            case .noNetwork: return L("这台电脑现在没有连着网络，没有地址可以告诉小屏。", "This Mac is not on a network right now, so there is no address to give the display.")
+            case .noAPI: return L("本机接口没能启动，小屏没有地方可读。", "The local API did not start, so the display would have nowhere to read from.")
+            }
+        }
+    }
+
+    /// Gives the desk display a network to join and this Mac's place on it, over the encrypted Bluetooth link,
+    /// so that it can go on showing things where Bluetooth does not reach. The display reads the API, so the API
+    /// and access to it from the network (with the token) are switched on if they were off. The password is
+    /// passed on to the display and kept nowhere on this Mac.
+    func giveDeviceWiFi(ssid: String, password: String, done: @escaping (WiFiProblem?) -> Void) {
+        guard !demo, device.secure else { return done(.notLinked) }
+        guard let address = LocalAPIServer.networkAddresses().first else { return done(.noNetwork) }
+        if !apiEnabled { apiEnabled = true }
+        if !lanEnabled { lanEnabled = true }
+        // The port is known a moment after the API starts listening.
+        var tries = 0
+        func send() {
+            guard let port = apiPort, api.lanOpen else {
+                tries += 1
+                guard tries < 25 else { return done(.noAPI) }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { send() }
+                return
+            }
+            let host = Self.nameOnTheNetwork(or: address)
+            let line = BuddyProtocol.wifi(ssid: ssid, password: password, host: host, ip: address, port: port, token: apiToken)
+            guard device.sendSettings(line) else { return done(.notLinked) }
+            UserDefaults.standard.set(device.identifier, forKey: Self.wifiGivenKey)
+            placeTold = Self.place(host: host, address: address, port: port, token: apiToken)
+            done(nil)
+        }
+        send()
+    }
+
+    /// Asks the display which networks it can see from where it stands. Answers once: the list as the display
+    /// gave it, or nil if it is not on the encrypted link or said nothing for twelve seconds.
+    func lookForNetworks(done: @escaping ([BuddyProtocol.SeenNetwork]?) -> Void) {
+        guard !demo, device.secure else { return done(nil) }
+        var answered = false
+        func answer(_ list: [BuddyProtocol.SeenNetwork]?) {
+            guard !answered else { return }
+            answered = true
+            device.onNetworks = nil
+            done(list)
+        }
+        device.onNetworks = { list in answer(list) }
+        guard device.sendSettings(BuddyProtocol.wifiScan) else { return answer(nil) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 12) { answer(nil) }
+    }
+
+    /// Has the display forget the network it was given. (The API and its switches are left as they are.)
+    @discardableResult
+    func forgetDeviceWiFi() -> Bool {
+        guard !demo, device.sendSettings(BuddyProtocol.wifiOff) else { return false }
+        UserDefaults.standard.removeObject(forKey: Self.wifiGivenKey)
+        placeTold = nil
+        return true
+    }
+
+    /// Which display this Mac gave a network to (as macOS knows it here): only that one is told where the Mac is.
+    private static let wifiGivenKey = "deviceWiFiGivenTo"
+    /// Where the display was last told this Mac is, on this connection: said again only when it has changed.
+    @ObservationIgnored private var placeTold: String?
+    private static func place(host: String, address: String, port: UInt16, token: String) -> String { "\(host) \(address) \(port) \(token)" }
+    private static func nameOnTheNetwork(or address: String) -> String {
+        let name = ProcessInfo.processInfo.hostName
+        return name.hasSuffix(".local") ? name : address
+    }
+
+    /// A display that reads over Wi-Fi was told where this Mac is when it was set up. The address, the port and
+    /// the token can all change afterwards (a new token above all). Whenever the display this Mac set up is on
+    /// the encrypted Bluetooth link, it is told again if any of them differs: without the network's password,
+    /// which RenderDock does not have. Nothing is sent while the network may not reach the API.
+    func refreshDevicePlace() {
+        guard !demo else { return }
+        guard device.secure else { placeTold = nil; return }
+        guard (device.wifi ?? 0) > 0, apiEnabled, lanEnabled, api.lanOpen, let port = apiPort,
+              let given = UserDefaults.standard.string(forKey: Self.wifiGivenKey), given == device.identifier,
+              let address = LocalAPIServer.networkAddresses().first else { return }
+        let host = Self.nameOnTheNetwork(or: address)
+        let place = Self.place(host: host, address: address, port: port, token: apiToken)
+        guard place != placeTold else { return }
+        if device.sendSettings(BuddyProtocol.wifiPlace(host: host, ip: address, port: port, token: apiToken)) { placeTold = place }
+    }
     @ObservationIgnored let device = DeviceLink()
 
     private func applyDevice() {
@@ -242,6 +446,7 @@ final class Store {
             device.onStatus = { [weak self] in
                 guard let self else { return }
                 self.deviceStatus = self.device.status
+                self.refreshDevicePlace()
                 self.onChange?()
             }
             device.onReady = { [weak self] in
@@ -290,6 +495,8 @@ final class Store {
     @ObservationIgnored private var thumbSource: [String: String] = [:]
     @ObservationIgnored private var scanning = false
     @ObservationIgnored var onChange: (() -> Void)?
+    /// A shot's thumbnail was clicked: open the larger look at its frames.
+    @ObservationIgnored var onPreview: ((RenderItem) -> Void)?
 
     // MARK: Local API (off unless switched on in the menu, with `--api`, or `defaults write … localAPI -bool true`)
 
@@ -302,6 +509,25 @@ final class Store {
     }
     /// The port the API is listening on, once it is up.
     var apiPort: UInt16?
+    /// Whether the API may also be reached from the local network. Off by default, a switch of its own, and it
+    /// does nothing while the API itself is off. From the network every request needs the token.
+    var lanEnabled = UserDefaults.standard.bool(forKey: "lanAPI") {
+        didSet {
+            UserDefaults.standard.set(lanEnabled, forKey: "lanAPI")
+            api.setLAN(lanEnabled, token: lanEnabled ? apiToken : nil)
+            onChange?()
+        }
+    }
+    /// The token a device on the network has to show. Made the first time it is needed, kept in a file only
+    /// this user can read.
+    var apiToken: String { LocalAPIServer.token(at: LocalAPIServer.tokenFile) }
+    /// A new token: whatever was using the old one is shut out from that moment.
+    func renewAPIToken() {
+        let fresh = LocalAPIServer.token(at: LocalAPIServer.tokenFile, renew: true)
+        api.setLAN(lanEnabled, token: lanEnabled ? fresh : nil)
+        refreshDevicePlace()   // a display reading over Wi-Fi would be shut out by the new token
+        onChange?()
+    }
     @ObservationIgnored private let api = LocalAPIServer()
     @ObservationIgnored private var detector = EventDetector()
     /// What RenderDock remembers. Only ever touched on the scan queue. Nil if the file cannot be opened.
@@ -364,7 +590,8 @@ final class Store {
                 self?.onChange?()
             }
             // A --demo instance never overwrites the discovery file of the real one.
-            api.start(discovery: CommandLine.arguments.contains("--demo") ? nil : LocalAPIServer.discoveryFile)
+            api.start(discovery: CommandLine.arguments.contains("--demo") ? nil : LocalAPIServer.discoveryFile,
+                      lan: lanEnabled, token: lanEnabled ? apiToken : nil)
             publish()
         } else {
             api.stop()
@@ -373,13 +600,29 @@ final class Store {
 
     /// Hand the latest state to the API. The detector runs on every scan so it always has the previous one.
     func publish(outcomes: [String: JobOutcome] = [:]) {
+        tickHands()
         let events = detector.update(groups, now: now, outcomes: outcomes)
         notifier.handle(events)
         sendToDevice()
         mqtt?.publish(state: snapshot(now: now))
         guard apiEnabled else { return }
         api.publish(state: snapshot(now: now).json(), events: events)
+        publishForWiFi(now: now)
     }
+
+    /// What a display reading over Wi-Fi is sent. Not worked out while none is reading.
+    private func publishForWiFi(now: Date) {
+        guard apiEnabled, api.deviceCount > 0 else { return }
+        // This Mac's own numbers go with it, every three seconds at most (they change at every look).
+        var mac: Data?
+        if now.timeIntervalSince(macForWiFiAt) >= 3 {
+            macForWiFiAt = now
+            mac = BuddyProtocol.mac(metrics, cores: ProcessInfo.processInfo.activeProcessorCount)
+        }
+        api.publish(deviceSnapshot: BuddyProtocol.heartbeat(state: snapshot(now: now), requests: requests, inbox: inbox, options: .overWiFi, now: now).line(),
+                    deviceMac: mac)
+    }
+    @ObservationIgnored private var macForWiFiAt = Date.distantPast
 
     /// Hand the state to the API again after something other than a job scan changed it, with what happened to the agents.
     private func publishState(events: [RenderEvent] = []) {
@@ -388,6 +631,7 @@ final class Store {
         mqtt?.publish(state: snapshot(now: Date()))
         guard apiEnabled else { return }
         api.publish(state: snapshot(now: Date()).json(), events: events)
+        publishForWiFi(now: Date())
     }
 
     /// Demo mode: run the made-up sessions through the detector, so the event stream shows agent events too.
@@ -403,6 +647,8 @@ final class Store {
 
     /// Release the port and the discovery file before the app exits.
     func shutdown() {
+        // Nothing RenderDock stopped stays stopped once it is gone, and nothing it moved stays moved.
+        if !hands.isIdle { hands.releaseEverything(why: "RenderDock is quitting") }
         if apiEnabled { api.stop() }
         if controlEnabled { broker.stop() }   // release anything waiting, so the agents ask in their own windows
         if inboxEnabled { inboxServer.stop() }   // whoever is waiting for an answer is told there will be none
@@ -530,12 +776,13 @@ final class Store {
     private func scanTasks() {
         guard !scanning else { return }
         scanning = true
+        let watts = metrics.powerW   // read here, on the main queue, for the scan below
         work.async { [weak self] in
             guard let self else { return }
             var g = self.scanner.scan()
             let ended = self.scanner.lastEnded   // how jobs that just disappeared ended, where a wrapper recorded it
             // Remember what was seen, and use what is remembered: queue estimates and the recent list.
-            self.history?.record(g, outcomes: ended)
+            self.history?.record(g, outcomes: ended, powerW: watts)
             for i in g.indices { g[i].queueETA = self.history?.queueETA(for: g[i]) }
             let recent = self.history?.recent(limit: 50) ?? []
             // Rebuild a thumbnail only when the latest frame has changed

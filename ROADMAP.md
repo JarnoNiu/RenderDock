@@ -11,7 +11,7 @@ Where RenderDock stands, what is missing, and what comes next. Last updated: 202
 | 2026-11-23 | **0.1.0** | First release: detection, the capsule, system metrics | Released |
 | 2026-11-24 | **0.2.0** | Exact progress, notifications, a local API | Released |
 | 2026-11-25 | **0.3.0** | History, coding agents, a display on the desk, more than Blender | Released |
-| Target: February–March 2027 | **0.4** | Reaching it from the network, optional controls, preview | Planned |
+| Target: February–March 2027 | **0.4** | The desk display in pages, reaching it from the network, optional controls, preview | Under way |
 | Later in 2027 | **1.0 and beyond** | Other machines, new UI forms, custom hardware | Ideas |
 
 The dates are targets, not commitments. 0.2 and 0.3 arrived ahead of their targets (December and January); that is no promise about the ones below. This is a one-person project, and when priorities move, this file is updated rather than quietly ignored.
@@ -75,10 +75,10 @@ Not checked yet:
 | The `scene:shot` queue convention is still built in rather than a rule | 0.3, done |
 | No history: time-left uses the last 30 frames and nothing is kept | 0.3, done |
 | Not notarised, so no download and no Homebrew | when there is an Apple developer account |
-| The API is local only; nothing on the network can read it | 0.4, opt-in, with a token |
-| Read-only: no pause, resume or stop | 0.4, opt-in |
-| Thumbnail only: no large preview, no scrubbing through frames | 0.4 |
-| No fan speed, no power draw | 0.4 |
+| The API is local only; nothing on the network can read it | 0.4, opt-in, with a token: built |
+| Read-only: no pause, resume or stop | 0.4, opt-in: pause and resume built; RenderDock still ends nothing |
+| Thumbnail only: no large preview, no scrubbing through frames | 0.4: built |
+| No fan speed, no power draw | 0.4: built |
 | Only this Mac | 1.0 and beyond |
 | Two UI languages | ongoing, contributions welcome |
 | Dark capsule only: no light theme, no notch mode, no desktop widget | 1.0 and beyond |
@@ -111,13 +111,14 @@ Where that stands: the desk display is that piece of hardware. History has been 
 
 ### 0.4 — beyond this Mac, and hands on, carefully · target February–March 2027
 
-- [ ] Access to the API from the local network: a separate switch, off by default, with a token
-- [ ] The desk display over Wi-Fi as well as Bluetooth
-- [ ] The entry for other programs as an MCP server, for agents that would rather call a tool than run a command
-- [ ] Optional controls, off by default: pause, resume, lower priority, start the next job when one ends
-- [ ] Rules: pause on battery, pause when the Mac is throttling
-- [ ] Large preview and scrubbing through rendered frames
-- [ ] Fan speed and power draw; energy per job
+- [x] The desk display in three pages instead of one screen: the renders, the agents, and this Mac itself (processor, graphics, memory, heat, disk, power, sleep), with the two kinds of task no longer mixed in one list. Built on the branch `feat/device-pages` and running on one board; turning the pages with a real finger and the real key has not been tried yet
+- [x] Access to the API from the local network: a separate switch, off by default, with a token. Plain HTTP, so for a network you trust; see [docs/API.md](docs/API.md). Read by a second real device (the desk display, over Wi-Fi) with the token, and refused with a wrong one
+- [x] The desk display over Wi-Fi as well as Bluetooth: where Bluetooth does not reach, it reads the same lines from the API on the local network. Set up from the menu (the display lists the networks it sees; the password is typed, and RenderDock does not keep it); it only shows that way, and Bluetooth comes first. See [docs/DEVICES.md](docs/DEVICES.md). Run on one board on a real network, with "no Bluetooth" put on from its console; **not yet with the board really out of Bluetooth's reach**
+- [x] The entry for other programs as an MCP server (`renderdock mcp`), for agents that would rather call a tool than run a command. Run against a stand-in client; not yet with a real agent's client
+- [x] Optional controls, off by default, each its own switch: pause and resume from the dock, move a render out of the way and back, and one job at a time (the next goes on when one ends). See [docs/CONTROLS.md](docs/CONTROLS.md). Checked on a stand-in process and against made-up jobs; **not yet with a switch on over a real render**
+- [x] Rules: pause on battery, pause when the Mac is slowed down for heat; each lets go again by itself, and only of what it stopped
+- [x] Large preview and scrubbing through rendered frames: click a shot's thumbnail. Run on made-up frames; not yet on a real render's folder
+- [x] Fan speed and power draw, in the dock, the API and on the desk display's page for the Mac; what each shot drew, kept with the history (the whole Mac's draw, shared among shots rendering together: see [docs/HISTORY.md](docs/HISTORY.md))
 
 Done when: another device on the network can read the state with the token and cannot without it; controls can be enabled one by one and never act without being enabled.
 

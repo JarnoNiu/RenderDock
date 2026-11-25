@@ -269,15 +269,23 @@ package enum BuddyProtocol {
         /// …and that it keeps the renders and the agents on pages of their own (firmware that reports "rd": 3),
         /// so each side is described by itself.
         package var pages: Bool
+        /// Nothing the device says comes back (it reads the stream over Wi-Fi): nothing is offered to be answered
+        /// there, neither a request nor a question.
+        package var readOnly: Bool
 
-        package init(secure: Bool, unicode: Bool = false, extended: Bool = false, inbox: Bool = false, offerRequests: Bool = true, pages: Bool = false) {
+        package init(secure: Bool, unicode: Bool = false, extended: Bool = false, inbox: Bool = false, offerRequests: Bool = true, pages: Bool = false,
+                     readOnly: Bool = false) {
             self.secure = secure
             self.unicode = unicode
             self.extended = extended
             self.inbox = inbox
-            self.offerRequests = offerRequests
+            self.offerRequests = offerRequests && !readOnly
             self.pages = pages
+            self.readOnly = readOnly
         }
+
+        /// For a display that reads over Wi-Fi: all it can show, and nothing it could answer.
+        package static let overWiFi = Options(secure: true, unicode: true, extended: true, inbox: true, offerRequests: false, pages: true, readOnly: true)
     }
 
     /// Builds the snapshot for a device from RenderDock's state, the requests waiting for an answer, and what
@@ -324,7 +332,7 @@ package enum BuddyProtocol {
     /// A question goes to the device only if the device can draw every character of it. Whether it fits the
     /// screen is for the device to say: it shows "answer on the Mac" for one that does not.
     package static func ask(for question: InboxQuestion, options: Options, now: Date = Date()) -> Ask? {
-        guard options.secure, options.extended, options.inbox else { return nil }
+        guard options.secure, options.extended, options.inbox, !options.readOnly else { return nil }
         let drawable = options.unicode || ([question.from, question.text] + question.choices).allSatisfy { $0.allSatisfy(\.isASCII) }
         guard drawable, InboxLimits.choices.contains(question.choices.count) else { return nil }
         return Ask(id: question.id, from: question.from, text: question.text, choices: question.choices,
@@ -482,9 +490,52 @@ package enum BuddyProtocol {
         if let free = m.diskFree { o["disk"] = String(Int(Double(free) / 1_073_741_824)) }
         if let onAC = m.onAC { o["ac"] = onAC ? "true" : "false" }
         if let battery = m.battery { o["bat"] = String(battery) }
+        if let watts = m.powerW { o["w"] = String(Int(watts.rounded())) }
+        if let fan = m.fanFraction { o["fan"] = String(Int((fan * 100).rounded())) }
         let fields = o.keys.sorted().map { "\"\($0)\":\(o[$0]!)" }.joined(separator: ",")
         return Data("{\"mac\":{\(fields)}}\n".utf8)
     }
+
+    /// Tells a device which network to join and where this Mac is on it, so that it can read `/v1/device`
+    /// over Wi-Fi when Bluetooth does not reach. Sent over the encrypted link only; the device keeps it.
+    /// `host` is this Mac's name on the local network when it has one, `ip` its address as a fallback.
+    package static func wifi(ssid: String, password: String, host: String, ip: String, port: UInt16, token: String) -> Data {
+        let object: [String: Any] = ["cmd": "wifi", "ssid": ssid, "pass": password, "host": host, "ip": ip, "port": Int(port), "token": token]
+        var data = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])) ?? Data("{}".utf8)
+        data.append(0x0A)
+        return data
+    }
+
+    /// Tells a device that already has a network where this Mac is on it now (its address, the API's port and
+    /// token may have changed since). The network's name and password are not in it, and stay as they were.
+    package static func wifiPlace(host: String, ip: String, port: UInt16, token: String) -> Data {
+        let object: [String: Any] = ["cmd": "wifi", "host": host, "ip": ip, "port": Int(port), "token": token]
+        var data = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])) ?? Data("{}".utf8)
+        data.append(0x0A)
+        return data
+    }
+
+    /// Asks a device which networks it can see, so that one can be picked instead of typed. It answers a few
+    /// seconds later with `Incoming.networks`.
+    package static let wifiScan = Data("{\"cmd\":\"wifi\",\"scan\":true}\n".utf8)
+
+    /// A network a device can see from where it stands.
+    package struct SeenNetwork: Equatable {
+        package var name: String
+        /// Signal strength in dBm (nearer nought is stronger), when the device says.
+        package var signal: Int?
+        /// It asks for no password.
+        package var open: Bool
+
+        package init(name: String, signal: Int? = nil, open: Bool = false) {
+            self.name = name
+            self.signal = signal
+            self.open = open
+        }
+    }
+
+    /// Tells a device to forget the network it was given.
+    package static let wifiOff = Data("{\"cmd\":\"wifi\",\"off\":true}\n".utf8)
 
     /// A request may go to the device only if it may be allowed from a display at all, and if the device can
     /// show all of it: what cannot be seen whole cannot be approved there.
@@ -558,9 +609,13 @@ package enum BuddyProtocol {
         package var inbox: Bool
         /// The device keeps renders and agents on pages of their own and has one for the computer itself.
         package var pages: Bool
+        /// How the device's Wi-Fi is doing, if it has any: 0 not set, 1 set and resting (Bluetooth is up),
+        /// 2 joining, 3 reading the stream, 4 could not join, 5 the token was refused, 6 this Mac did not answer.
+        package var wifi: Int?
 
         package init(name: String?, secure: Bool, batteryPercent: Int?, onUSB: Bool?, extended: Bool = false, unicode: Bool = false, inbox: Bool = false,
-                     pages: Bool = false) {
+                     pages: Bool = false, wifi: Int? = nil) {
+            self.wifi = wifi
             self.name = name
             self.secure = secure
             self.batteryPercent = batteryPercent
@@ -578,6 +633,8 @@ package enum BuddyProtocol {
         /// The user picked one of a question's answers on the device, counted from 0.
         case choice(id: String, index: Int)
         case status(DeviceStatus)
+        /// The networks the device can see, in its order (strongest first). Empty if it found none.
+        case networks([SeenNetwork])
         case ack(String, ok: Bool)
         case unknown
     }
@@ -604,7 +661,17 @@ package enum BuddyProtocol {
                 return .status(DeviceStatus(name: data["name"] as? String, secure: data["sec"] as? Bool ?? false,
                                             batteryPercent: battery?["pct"] as? Int, onUSB: battery?["usb"] as? Bool,
                                             extended: (data["rd"] as? Int ?? 0) >= 1, unicode: data["utf8"] as? Bool ?? false,
-                                            inbox: (data["rd"] as? Int ?? 0) >= 2, pages: (data["rd"] as? Int ?? 0) >= 3))
+                                            inbox: (data["rd"] as? Int ?? 0) >= 2, pages: (data["rd"] as? Int ?? 0) >= 3, wifi: data["wifi"] as? Int))
+            }
+            if ack == "wifi", ok, let nets = o["nets"] as? [Any] {
+                // Names as the device gives them, each once, none empty and none longer than a network's name can be.
+                var seen = Set<String>()
+                let list = nets.prefix(32).compactMap { item -> SeenNetwork? in
+                    guard let net = item as? [String: Any], let name = net["n"] as? String, !name.isEmpty, name.utf8.count <= 32,
+                          seen.insert(name).inserted else { return nil }
+                    return SeenNetwork(name: name, signal: net["r"] as? Int, open: net["o"] as? Bool ?? false)
+                }
+                return .networks(list)
             }
             return .ack(ack, ok: ok)
         }

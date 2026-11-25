@@ -25,6 +25,14 @@ package struct Metrics: Equatable {
     package var battery: Int?
     /// Something on the system is preventing idle sleep (caffeinate etc.)
     package var awakeHeld = false
+    /// The fans, and what the whole machine draws in watts, as its controller reports them (see `SMCReader`).
+    /// Empty and nil on a Mac that does not say.
+    package var fans: [Fan] = []
+    package var powerW: Double?
+
+    /// The fastest fan, in turns a minute; and how far the hardest-working one is between its slowest and fastest.
+    package var fanRpm: Double? { fans.map(\.rpm).max() }
+    package var fanFraction: Double? { fans.compactMap(\.fraction).max() }
 
     package var memFraction: Double { memTotal > 0 ? min(1, Double(memUsed) / Double(memTotal)) : 0 }
     package var swapFraction: Double { swapTotal > 0 ? min(1, Double(swapUsed) / Double(swapTotal)) : 0 }
@@ -55,6 +63,7 @@ package final class MetricsSampler {
     private var dieSensors: [AnyObject] = []
     private var sampleCount = 0
     private var slow = Metrics()
+    private lazy var controller = SMCReader()
 
     package func sample() -> Metrics {
         var m = Metrics()
@@ -63,6 +72,9 @@ package final class MetricsSampler {
         readGPU(&m)
         m.thermal = ProcessInfo.processInfo.thermalState
         m.awakeHeld = awakeAssertionHeld()
+        // Read every time: the draw moves quickly, and what a shot used is added up from these readings.
+        m.fans = controller?.fans() ?? []
+        m.powerW = controller?.systemPower()
         // Slow-changing values are sampled only every few rounds
         if sampleCount % 3 == 0 {
             readTemperature(&slow)

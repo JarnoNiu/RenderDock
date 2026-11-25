@@ -19,9 +19,15 @@ package struct HistoryRun: Codable, Equatable {
     /// "done" (the queue moved on), "finished" / "failed" (a wrapper recorded the exit status), or "ended" (gone, reason unknown).
     package var outcome: String?
     package var exitCode: Int32?
+    /// What the Mac drew while this shot was rendering, in watt-hours: the whole machine's draw as its controller
+    /// reports it, shared equally among the shots rendering at the same moment. Not what the render alone added,
+    /// and not measured at the wall. Nil for a shot from before 0.4, and on a Mac that does not report its draw.
+    package var energyWh: Double?
 
     package init(id: Int64, jobId: String, jobTitle: String, project: String, script: String?, shot: String, startedAt: Double,
-                 endedAt: Double?, framesDone: Int?, framesTotal: Int?, exact: Bool, secPerFrame: Double?, outcome: String?, exitCode: Int32?) {
+                 endedAt: Double?, framesDone: Int?, framesTotal: Int?, exact: Bool, secPerFrame: Double?, outcome: String?, exitCode: Int32?,
+                 energyWh: Double? = nil) {
+        self.energyWh = energyWh
         self.id = id
         self.jobId = jobId
         self.jobTitle = jobTitle
@@ -96,6 +102,15 @@ package final class HistoryStore {
     /// Shots being watched right now: item id → row, last frame count, last state.
     private var open: [String: (row: Int64, done: Int?, state: ItemState)] = [:]
     private var firstRecord = true
+    /// Whether the file has the column for what a shot drew. One written by 0.3 has not, until 0.4 opens it to write.
+    private var hasEnergy = false
+    /// Watt-hours added up since they were last written out, by row; and when the last scan was recorded.
+    private var energy: [Int64: Double] = [:]
+    private var lastRecordAt: Double?
+    private var energyWrittenAt = 0.0
+    /// The longest stretch between two scans that is filled in. A longer one (the Mac slept, the app hung) is
+    /// left out rather than guessed at.
+    package static let energyGap: Double = 15
     /// When an estimate was last written down, by what it was about.
     private var estimateNoted: [String: Double] = [:]
     /// Estimates are written down this often, per shot and per queue: often enough to see how they move, seldom
@@ -118,6 +133,7 @@ package final class HistoryStore {
                 sqlite3_close(db)
                 return nil
             }
+            hasEnergy = query("PRAGMA table_info(runs)", [], { Self.text($0, 1) ?? "" }).contains("energy_wh")
             return
         }
         try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -144,6 +160,11 @@ package final class HistoryStore {
         // with how many shots were still to go, so that a queue cut short is not taken for a wrong estimate.
         exec("CREATE TABLE IF NOT EXISTS estimates (at REAL NOT NULL, kind TEXT NOT NULL, key TEXT NOT NULL, seconds REAL NOT NULL, rough INTEGER NOT NULL DEFAULT 0, shots_left INTEGER NOT NULL DEFAULT 1)")
         exec("CREATE INDEX IF NOT EXISTS estimates_key ON estimates(kind, key, at)")
+        // What a shot drew (0.4). Added to a file that was made before; nothing that is there is touched.
+        if !query("PRAGMA table_info(runs)", [], { Self.text($0, 1) ?? "" }).contains("energy_wh") {
+            exec("ALTER TABLE runs ADD COLUMN energy_wh REAL")
+        }
+        hasEnergy = query("PRAGMA table_info(runs)", [], { Self.text($0, 1) ?? "" }).contains("energy_wh")
         // Shots that were still open when RenderDock last quit: keep watching them if they are still there.
         for row in query("SELECT item_id, id, frames_done FROM runs WHERE ended_at IS NULL", [], { stmt in
             (Self.text(stmt, 0) ?? "", sqlite3_column_int64(stmt, 1), Self.int(stmt, 2))
@@ -152,14 +173,26 @@ package final class HistoryStore {
         }
     }
 
-    deinit { sqlite3_close(db) }
+    deinit {
+        writeEnergy()
+        sqlite3_close(db)
+    }
 
     // MARK: Recording
 
     /// Call once per scan. `outcomes`: how jobs that have just disappeared ended, where a wrapper recorded it.
-    package func record(_ groups: [RenderGroup], outcomes: [String: JobOutcome] = [:], now: Date = Date()) {
+    /// `powerW`: what the Mac is drawing now, if it says; it is added up for the shots that are rendering.
+    package func record(_ groups: [RenderGroup], outcomes: [String: JobOutcome] = [:], powerW: Double? = nil, now: Date = Date()) {
         let t = now.timeIntervalSince1970
         exec("BEGIN")
+        // What was drawn since the last scan goes to the shots that were rendering then and still are: shared
+        // equally, because nothing says which of them the machine was working for.
+        if hasEnergy, let watts = powerW, watts > 0, let last = lastRecordAt, t > last {
+            let hours = min(t - last, Self.energyGap) / 3600
+            let rendering = groups.flatMap { g in g.items.filter { $0.state.isActive } }.compactMap { open[$0.id]?.row }
+            for row in rendering { energy[row, default: 0] += watts * hours / Double(rendering.count) }
+        }
+        lastRecordAt = t
         var seen = Set<String>()
         for g in groups {
             for item in g.items where item.state != .pending {
@@ -221,7 +254,20 @@ package final class HistoryStore {
             open[itemId] = nil
         }
         firstRecord = false
+        if t - energyWrittenAt >= 30 {
+            writeEnergy()
+            energyWrittenAt = t
+        }
         exec("COMMIT")
+    }
+
+    /// Writes out what has been added up, for one row or for all of them.
+    private func writeEnergy(row only: Int64? = nil) {
+        guard hasEnergy else { return }
+        for (row, wattHours) in energy where only == nil || only == row {
+            run("UPDATE runs SET energy_wh = COALESCE(energy_wh, 0) + ? WHERE id = ?", [wattHours, row])
+            energy[row] = nil
+        }
     }
 
     private func noteEstimate(kind: String, key: String, seconds: Double, rough: Bool, shotsLeft: Int, at t: Double) {
@@ -233,6 +279,7 @@ package final class HistoryStore {
     }
 
     private func finish(row: Int64, at: Double, outcome: String, exitCode: Int32?) {
+        writeEnergy(row: row)
         run("UPDATE runs SET ended_at = ?, updated_at = ?, outcome = ?, exit_code = ? WHERE id = ?", [at, at, outcome, exitCode.map { Int($0) }, row])
         // The last frames land between two scans. A shot known to have completed, with an exact total, rendered all of it.
         if outcome == "done" || outcome == "finished" {
@@ -250,18 +297,22 @@ package final class HistoryStore {
 
     // MARK: Reading
 
-    private static let columns = "id, job_id, job_title, project, script, shot, started_at, ended_at, frames_done, frames_total, exact, sec_per_frame, outcome, exit_code"
+    /// A file from before 0.4 that is only being read has no such column: it reads as "not known".
+    private var columns: String {
+        "id, job_id, job_title, project, script, shot, started_at, ended_at, frames_done, frames_total, exact, sec_per_frame, outcome, exit_code, "
+            + (hasEnergy ? "energy_wh" : "NULL")
+    }
 
     private static func runRow(_ s: OpaquePointer) -> HistoryRun {
         HistoryRun(id: sqlite3_column_int64(s, 0), jobId: text(s, 1) ?? "", jobTitle: text(s, 2) ?? "", project: text(s, 3) ?? "",
                    script: text(s, 4), shot: text(s, 5) ?? "", startedAt: sqlite3_column_double(s, 6), endedAt: double(s, 7),
                    framesDone: int(s, 8), framesTotal: int(s, 9), exact: sqlite3_column_int(s, 10) != 0, secPerFrame: double(s, 11),
-                   outcome: text(s, 12), exitCode: int(s, 13).map { Int32($0) })
+                   outcome: text(s, 12), exitCode: int(s, 13).map { Int32($0) }, energyWh: double(s, 14))
     }
 
     /// The shots that ended most recently, newest first.
     package func recent(limit: Int = 20) -> [HistoryRun] {
-        query("SELECT \(Self.columns) FROM runs WHERE ended_at IS NOT NULL ORDER BY ended_at DESC, id DESC LIMIT ?", [limit], Self.runRow)
+        query("SELECT \(columns) FROM runs WHERE ended_at IS NOT NULL ORDER BY ended_at DESC, id DESC LIMIT ?", [limit], Self.runRow)
     }
 
     /// How long this shot took the last time it ran to the end. Nil if it never has.

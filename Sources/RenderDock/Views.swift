@@ -731,6 +731,7 @@ private struct RecentRuns: View {
         if r.outcome == "failed", let code = r.exitCode { parts.append(L("退出码 \(code)", "exit \(code)")) }
         if let d = r.duration { parts.append(Fmt.duration(d)) }
         if let f = r.framesDone, f > 0 { parts.append(L("\(f) 帧", "\(f) frames")) }
+        if let energy = r.energyWh, energy >= 0.05 { parts.append(Fmt.energy(energy)) }
         if let e = r.endedAt { parts.append(Fmt.clock(Date(timeIntervalSince1970: e))) }
         return parts.joined(separator: " · ")
     }
@@ -760,6 +761,47 @@ private struct SleepWarning: View {
 
 // MARK: Job card
 
+/// Why a job is held, as one line for its card.
+enum HoldWords {
+    static func word(_ reason: HoldReason) -> String {
+        switch reason {
+        case .manual: return L("你在这里暂停的", "paused here by you")
+        case .heat: return L("电脑过热降速", "the Mac is slowed down for heat")
+        case .battery: return L("电脑在用电池", "the Mac is on its battery")
+        case .turns: return L("等前一条渲完", "waiting for the job before it")
+        }
+    }
+
+    static func line(_ reasons: [HoldReason]) -> String? {
+        guard let first = reasons.first else { return nil }
+        if first == .manual, reasons.count == 1 { return word(.manual) }
+        let rules = reasons.filter { $0 != .manual }.map(word).joined(separator: L("；", "; "))
+        return reasons.contains(.manual) ? L("你在这里暂停的；另外：\(rules)", "Paused here by you; also: \(rules)") : L("渲染坞暂停的：\(rules)", "Paused by RenderDock: \(rules)")
+    }
+}
+
+/// One of the small round buttons on a job's title row.
+private struct HandButton: View {
+    let symbol: String
+    let lit: Bool
+    let tint: Color
+    let help: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol).font(.system(size: 8.5, weight: .bold))
+                .foregroundStyle(lit ? tint : Theme.text(0.6))
+                .frame(width: 20, height: 18)
+                .background(Capsule().fill((lit ? tint : .white).opacity(lit ? 0.18 : 0.08)))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .help(help)
+    }
+}
+
 private struct GroupCard: View {
     let group: RenderGroup
     let store: Store
@@ -778,12 +820,42 @@ private struct GroupCard: View {
                     .lineLimit(1).truncationMode(.tail)
                     .help(group.note ?? group.title)
                 Spacer(minLength: 6)
+                // Hands on: only where the switch for it is on, and only for a job with a render process of its own.
+                if store.handsVersion >= 0, store.canHandle(group) {
+                    let held = !store.holdReasons(group.id).isEmpty
+                    if store.handsSettings.yield {
+                        HandButton(symbol: "tortoise.fill", lit: store.isYielding(group.id), tint: Theme.aqua,
+                                   help: store.isYielding(group.id)
+                                       ? L("已让路：这条任务只用电脑空出来的力气。点一下恢复", "Out of the way: this job runs on what the Mac has to spare. Click to put it back")
+                                       : L("让路：让这条任务只用电脑空出来的力气，你先用电脑", "Out of the way: let this job run on what the Mac has to spare while you use it")) {
+                            store.toggleYield(group.id)
+                        }
+                    }
+                    if store.handsSettings.manual {
+                        let stopped = held || group.state == .paused
+                        HandButton(symbol: stopped ? "play.fill" : "pause.fill", lit: stopped, tint: Theme.amber,
+                                   help: stopped ? L("继续这条任务", "Let this job go on") : L("暂停这条任务（停在原地，不丢进度）", "Pause this job (it stops where it is and loses nothing)")) {
+                            if stopped { store.resumeJob(group.id) } else { store.pauseJob(group.id) }
+                        }
+                    }
+                }
                 Text(group.state.label)
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(Theme.color(group.state))
                     .padding(.horizontal, 7).padding(.vertical, 2.5)
                     .background(Capsule().fill(Theme.color(group.state).opacity(0.15)))
                     .fixedSize()
+            }
+            // Why RenderDock is holding this job, in words.
+            if store.handsVersion >= 0, let why = HoldWords.line(store.holdReasons(group.id)) {
+                HStack(spacing: 5) {
+                    Image(systemName: "pause.circle.fill").font(.system(size: 9.5, weight: .semibold))
+                    Text(why)
+                    Spacer(minLength: 0)
+                }
+                .font(.system(size: 10.5, weight: .medium)).foregroundStyle(Theme.amber)
+                .lineLimit(1)
+                .padding(.leading, 14)
             }
             // Source row
             HStack(spacing: 5) {
@@ -832,7 +904,7 @@ private struct GroupCard: View {
             }
 
             ForEach(live) { item in
-                ItemRow(item: item, thumb: store.thumbs[item.id], now: store.now)
+                ItemRow(item: item, thumb: store.thumbs[item.id], now: store.now, onPreview: item.outDir == nil ? nil : { store.onPreview?(item) })
                     .padding(.leading, 14)
             }
 
@@ -874,6 +946,8 @@ private struct ItemRow: View {
     let item: RenderItem
     let thumb: NSImage?
     let now: Date
+    /// Opens the larger look at this shot's frames. Nil when there is no output folder to look into.
+    var onPreview: (() -> Void)? = nil
 
     var body: some View {
         HStack(alignment: .center, spacing: 9) {
@@ -884,7 +958,8 @@ private struct ItemRow: View {
                     .background(Color.black.opacity(0.35))
                     .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(.white.opacity(0.14), lineWidth: 0.8))
-                    .help(L("最新渲出的一帧", "Latest rendered frame"))
+                    .help(onPreview == nil ? L("最新渲出的一帧", "Latest rendered frame") : L("最新渲出的一帧。点一下看大图，回看已渲的帧", "Latest rendered frame. Click for a larger look, and to go back through the frames"))
+                    .onTapGesture { onPreview?() }
             }
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -934,6 +1009,9 @@ private struct ItemRow: View {
             }
         }
         .contextMenu {
+            if let onPreview {
+                Button(L("看大图，回看已渲的帧", "Larger Look, and Back Through the Frames")) { onPreview() }
+            }
             if let dir = item.outDir {
                 Button(L("在访达中显示输出目录", "Show Output Folder in Finder")) {
                     if let frame = item.latestFrame {
@@ -1019,6 +1097,23 @@ private struct SystemSection: View {
                      tint: m.awakeHeld ? Theme.mint : (store.sleepRisk ? Theme.amber : nil),
                      help: m.awakeHeld ? L("有程序按着不让电脑闲置睡眠", "Something is keeping the Mac from idle sleep") : L("没有防睡眠：电脑闲置一段时间会睡", "Nothing is preventing sleep: the Mac will sleep after sitting idle"))
                 Spacer(minLength: 0)
+            }
+            // The fans and the draw, on a Mac that reports them: a row of their own, the one above being full.
+            if m.fanRpm != nil || m.powerW != nil {
+                HStack(spacing: 6) {
+                    if let rpm = m.fanRpm {
+                        // Amber when a fan is close to as fast as it goes: the Mac has nothing left to cool itself with.
+                        Chip(symbol: "fanblades.fill", text: L("\(Int(rpm.rounded())) 转", "\(Int(rpm.rounded())) rpm"), tint: (m.fanFraction ?? 0) >= 0.9 ? Theme.amber : nil,
+                             help: m.fans.count > 1
+                                ? L("风扇转速（每分钟）：\(m.fans.map { String(Int($0.rpm.rounded())) }.joined(separator: "、"))", "Fan speeds, turns a minute: \(m.fans.map { String(Int($0.rpm.rounded())) }.joined(separator: ", "))")
+                                : L("风扇转速，每分钟", "Fan speed, turns a minute"))
+                    }
+                    if let watts = m.powerW {
+                        Chip(symbol: "bolt.fill", text: "\(Int(watts.rounded())) W", tint: nil,
+                             help: L("整机功耗，电脑自己的控制器报的数，不是在插座上量的", "What the whole Mac is drawing, as its own controller reports it; not measured at the wall"))
+                    }
+                    Spacer(minLength: 0)
+                }
             }
         }
         .padding(.horizontal, 10)

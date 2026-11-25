@@ -88,6 +88,19 @@ What is left out, and said so at the end of the report:
 
 Estimates are written down from 0.3.1 on; there is nothing to hold against what happened before that. They are dropped after 90 days with the rest.
 
+## What a shot drew (from 0.4)
+
+On a Mac whose controller reports what the machine is drawing, RenderDock adds that up for every shot while it renders, and keeps the sum with the shot: `renderdock history` shows it after the frame count (`480 frames · 118 Wh`), the dock's list of recently ended shots has it, and `/v1/history` carries it as `energyWh`.
+
+What that number is, so that it is not taken for more:
+
+- **The whole Mac's draw, not the render's.** The screen, the disks and everything else running are in it. A shot rendered while you also edit video looks more expensive than the same shot rendered overnight.
+- **Shared equally among the shots rendering at the same moment.** Nothing says which of two renders the machine was working for, so each gets half. The shares of all the shots add up to what the Mac drew while anything was rendering.
+- **As the Mac's own controller reports it**, read every two seconds; not measured at the wall, and the power adapter's own losses are not in it.
+- **Only while RenderDock was running and looking.** A stretch longer than a quarter of a minute without a look (the Mac slept, RenderDock was quit) is left out rather than guessed at. A shot that began before 0.4 was installed has only what was drawn since.
+
+It is good for comparing like with like (this week's render of a shot against last week's, one render setting against another) and for a rough idea of what a night's queue costs. It is not a bill.
+
 ## Odd frames
 
 Under a shot, RenderDock may show a hint:

@@ -10,6 +10,8 @@
 //   renderdock notify TEXT [--title T] [--level L]           put a notice on the dock and on a desk device
 //   renderdock progress NAME [--percent N] [--done|--failed]  show how far a task of your own has got
 //   renderdock ask TEXT --choice A --choice B …              ask the user a question and print the answer they pick
+//   renderdock mcp [--from NAME]                             those three and `status` as an MCP server, for an agent's client to start
+//   renderdock api [token]                                   where the API is; the token a device on the network has to show
 //
 // `run` passes the command's input and output straight through and exits with the command's own status.
 // It reads the output on the way past, and keeps a small report next to RenderDock's preferences
@@ -36,6 +38,8 @@ usage:
   renderdock notify TEXT [--title TITLE] [--level info|done|error] [--from NAME]
   renderdock progress NAME [--title TITLE] [--percent 0-100] [--eta SECONDS] [--done | --failed] [--from NAME]
   renderdock ask TEXT --choice A --choice B [--choice C] [--choice D] [--timeout SECONDS] [--from NAME] [--json]
+  renderdock mcp [--from NAME]
+  renderdock api [token]
   renderdock version
 
 notify, progress and ask need "Take Notices, Progress and Questions from Other Programs" switched on in
@@ -189,7 +193,8 @@ func run(_ arguments: [String]) -> Never {
 
 // MARK: status
 
-func status(json: Bool) -> Never {
+/// What is going on right now, looked at afresh (this takes a little over a second).
+func statusSnapshot() -> StateSnapshot {
     let scanner = TaskScanner()
     _ = scanner.scan()
     let sampler = MetricsSampler()
@@ -199,23 +204,24 @@ func status(json: Bool) -> Never {
     // Reading history only: the app is the one that records.
     let history = HistoryStore(readOnly: true)
     if let history { for i in groups.indices { groups[i].queueETA = history.queueETA(for: groups[i]) } }
-    let snapshot = StateSnapshot.make(groups: groups, metrics: sampler.sample(), agents: AgentScanner().scan(),
-                                      recent: history?.recent(limit: 4) ?? [])
-    if json {
-        print(String(decoding: snapshot.json(pretty: true), as: UTF8.self))
-        exit(0)
-    }
+    return StateSnapshot.make(groups: groups, metrics: sampler.sample(), agents: AgentScanner().scan(),
+                              recent: history?.recent(limit: 4) ?? [])
+}
+
+/// The same as a few lines of text: what `renderdock status` prints, and what the `status` tool answers.
+func statusLines(_ snapshot: StateSnapshot) -> [String] {
+    var lines: [String] = []
     let s = snapshot.summary
-    print("\(s.rendering) rendering · \(s.paused) paused · \(s.stalled) stalled · \(s.queued) queued")
+    lines.append("\(s.rendering) rendering · \(s.paused) paused · \(s.stalled) stalled · \(s.queued) queued")
     if !snapshot.agents.isEmpty {
         let a = s.agents
-        print("agents: \(a.error) failed · \(a.waiting) waiting · \(a.working) working · \(a.done) just finished · \(a.idle) idle")
+        lines.append("agents: \(a.error) failed · \(a.waiting) waiting · \(a.working) working · \(a.done) just finished · \(a.idle) idle")
     }
-    print("overall: \(s.state)  [\(s.line)]")
+    lines.append("overall: \(s.state)  [\(s.line)]")
     for job in snapshot.jobs {
         let shots = job.shotsTotal > 1 ? "  \(job.shotsDone)/\(job.shotsTotal) shots" : ""
-        print("● \(job.title)  [\(job.state)]  \(job.project)\(shots)")
-        if let eta = job.queueEtaSec { print("    queue done in ~\(eta / 60)m\(job.queueEtaRough == true ? " (rough)" : "")") }
+        lines.append("● \(job.title)  [\(job.state)]  \(job.project)\(shots)")
+        if let eta = job.queueEtaSec { lines.append("    queue done in ~\(eta / 60)m\(job.queueEtaRough == true ? " (rough)" : "")") }
         for shot in job.shots where shot.state != "done" && shot.state != "pending" {
             var line = "    \(shot.name)  \(shot.state)"
             if let d = shot.framesDone {
@@ -223,9 +229,19 @@ func status(json: Bool) -> Never {
             }
             if let f = shot.fraction { line += "  \(shot.exact ? "" : "≈")\(Int(f * 100))%" }
             if let e = shot.etaSec { line += e >= 90 ? "  ~\(e / 60)m left" : "  ~\(e)s left" }
-            print(line)
+            lines.append(line)
         }
     }
+    return lines
+}
+
+func status(json: Bool) -> Never {
+    let snapshot = statusSnapshot()
+    if json {
+        print(String(decoding: snapshot.json(pretty: true), as: UTF8.self))
+        exit(0)
+    }
+    statusLines(snapshot).forEach { print($0) }
     exit(0)
 }
 
@@ -244,7 +260,9 @@ func history(json: Bool, limit: Int) -> Never {
     clock.dateFormat = "MM-dd HH:mm"
     for r in runs {
         let took = r.duration.map { $0 >= 3600 ? "\(Int($0) / 3600)h \(Int($0) % 3600 / 60)m" : ($0 >= 60 ? "\(Int($0) / 60)m" : "\(Int($0))s") } ?? "-"
-        let frames = r.framesDone.map { "\($0) frames" } ?? "-"
+        var frames = r.framesDone.map { "\($0) frames" } ?? "-"
+        // What the Mac drew meanwhile, where that was recorded (see docs/HISTORY.md for what it does and does not mean).
+        if let energy = r.energyWh, energy > 0 { frames += " · " + Fmt.energy(energy) }
         let ended = r.endedAt.map { clock.string(from: Date(timeIntervalSince1970: $0)) } ?? "-"
         let outcome = (r.outcome ?? "-") + (r.outcome == "failed" ? " (\(r.exitCode.map(String.init) ?? "?"))" : "")
         print("\(ended)  \(outcome.padding(toLength: 12, withPad: " ", startingAt: 0))  \(took.padding(toLength: 8, withPad: " ", startingAt: 0))  \(frames.padding(toLength: 12, withPad: " ", startingAt: 0))  \(r.shot)  ·  \(r.jobTitle)")
@@ -530,6 +548,59 @@ func ask(_ arguments: [String]) -> Never {
     }
 }
 
+// MARK: mcp
+
+/// `renderdock mcp [--from NAME]`: the same entry as `notify`, `progress` and `ask`, with `status`, as a Model
+/// Context Protocol server on standard input and output. An agent's client starts this and keeps it running;
+/// it reads one message a line and answers one a line, and writes nothing else to standard output.
+/// Messages are answered one after another: while a question waits for the user, the next message waits too.
+func mcp(_ arguments: [String]) -> Never {
+    let parsed = options(arguments, valued: ["--from"], flags: [])
+    guard parsed.words.isEmpty else { fail("mcp takes no arguments but --from\n\(usage)") }
+    var server = MCPServer(backend: MCPServer.Backend(
+        notify: { title, body, level, from in InboxClient.notify(title: title, body: body, level: level, from: from) },
+        progress: { name, title, percent, eta, state, from in InboxClient.progress(name: name, title: title, percent: percent, etaSec: eta, state: state, from: from) },
+        ask: { text, choices, timeout, from in InboxClient.ask(text: text, choices: choices, timeoutSec: timeout, from: from) },
+        status: { statusLines(statusSnapshot()).joined(separator: "\n") }), from: sender(parsed.values))
+    while let line = readLine(strippingNewline: true) {
+        guard !line.trimmingCharacters(in: .whitespaces).isEmpty else { continue }
+        if var reply = server.handle(Data(line.utf8)) {
+            reply.append(0x0A)
+            FileHandle.standardOutput.write(reply)
+        }
+    }
+    exit(0)
+}
+
+// MARK: api
+
+/// `renderdock api`: where the API is and whether devices on the network may reach it.
+/// `renderdock api token`: the token such a device has to show, and nothing else, for a script to pass on.
+func api(_ arguments: [String]) -> Never {
+    if arguments.first == "token" {
+        // Read, never made here: a token only means something once the app has switched access on with it.
+        guard let text = try? String(contentsOf: LocalAPIServer.tokenFile, encoding: .utf8) else {
+            fail("no token yet: switch on \"Allow Devices on the Local Network\" in RenderDock's menu first", code: 3)
+        }
+        print(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        exit(0)
+    }
+    guard arguments.isEmpty else { fail("api takes nothing, or the word token\n\(usage)") }
+    guard let data = try? Data(contentsOf: LocalAPIServer.discoveryFile), let info = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+          let url = info["url"] as? String, let port = info["port"] as? Int else {
+        fail("the API is not running: it is off in RenderDock's menu, or RenderDock is not running", code: 3)
+    }
+    print("on this Mac: \(url)")
+    if info["lan"] as? Bool == true {
+        let addresses = LocalAPIServer.networkAddresses()
+        if addresses.isEmpty { print("from the network: switched on, but this Mac is not on a network right now") }
+        for address in addresses { print("from the network: http://\(address):\(port)  (needs the token: renderdock api token)") }
+    } else {
+        print("from the network: off")
+    }
+    exit(0)
+}
+
 // MARK: entry
 
 let arguments = Array(CommandLine.arguments.dropFirst())
@@ -548,6 +619,8 @@ case "hooks": hooks(Array(arguments.dropFirst()))
 case "notify": notify(Array(arguments.dropFirst()))
 case "progress": progress(Array(arguments.dropFirst()))
 case "ask": ask(Array(arguments.dropFirst()))
+case "mcp": mcp(Array(arguments.dropFirst()))
+case "api": api(Array(arguments.dropFirst()))
 case "version", "--version": print("renderdock \(StateSnapshot.appVersion)")
 case "help", "--help", "-h", nil: print(usage)
 default: fail("unknown command \(arguments[0])\n\(usage)")

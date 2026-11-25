@@ -70,10 +70,10 @@ A device that answers `"rd": 2` also says it can show what other programs send t
 Such a device is also sent, **on lines of their own**, how the Mac itself is doing:
 
 ```json
-{"mac":{"ac":true,"awake":true,"cores":10,"cpu":37,"disk":212,"gpu":92,"mem":[21.4,32],"mp":1,"swap":1.2,"t":71,"th":0,"tmax":78,"vram":8.2}}
+{"mac":{"ac":true,"awake":true,"cores":10,"cpu":37,"disk":212,"fan":35,"gpu":92,"mem":[21.4,32],"mp":1,"swap":1.2,"t":71,"th":0,"tmax":78,"vram":8.2,"w":86}}
 ```
 
-`cpu` and `gpu` are percentages; `mem` is used and total in GB, `mp` the system's memory-pressure level (1, 2 or 4), `swap` and `vram` GB; `t` and `tmax` the chip's temperature in °C, average and hottest sensor, `th` the system's own word for the heat (0 fine, 1 warm, 2 slowed down, 3 critical); `disk` the free space in GB; `ac` whether it is on the adapter, `bat` the battery's percentage when there is one; `awake` whether something keeps it from idle sleep. What the Mac could not read is left out, not sent as nought. A line goes out every four seconds at most, only when it differs from the last one, only on an encrypted link, and once more with each keepalive so the device can tell "unchanged" from "gone quiet".
+`cpu` and `gpu` are percentages; `mem` is used and total in GB, `mp` the system's memory-pressure level (1, 2 or 4), `swap` and `vram` GB; `t` and `tmax` the chip's temperature in °C, average and hottest sensor, `th` the system's own word for the heat (0 fine, 1 warm, 2 slowed down, 3 critical); `disk` the free space in GB; `ac` whether it is on the adapter, `bat` the battery's percentage when there is one; `awake` whether something keeps it from idle sleep; `w` what the whole machine is drawing in watts, and `fan` how hard its fans work, as a percentage between their slowest and fastest. What the Mac could not read is left out, not sent as nought. A line goes out every four seconds at most, only when it differs from the last one, only on an encrypted link, and once more with each keepalive so the device can tell "unchanged" from "gone quiet".
 
 `ask` is the oldest waiting question the device can draw, with the seconds left to answer it. `note` is the newest notice, for the first minute after it arrived; `level` is `info`, `done` or `error`. A task a program reports on appears in `rows` (`t` is whoever reports) and may be `top`, with `"kind": "task"`. The device answers a question with
 
@@ -138,10 +138,54 @@ A device whose whole flash was written again, or whose memory was cleared, no lo
 
 The first connection after that pairs afresh. **Forget This Device** in RenderDock's own menu is another matter (which device RenderDock goes back to); it should not be needed here, since the device keeps the identifier macOS knows it by, though that has not been run both ways. If a minute after forgetting the device is still listed under My Devices, forget it again. A connection that hangs although the device is plainly there is cleared by turning the Mac's Bluetooth off and on.
 
+## Over Wi-Fi, where Bluetooth does not reach (0.4)
+
+Bluetooth gets a display across a desk, not across a studio. A display that has Wi-Fi (the [desk display](../firmware/desk-display/README.md) does) can read the same lines from RenderDock's API on the local network instead, whenever no paired computer is on Bluetooth.
+
+**Setting it up**, with the display on the encrypted Bluetooth link: menu-bar icon → **Desk Device** → **Let It Use Wi-Fi Where Bluetooth Does Not Reach…**. The sheet lists the networks **the display itself can see** from where it stands, strongest first: pick the one this Mac is on, type its password, and confirm. (A network that hides its name can be typed instead.) RenderDock does not read this Mac's own Wi-Fi name, nor any password the Mac has stored: the names come from the display, the password from you.
+
+The list is the display's answer to `{"cmd":"wifi","scan":true}`, a few seconds later: `{"ack":"wifi","ok":true,"nets":[{"n":"name","r":-48,"o":false},…]}`, each name once, twelve at most, with the signal in dBm and whether the network asks for no password.
+
+On confirming, RenderDock hands the display four things over the encrypted link:
+
+| | |
+|---|---|
+| The network's name and password | As picked and typed. RenderDock keeps neither |
+| This Mac's name on the network and its address | The name (`….local`) is looked up first; the address is the fallback |
+| The API's port | |
+| The API's token | The one **The API from the Local Network** uses ([API.md](API.md#from-the-local-network-04-off-by-default)) |
+
+As a line: `{"cmd":"wifi","ssid":…,"pass":…,"host":…,"ip":…,"port":…,"token":…}`. `{"cmd":"wifi","off":true}` (**Have It Forget Wi-Fi** in the menu) makes the display drop all of it. The same command with no `ssid` only says where the Mac is now; see below.
+
+What that means, and the sheet says so before anything is sent:
+
+- **It switches on the Local API and access to it from the local network**, if they were off: that is what the display reads. Access from the network has a token and no encryption, so it is for a network you trust. Switching either off again later is up to you; the display then says the computer is not answering.
+- **The display keeps the password and the token on itself, unencrypted.** Whoever has the board and connects it to a computer can read them out of its flash. Give it a network you would give a guest's device, and renew the token (**New Token**) if the board leaves your hands.
+- **Over Wi-Fi the display only shows.** RenderDock builds what it sends that way without anything that could be answered (no request for permission, no question from another program), and the display obeys no command and sends no answer over Wi-Fi. Answering stays on the encrypted Bluetooth link.
+- **Bluetooth comes first.** The display turns Wi-Fi on only when no paired computer has been on Bluetooth for a quarter of a minute, and off again once one is back. Wi-Fi draws several times what Bluetooth does, which matters on a battery.
+
+The menu then says how the display's Wi-Fi is doing, as the display reports it over Bluetooth (`"wifi"` in its answer to a status request):
+
+| `wifi` | Meaning |
+|---|---|
+| absent, or 0 | Nothing has been set |
+| 1 | Set, and not in use: Bluetooth is up |
+| 2 | Joining the network |
+| 3 | On the network and reading |
+| 4 | Could not join: the name or the password is wrong, it is out of range, or the network is not one the display's radio can use (the desk display joins 2.4 GHz networks only) |
+| 5 | The Mac would not have the token |
+| 6 | On the network, and the Mac is not answering there |
+
+**When something changes afterwards.** The Mac's address, the API's port and the token can all change (a new token above all, which shuts the display out). Each time the display that this Mac set up comes back on the encrypted Bluetooth link, RenderDock tells it where the Mac is now: name, address, port and token, without the network's password, which it does not have (`{"cmd":"wifi","host":…,"ip":…,"port":…,"token":…}`, no `ssid`; a display that already has exactly that does nothing). So after **New Token**, bring the display near once. A new network or a new password has to be set up again.
+
+What it reads is [`GET /v1/device`](API.md#get-v1device-04). A display of your own can read the same stream.
+
 ## What has and has not been checked
 
 - **Checked**: the protocol half. What goes into a snapshot, the limits, what is held back, which requests are offered, how the device's lines are put back together and read. These are covered by checks that need no device.
 - **Checked with one device** (the desk display in [`firmware/desk-display`](../firmware/desk-display/README.md), on a Waveshare ESP32-S3-Touch-AMOLED-2.16): finding it, connecting, pairing by typing the six digits from its screen, the encrypted link, the snapshot with RenderDock's own fields and Chinese text arriving and being drawn, and going back to it without pairing again after the device restarts.
 - **Checked once with the same device**: a notice, a task and a question from another program ([AGENT-ENTRY.md](AGENT-ENTRY.md)) arriving over Bluetooth, and a pick made on the device coming back and reaching the program that asked.
 - **Checked once with the same device (2026-11-25)**: a board whose whole flash had been erased and written with the released image, pairing again with a Mac that had forgotten it, and coming back after a restart without pairing.
+- **Checked once with the same device (2026-11-26), Wi-Fi**: the display's list of networks arriving in the sheet; the settings handed over; the display joining a real network within two seconds, finding the Mac and reading `/v1/device` with the token; its three pages drawn from that; a wrong token refused by the Mac, and the right one told again by itself two seconds after Bluetooth was back; the radio going off again when Bluetooth returned; no growth in memory over repeated failed attempts to join a network that is not there. For all of it "no computer on Bluetooth" was put on from the display's bring-up console, with the Mac in fact still connected.
+- **Not checked, Wi-Fi**: a display really out of Bluetooth's reach (the quarter-minute rule left to itself, and the walk back); the everyday build of the firmware; how long a battery lasts on Wi-Fi; a Mac whose address changes while the display is away; more than one display.
 - **Not checked**: an answer to a *request for permission* coming back from the device over Bluetooth; the reference firmware and other ports; a device that does not ask for pairing; the "no longer has its pairing" line on a live link (what it recognises was seen in the log before the line existed, and the recognising has its own checks, but the pairing was not broken a second time to watch it).

@@ -151,6 +151,13 @@ extension Array where Element == RenderGroup {
 }
 
 package enum Fmt {
+    /// Watt-hours in as few figures as say enough: "8 Wh", "118 Wh", "1.2 kWh".
+    package static func energy(_ wattHours: Double) -> String {
+        if wattHours >= 995 { return String(format: "%.1f kWh", wattHours / 1000) }
+        if wattHours >= 10 { return String(format: "%.0f Wh", wattHours) }
+        return String(format: "%.1f Wh", wattHours)
+    }
+
     package static func bytes(_ b: UInt64, digits: Int = 1) -> String {
         let gb = Double(b) / 1_073_741_824
         if gb >= 100 { return String(format: "%.0f GB", gb) }

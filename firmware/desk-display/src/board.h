@@ -2,7 +2,7 @@
 #pragma once
 
 // The version of this firmware; it follows RenderDock's own.
-#define RD_VERSION "0.3.0"
+#define RD_VERSION "0.3.1-dev"
 
 #define LCD_W 480
 #define LCD_H 480

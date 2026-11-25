@@ -133,7 +133,7 @@ If the link will not come up, `~/Library/Application Support/RenderDock/device-l
 
 ### When the device has lost the pairing and the Mac has not
 
-A device whose whole flash was written again, or whose memory was cleared, no longer has its half of the pairing. The Mac still has the other half, and macOS will not pair a second time on its own: every connection is refused before it starts (`CBErrorDomain 14` in the log), and no six digits appear. Up to 0.3.0 RenderDock tried again every three seconds and said nothing but "Connecting". From 0.3.1:
+A device whose whole flash was written again, or whose memory was cleared, no longer has its half of the pairing. The Mac still has the other half, and macOS will not pair a second time on its own: every connection is refused before it starts (`CBErrorDomain 14` in the log), and no six digits appear. Up to 0.3.0 RenderDock tried again every three seconds and said nothing but "Connecting". From 0.4:
 
 - the menu says ***name* no longer has its pairing with this Mac**, and under it what to do: forget the device in System Settings → Bluetooth (the ⓘ beside it → **Forget This Device**) and wait half a minute;
 - it tries again every fifteen seconds instead of every three. Each try is refused within a second anyway, and macOS takes about half a minute to let go of a pairing once the device is forgotten, which goes better when nothing is asking it to connect all the while.

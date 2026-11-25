@@ -18,7 +18,7 @@ It lives in one SQLite file:
 - Nothing leaves the Mac. The file is yours; delete it and RenderDock starts again from nothing.
 - Shots that ended more than 90 days ago are dropped.
 - Only the app records. The command line only reads, and never creates the file.
-- From 0.3.1: the time-left estimates it showed, once a minute, as seconds. See "How close the estimates were" below.
+- From 0.4: the time-left estimates it showed, once a minute, as seconds. See "How close the estimates were" below.
 
 How a shot ended is one of:
 
@@ -46,7 +46,7 @@ There is no estimate when the queue is paused or waiting, for a single job (its 
 
 The first time a queue runs, the estimate is rough. The second time, it is based on what each shot really took.
 
-## How close the estimates were (from 0.3.1)
+## How close the estimates were (from 0.4)
 
 An estimate is only worth showing if it turns out roughly right, so RenderDock writes down what it said and holds it against what happened.
 
@@ -86,7 +86,7 @@ What is left out, and said so at the end of the report:
 - **did not finish**: the shot failed or was stopped, or the queue ended with fewer shots than the estimate was counting on. A queue stopped half-way says nothing about how good the estimate was. A shot that is simply gone (`ended`, above) counts as finished if at least 98 in 100 of an exact number of frames had been counted.
 - **queue changed**: more shots ended than the estimate was counting on.
 
-Estimates are written down from 0.3.1 on; there is nothing to hold against what happened before that. They are dropped after 90 days with the rest.
+Estimates are written down from 0.4 on; there is nothing to hold against what happened before that. They are dropped after 90 days with the rest.
 
 ## What a shot drew (from 0.4)
 

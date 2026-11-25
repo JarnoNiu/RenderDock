@@ -288,7 +288,7 @@ func estimates(json: Bool, days: Double) -> Never {
     let waiting = report.leftOut.sorted { $0.key < $1.key }.map { "\($0.value) \($0.key)" }.joined(separator: ", ")
     guard let from = report.from, let to = report.to, !report.lines.isEmpty else {
         print("no estimate has met its end yet" + (waiting.isEmpty ? "" : " (left out: \(waiting))"))
-        print("Estimates are written down from RenderDock 0.3.1 on, once a minute while something renders.")
+        print("Estimates are written down from RenderDock 0.4 on, once a minute while something renders.")
         exit(0)
     }
     let clock = DateFormatter()

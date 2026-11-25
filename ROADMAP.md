@@ -107,7 +107,7 @@ Not checked yet:
 
 Done when: estimated and actual finish times are both on record for a week of real queues; one piece of hardware shows overall progress and changes when the queue finishes.
 
-Where that stands: the desk display is that piece of hardware. History has been recording since 2026-11-24, so the week was not up when 0.3 was released. It also turned out that 0.3 kept what happened and not what had been estimated: the estimates are written down from 0.3.1 on (`renderdock estimates`), and the comparison is owed until a week of them is on record.
+Where that stands: the desk display is that piece of hardware. History has been recording since 2026-11-24, so the week was not up when 0.3 was released. It also turned out that 0.3 kept what happened and not what had been estimated: the estimates are written down from 0.4 on (`renderdock estimates`), and the comparison is owed until a week of them is on record.
 
 ### 0.4 — beyond this Mac, and hands on, carefully · built, not yet released
 

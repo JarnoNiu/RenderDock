@@ -17,29 +17,37 @@ A device talks to one of them at a time.
 
 ## The screens
 
+**Three pages, side by side (from 0.4):** the renders, the agents with the tasks other programs report on, and the computer itself. Each page shows how its own side is doing, whatever goes on on the others. Swipe left or right to turn the page, or press BOOT. Three marks along the bottom edge say which page this is, each in the colour of how its page is doing (blue at work, amber waiting, green done, red failed, grey nothing), so what happens elsewhere is seen from here.
+
+A page that now needs somebody takes the screen by itself: a session waiting for you or one that failed, a render that stopped moving or failed. Anything less (something starting, something done) leaves the page where you put it. A request, a question and a notice come up over whichever page is showing, as before.
+
 | When | What is shown |
 |---|---|
 | Nothing has connected | The name to look for (`Claude-` and four characters), and where to switch the link on |
 | Pairing | Six digits, to be typed on the computer |
-| Something is rendering | A ring, the percentage, the time left, the shot and its job |
-| Agents are working, nothing renders | How many, and the one on top |
-| A session needs you, and it cannot be answered here | Amber, with a line saying it is to be handled on the computer |
+| Renders: something is rendering | A ring, the percentage, the time left, the shot and its job; under them how many shots are going at once and how long the whole queue has to go. Three dots in place of the number when the render does not say how far along it is |
+| Renders: one has stopped moving | Amber: its name, "stuck", and that no new frame has come for a while |
+| Agents: sessions are working | How many, the one on top and for how long; how many are done and how many idle |
+| Agents: a session needs you, and it cannot be answered here | Amber, with a line saying it is to be handled on the computer |
+| This Mac | Four tiles: how busy the processor and the graphics chip are, how full the memory (amber and red by the system's own pressure level), how hot the chip runs (with the hottest sensor, or the system's word once it slows down for heat). Under them the free disk space, mains or battery, and whether something keeps the Mac from sleeping. Sent by RenderDock every few seconds; a RenderDock too old to send it leaves the page saying so |
 | A request that may be answered here | Who asks and with which tool, what it asks, whole, and the time left; **Deny** and **Allow once**, each to be held for a second |
 | Another program asks a question | In lilac, so it is not taken for a request: who asks, the question, whole, the time left, and its two to four answers, each to be held for a second |
 | Another program sent a notice | A mark for how it went, the title, a few lines, and who sent it; for eight seconds, or until the screen is touched |
 | Another program reports on a task | The ring and the percentage a render has, or three dots when it does not say how far along it is |
-| Something finished or failed | Green or red, for a few minutes |
-| Nothing is going on | A dim clock; later the panel switches off |
+| Something finished or failed | Green or red, on its own page, for a few minutes |
+| Nothing is going on on a page | A dim clock and a line saying so; with nothing going on anywhere, the panel later switches off |
 
-Swipe up for the list of what is going on, down to go back. The page turns once the finger has gone far enough; it does not wait for the finger to lift.
+Swipe up for the list of the page you are on (the renders' shots, or the sessions and tasks), down to go back; the computer's own page has no list. A swipe counts once the finger has gone far enough; it does not wait for the finger to lift.
+
+A computer that does not send RenderDock's fields (the Claude desktop app) has no renders and says nothing about itself: there is one page then, and no marks. A RenderDock from before 0.4 sends one list and one "most urgent thing"; the two pages are worked out from those, and the computer's own page says it has not been told anything.
 
 ## The keys
 
 | Key | A press | Held a second and a half |
 |---|---|---|
 | Power | Screen off, or on again. The link stays up, and news still lights the screen | "Do not disturb" on or off: no sound, and the screen lights up only for a request |
-| KEY3 | Turns the page: main screen, list, main screen | Sound off or on |
-| BOOT | Back to the main screen | Held for **three** seconds: measures the touch (see "Where a finger is read"). (Held while the board is powered up, this key puts the chip into its flashing mode; that is the chip's doing) |
+| KEY3 | Opens the list of the page showing, and closes it | Sound off or on |
+| BOOT | Out of the list if it is open; otherwise on to the next page | Held for **three** seconds: measures the touch (see "Where a finger is read"). (Held while the board is powered up, this key puts the chip into its flashing mode; that is the chip's doing) |
 
 - **No key answers a request**, and while a request is on the screen no key turns the page away from it.
 - A press, or a touch, on a dark screen lights it and does nothing else.
@@ -177,6 +185,7 @@ It logs what the board does as it starts, where a finger lands, when a key goes 
 | `feed off` | Goes back to showing only what arrives over Bluetooth |
 | `down X Y`, `up` | Puts a finger on the screen at a point, and lifts it |
 | `passkey 123456`, `passkey 0` | Shows the pairing screen with those digits, and stops |
+| `page 0`, `page 1`, `page 2` | Puts that page on the screen: the renders, the agents, the computer itself |
 | `image SECONDS`, then a frame of pixels | Shows a picture on the panel for that long, or until the screen is touched. For looking at a drawing on the glass itself |
 | `i2c` | Which chips answer on the board's shared bus |
 | `pmu` | How the power chip is set up for its key, and what it says about power |
@@ -209,6 +218,8 @@ A frame from `shot` is what the firmware drew into memory. It does not show what
 
 On one board, with the `debug` build and made-up snapshots fed over USB:
 
+- **The pages (0.4):** each side's screens from made-up snapshots that describe the two sides apart (a render with its queue beside two sessions at work; a session waiting; a render stuck, going without a percentage, done, failed; nothing on one side; nothing anywhere), both lists, and the computer's own page from three made-up lines (ordinary, running hot on battery, and one that could read neither graphics nor temperature). A swipe left and right with a finger put down from the console, BOOT from one page to the next and round again, KEY3 opening a list and doing nothing on the computer's page, BOOT closing a list first. A session starting to wait while the renders' page was showing turned the page to the agents; a render getting stuck turned it back.
+- **The pages, live:** with RenderDock 0.4 on a Mac over Bluetooth, the device said it has pages and was sent both sides and the Mac's numbers; what the three pages showed matched what the Mac reported at that moment. With RenderDock from before 0.4 on the same Mac, the two pages were worked out from the one list, and the computer's page said it had been told nothing.
 - The power chip, the screen and the touch controller answer at start-up.
 - Every screen in the table above draws as intended, in the first look and in the redesigned one, with the list, a request of one line and of two, one too long to allow here, and the plain protocol without RenderDock's fields.
 - With a finger put down from the console: a second's hold on Deny answers "deny" and on Allow "once"; a touch of a third of a second on either does nothing; a hold on a request too long to show does nothing for Allow; a hold during which another request took the screen answers nothing; a swipe up opens the list and a swipe down closes it.
@@ -238,6 +249,8 @@ Measured on the board: one whole frame takes about 60 ms to reach the panel, so 
 
 ## Known limits
 
+- **The pages have not been turned with a real finger or the real BOOT key yet**: the swipes and the key presses were put in from the console. Nor has anybody looked at the computer's page on the glass for long: whether four numbers this large are comfortable, and whether the marks along the bottom edge are visible at arm's length.
+- The computer's page is as fresh as the last line sent: every four seconds at most, and three quarters of a minute without one is shown as "nothing lately". With nothing going on anywhere the panel still dims and then switches off, whichever page is showing.
 - **Tried once**: a question from another program, sent by RenderDock over Bluetooth, answered with a real finger held on the screen, the pick arriving back at the program that asked.
 - **Not yet tried**: answering a *request for permission* from the device over Bluetooth (those buttons have only been worked from the console, with nothing on the other end); the Claude desktop app as the other end; switching the panel off and waking it again; running from a battery.
 - On the glass, one person has used the screens, answered a question with a finger and gone through the touch calibration. Nobody has judged the rest by eye yet: whether the small text is large enough at arm's length, and whether the corners of the panel cut anything.

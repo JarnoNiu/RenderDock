@@ -23,6 +23,8 @@ void uiDebugCalibrate(bool on);
 void uiDebugTouch(bool down, int x, int y);
 // Bring-up only: show the pairing screen with these digits (0 to stop), to check how it looks without pairing.
 void uiDebugPasskey(uint32_t passkey);
+// Puts a page on the screen: 0 the renders, 1 the agents, 2 the computer itself.
+void uiDebugPage(int page);
 // Bring-up only: leave whatever is on the panel alone for this long (a picture sent over USB). A touch ends it.
 void uiDebugHold(uint32_t ms);
 // Bring-up only: how long the last frame took to draw and to send to the panel, in microseconds.

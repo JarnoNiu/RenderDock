@@ -14,6 +14,40 @@ struct Row {
   int percent;      // progress, -1 if none
 };
 
+// One side of what the computer is doing, each with a page of its own: its renders, or its agents' sessions
+// together with the tasks other programs report on. What is most urgent on that side, and its list.
+struct Side {
+  Overall overall;
+  char topKind[8];      // "render" | "agent" | "task" | ""
+  char topName[124];
+  char topTool[76];
+  char topWait[124];
+  int topPercent;       // -1 if none
+  bool topExact;
+  int topEta;           // seconds, -1 if none
+  int topAge;           // seconds in its state, -1 if not said
+  Row rows[6];
+  int rowCount;
+};
+
+// The computer itself, as it says it is doing. Sent apart from the snapshots, a few times a minute.
+struct Mac {
+  bool have;
+  uint32_t at;          // millis() when this last arrived
+  int cpu, cores;       // percent busy; how many cores (0 if not said)
+  int gpu;              // percent busy, -1 if the computer cannot read it
+  float vram;           // GB in use by the graphics chip, negative if not said
+  float memUsed, memTotal;   // GB
+  int memPressure;      // the system's own level: 1 normal, 2 warning, 4 critical
+  float swap;           // GB of swap in use
+  int temp, tempMax;    // °C on the chip, average and hottest sensor; -1 if not said
+  int thermal;          // the system's own word: 0 fine, 1 warm, 2 slowed down for heat, 3 critical
+  int diskFree;         // GB, -1 if not said
+  int onAC;             // 1 on the adapter, 0 on the battery, -1 if not said
+  int battery;          // percent, -1 if there is none or it is not said
+  bool awake;           // something is keeping it from going to sleep when idle
+};
+
 struct State {
   bool have;       // a snapshot has arrived on this connection
   uint32_t at;     // millis() when the last one did
@@ -53,6 +87,13 @@ struct State {
   Row rows[6];
   int rowCount;
 
+  // The same, taken apart: the renders on one page, the agents and other programs' tasks on another. Filled from
+  // what the computer says about each side when it does ("rd" 3), and worked out from the fields above when it
+  // does not, so that an older RenderDock still gets both pages.
+  Side r, a;
+  int rendering, queued;   // how many shots are being rendered, and how many wait their turn
+  int queueEta;            // seconds until the top render's whole queue is through, -1 if not said
+
   // A question another program is asking, to answer here by picking one of its answers. It is not a request for
   // permission: nothing is allowed by answering it.
   bool ask;
@@ -78,6 +119,8 @@ struct State {
 };
 
 extern State g_state;
+// Kept apart from g_state: it arrives on lines of its own, and a snapshot does not empty it.
+extern Mac g_mac;
 
 #if RD_DEBUG_SERIAL
 // Set while a line from the bring-up console is being read, so that a request in it is known to be made up.

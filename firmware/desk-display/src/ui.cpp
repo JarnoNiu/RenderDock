@@ -59,6 +59,12 @@ static bool s_downOnDeny = false;
 
 static bool s_showList = false;
 static uint32_t s_listAt = 0;
+// The pages, side by side: 0 the renders, 1 the agents and other programs' tasks, 2 the computer itself.
+// Only with the redesigned screens and a computer that sends RenderDock's fields; otherwise there is the one page.
+static const int PAGES = 3, PAGE_MAC = 2;
+static int s_page = 0;
+static Overall s_lastRenders = OV_IDLE, s_lastSessions = OV_IDLE;
+static uint32_t s_lastMacAt = 0;
 static uint32_t s_lastTouchAt = 0;
 static uint32_t s_lastContactAt = 0;   // when the touch controller last reported a finger
 static uint32_t s_lastDrawAt = 0;
@@ -81,6 +87,8 @@ static Touch s_fakeTouch = {false, 0, 0};
 static uint32_t s_fakePasskey = 0;
 void uiDebugTouch(bool down, int x, int y) { s_fakeTouch = {down, x, y}; }
 void uiDebugPasskey(uint32_t passkey) { s_fakePasskey = passkey; }
+static int s_debugPage = -1;
+void uiDebugPage(int page) { s_debugPage = page; }
 static uint32_t s_holdUntil = 0;
 void uiDebugHold(uint32_t ms) { s_holdUntil = ms ? millis() + ms : 0; }
 static uint32_t s_drawMicros = 0, s_pushMicros = 0;
@@ -497,6 +505,14 @@ static bool s_swallow = false;      // this touch lit the screen and does nothin
 static bool s_swiped = false;       // this touch has already turned the page
 // Something changed: draw now. Without this a change waited for the next regular frame, up to a second away.
 static bool s_dirty = true;
+
+// Whether there are pages to turn at all, and turning them.
+static bool pagesOn() { return screensReady() && g_state.extended; }
+static void turnPage(int by) {
+  s_page = (s_page + by + PAGES) % PAGES;
+  s_showList = false;
+  s_dirty = true;
+}
 static char s_toast[40] = "";
 static uint32_t s_toastUntil = 0;
 static Overall s_lastOverall = OV_IDLE;
@@ -630,9 +646,13 @@ static void handleTouch() {
       int dx = t.x - s_downX, dy = t.y - s_downY;
       if (abs(dy) > 70 && abs(dy) > abs(dx)) {
         s_swiped = true;
-        s_showList = dy < 0;   // up for the list, down to go back
+        // Up for the list, down to go back. The computer's own page has no list.
+        s_showList = dy < 0 && !(pagesOn() && s_page == PAGE_MAC);
         s_listAt = now;
         s_dirty = true;
+      } else if (pagesOn() && abs(dx) > 70 && abs(dx) > abs(dy)) {
+        s_swiped = true;
+        turnPage(dx < 0 ? 1 : -1);   // towards the left for the next page, as a page is pushed away
       }
     }
     return;
@@ -657,8 +677,10 @@ static void handleTouch() {
   if (requestOnScreen() || asking) return;
   // A swipe so quick that only its two ends were seen.
   if (!s_swiped && abs(dy) > 70 && abs(dy) > abs(dx)) {
-    s_showList = dy < 0;
+    s_showList = dy < 0 && !(pagesOn() && s_page == PAGE_MAC);
     s_listAt = now;
+  } else if (!s_swiped && pagesOn() && abs(dx) > 70 && abs(dx) > abs(dy)) {
+    turnPage(dx < 0 ? 1 : -1);
   }
 }
 
@@ -697,7 +719,7 @@ static void handleKeys(uint32_t now) {
       if (dark) wake();
       else if (askOnScreen()) strlcpy(s_askAside, g_state.askId, sizeof(s_askAside));
       else if (s_noteShowing && !requestOnScreen()) s_noteShowing = false;
-      else if (!requestOnScreen()) {
+      else if (!requestOnScreen() && !(pagesOn() && s_page == PAGE_MAC)) {
         s_showList = !s_showList;
         s_listAt = now;
       }
@@ -713,7 +735,11 @@ static void handleKeys(uint32_t now) {
       if (dark) wake();
       else if (askOnScreen()) strlcpy(s_askAside, g_state.askId, sizeof(s_askAside));
       else if (s_noteShowing && !requestOnScreen()) s_noteShowing = false;
-      else if (!requestOnScreen()) s_showList = false;
+      else if (!requestOnScreen()) {
+        // Out of the list if it is open; otherwise on to the next page.
+        if (s_showList) s_showList = false;
+        else if (pagesOn()) turnPage(1);
+      }
       break;
     case KEY_BOOT_LONG:
       // Measuring the touch. Not while something waits for an answer or six digits are up, and only with the
@@ -950,6 +976,14 @@ void uiTick() {
   BTN_Y = modern ? SCREEN_BUTTON_Y : 330;
   BTN_W = modern ? SCREEN_BUTTON_W : 196;
   BTN_H = modern ? SCREEN_BUTTON_H : 110;
+#if RD_DEBUG_SERIAL
+  if (s_debugPage >= 0) {
+    s_page = s_debugPage % PAGES;
+    s_showList = false;
+    s_dirty = true;
+    s_debugPage = -1;
+  }
+#endif
   // The touch is read first: it stamps times of its own, and "now" must not be earlier than those.
   handleTouch();
   uint32_t now = millis();
@@ -1029,6 +1063,22 @@ void uiTick() {
       if (s.overall != OV_IDLE) s_lastTouchAt = now;
       if (s.overall != s_lastOverall && s.overall != OV_IDLE) wake();
     }
+    if (pagesOn()) {
+      if (!s_knowState) {
+        // On connecting: the page of whatever is most urgent, and the renders' if nothing is.
+        s_page = !strcmp(s.topKind, "render") || s.a.overall == OV_IDLE ? 0 : 1;
+      } else if (!s_down) {
+        // A side that now needs somebody, or has failed, takes the screen if another page is showing. Anything
+        // less (something starting, something done) leaves the page where the user put it; the marks along the
+        // bottom say what goes on elsewhere.
+        bool sessionsCall = s.a.overall != s_lastSessions && (s.a.overall == OV_WAITING || s.a.overall == OV_ERROR);
+        bool rendersCall = s.r.overall != s_lastRenders && (s.r.overall == OV_WAITING || s.r.overall == OV_ERROR);
+        if (sessionsCall && s_page != 1) turnPage(1 - s_page);
+        else if (rendersCall && !sessionsCall && s_page != 0) turnPage(-s_page);
+      }
+      s_lastRenders = s.r.overall;
+      s_lastSessions = s.a.overall;
+    }
     if (!s_knowState) {
       s_knowState = true;
       s_workingSince = now;
@@ -1040,6 +1090,10 @@ void uiTick() {
       else if (s.overall == OV_DONE && s_lastOverall == OV_WORKING && now - s_workingSince >= 120000) ping(SOUND_DONE);
     }
     s_lastOverall = s.overall;
+  }
+  if (g_mac.at != s_lastMacAt) {
+    s_lastMacAt = g_mac.at;
+    s_dirty = true;   // its page shows them, and its mark along the bottom may change colour
   }
   uint32_t passkey = passkeyToShow();
   if (passkey != s_lastPasskey) {
@@ -1106,20 +1160,28 @@ void uiTick() {
     bool link = !fresh || passkey != 0, request = !link && requestOnScreen();
     bool ask = !link && !request && askOnScreen(), note = !link && !request && !ask && s_noteShowing;
     bool list = !link && !request && !ask && !note && s_showList;
+    bool plain = !link && !request && !ask && !note;
+    // A computer that does not send RenderDock's fields has no renders and says nothing about itself: one page.
+    bool paged = pagesOn();
+    int page = paged ? s_page : 1;
+    const Side& side = page == 0 ? s.r : s.a;
     // What has a percentage is shown with the ring: a render, or a task another program reports on.
-    bool measured = (!strcmp(s.topKind, "render") || !strcmp(s.topKind, "task")) && s.topPercent >= 0;
+    bool measured = (!strcmp(side.topKind, "render") || !strcmp(side.topKind, "task")) && side.topPercent >= 0;
     if (link) screenLink(frame, passkey, linkConnected(), linkName());
     else if (request) screenRequest(frame, hold, holdDeny, s_lastAllowed);
     else if (ask) screenAsk(frame, s_down ? s_downOnChoice : -1, max(0.0f, held));
     else if (note) screenNote(frame);
-    else if (list) screenList(frame);
-    else if (s.overall == OV_ERROR) screenFinished(frame, true);
-    else if (s.overall == OV_WAITING) screenWaiting(frame);
-    else if (s.overall == OV_WORKING && measured) screenRendering(frame);
-    else if (s.overall == OV_WORKING) screenAgents(frame);
-    else if (s.overall == OV_DONE) screenFinished(frame, false);
-    else screenIdle(frame);
-    if (!link && !request && !ask && !note && !list && (s_dnd || s_mute)) screenBadge(frame, s_dnd ? "勿扰" : "静音");
+    else if (page == PAGE_MAC) screenMac(frame);
+    else if (list) screenList(frame, side, paged ? page : -1);
+    else if (side.overall == OV_ERROR) screenFinished(frame, side, true);
+    else if (side.overall == OV_WAITING) screenWaiting(frame, side);
+    else if (side.overall == OV_WORKING && measured) screenRendering(frame, side);
+    else if (side.overall == OV_WORKING && page == 0) screenRenderGoing(frame, side);
+    else if (side.overall == OV_WORKING) screenAgents(frame, side);
+    else if (side.overall == OV_DONE) screenFinished(frame, side, false);
+    else screenIdle(frame, paged ? page : -1);
+    if (plain && paged) screenPages(frame, page);
+    if (plain && !list && page != PAGE_MAC && (s_dnd || s_mute)) screenBadge(frame, s_dnd ? "勿扰" : "静音");
     if (s_toast[0]) screenToast(frame, s_toast);
   } else {
     if (!fresh || passkey != 0) drawLink();

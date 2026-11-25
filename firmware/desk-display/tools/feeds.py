@@ -147,3 +147,92 @@ plain_prompt['entries'] = ['10:42 git push']
 save('plain-request', plain_prompt)
 
 save('time', {'time': [1795428000 + 9 * 3600 + 41 * 60, 0]})
+
+# ---- Pages (a computer that tells the two sides apart, and says how it is doing itself: firmware "rd" 3) ----
+
+render_rows = [
+    {'n': 's040_explode', 's': 'working', 'p': 62},
+    {'n': 's045_explode_alt', 's': 'working', 'p': 18},
+]
+agent_rows = [
+    {'n': 'billing-api', 't': 'Codex', 's': 'working', 'a': 913},
+    {'n': 'landing-page', 't': 'Claude Code', 's': 'working', 'a': 15},
+    {'n': 'docs', 't': 'Claude Code', 's': 'done', 'a': 120},
+]
+
+
+def render_side(state='working', top=None, rows=None, run=2, queue=4, qeta=21900, job=None):
+    side = {'state': state, 'rows': render_rows if rows is None else rows, 'n': {'run': run, 'queue': queue}}
+    if top is not None:
+        side['top'] = top
+    if qeta is not None:
+        side['qeta'] = qeta
+    if job is not None:
+        side['job'] = job
+    return side
+
+
+def agent_side(state='working', top=None, rows=None):
+    side = {'state': state, 'rows': agent_rows if rows is None else rows}
+    if top is not None:
+        side['top'] = top
+    return side
+
+
+job = {'title': '产品片', 'done': 3, 'total': 8}
+render_top = {'name': 's040_explode', 'pct': 62, 'exact': True, 'eta': 1500}
+agent_top = {'kind': 'agent', 'name': 'billing-api', 'tool': 'Codex', 'age': 913}
+no_renders = render_side('idle', rows=[], run=0, queue=0, qeta=None)
+no_agents = agent_side('idle', rows=[])
+none_at_all = {'error': 0, 'waiting': 0, 'working': 0, 'done': 0, 'idle': 0}
+
+# Both sides busy: a render with its queue on one page, two sessions at work on the other.
+save('pages-both', base(6, 4, 0, 'render 62% | 2 working', rd={
+    'state': 'working', 'top': dict(render_top, kind='render'), 'job': job, 'agents': agents,
+    'r': render_side(top=render_top, job=job), 'a': agent_side(top=agent_top)}))
+
+# A session needs the user while a render goes on: the agents' page takes the screen.
+waiting_top = {'kind': 'agent', 'name': 'docs', 'tool': 'Claude Code', 'wait': 'permission', 'age': 42}
+save('pages-agent-waiting', base(6, 3, 1, 'docs waiting', rd={
+    'state': 'waiting', 'top': waiting_top, 'agents': {'error': 0, 'waiting': 1, 'working': 2, 'done': 0, 'idle': 2},
+    'r': render_side(top=render_top, job=job),
+    'a': agent_side('waiting', top=waiting_top, rows=[{'n': 'docs', 't': 'Claude Code', 's': 'waiting', 'a': 42}] + agent_rows[:2])}))
+
+# A render that has stopped moving, with sessions still at work.
+stuck_top = {'name': 's040_explode', 'pct': 62, 'exact': True}
+save('pages-render-stuck', base(6, 2, 1, '1 waiting | 2 working', rd={
+    'state': 'waiting', 'top': dict(stuck_top, kind='render'), 'job': job, 'agents': agents,
+    'r': render_side('waiting', top=stuck_top, rows=[{'n': 's040_explode', 's': 'waiting', 'p': 62}], run=0, queue=4, qeta=None, job=job),
+    'a': agent_side(top=agent_top)}))
+
+# A render that does not say how far along it is.
+save('pages-render-going', base(1, 1, 0, '1 rendering', rd={
+    'state': 'working', 'top': {'kind': 'render', 'name': 'comp_final_v3'}, 'agents': none_at_all,
+    'r': render_side(top={'name': 'comp_final_v3'}, rows=[{'n': 'comp_final_v3', 's': 'working'}], run=1, queue=0, qeta=None),
+    'a': no_agents}))
+
+# The queue is through; a session is still at work.
+save('pages-render-done', base(3, 1, 0, '1 working | 1 done', rd={
+    'state': 'working', 'top': agent_top, 'agents': {'error': 0, 'waiting': 0, 'working': 1, 'done': 0, 'idle': 2},
+    'r': render_side('done', top={'name': 's080_end'}, rows=[], run=0, queue=0, qeta=None, job={'title': '产品片', 'done': 8, 'total': 8}),
+    'a': agent_side(top=agent_top, rows=agent_rows[:1])}))
+
+# A render failed.
+save('pages-render-failed', base(2, 0, 1, '1 failed', rd={
+    'state': 'error', 'top': {'kind': 'render', 'name': 's050_logo'}, 'agents': none_at_all,
+    'r': render_side('error', top={'name': 's050_logo'}, rows=[], run=0, queue=0, qeta=None, job={'title': '产品片', 'done': 4, 'total': 8}),
+    'a': no_agents}))
+
+# Only sessions; nothing renders.
+save('pages-agents-only', base(5, 2, 0, '2 working', rd={
+    'state': 'working', 'top': agent_top, 'agents': agents, 'r': no_renders, 'a': agent_side(top=agent_top)}))
+
+# Nothing anywhere.
+save('pages-idle', base(0, 0, 0, 'idle', rd={'state': 'idle', 'agents': none_at_all, 'r': no_renders, 'a': no_agents}))
+
+# The computer about itself. These go on lines of their own.
+save('mac', {'mac': {'cpu': 37, 'cores': 10, 'gpu': 92, 'vram': 8.2, 'mem': [21.4, 32], 'mp': 1, 'swap': 1.2,
+                     't': 71, 'tmax': 78, 'th': 0, 'disk': 212, 'ac': True, 'awake': True}})
+save('mac-hot', {'mac': {'cpu': 100, 'cores': 10, 'gpu': 100, 'vram': 14.6, 'mem': [30.9, 32], 'mp': 2, 'swap': 9.4,
+                         't': 101, 'tmax': 108, 'th': 2, 'disk': 38, 'ac': False, 'bat': 64, 'awake': False}})
+save('mac-bare', {'mac': {'cpu': 4, 'mem': [9.5, 16], 'mp': 1, 'awake': False}})

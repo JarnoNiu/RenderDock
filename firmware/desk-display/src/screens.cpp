@@ -56,15 +56,6 @@ static String span(int seconds) {
   return String(seconds / 3600) + " 时";
 }
 
-// How long the named row has been in its state, or -1 if the list does not say.
-static int ageOf(const char* name) {
-  const State& s = g_state;
-  for (int i = 0; i < s.rowCount; i++) {
-    if (!strcmp(s.rows[i].name, name)) return s.rows[i].age;
-  }
-  return -1;
-}
-
 // A tick in a box 20 pixels across, times `scale`.
 static void tick(uint16_t* frame, float x, float y, float scale, uint16_t color) {
   shapeLine(frame, x + 3.9f * scale, y + 10.6f * scale, x + 7.9f * scale, y + 14.6f * scale, 2.7f * scale, color);
@@ -220,78 +211,126 @@ void screenLink(uint16_t* frame, uint32_t passkey, bool connected, const char* n
 }
 
 // MARK: the screens with the ring
+//
+// Each takes the side it is drawn for: the renders, or the agents and other programs' tasks.
 
-void screenRendering(uint16_t* frame) {
+// How long the thing named has been in its state, or -1 if nothing says.
+static int ageOn(const Side& t, const char* name) {
+  if (t.topAge >= 0 && !strcmp(t.topName, name)) return t.topAge;
+  for (int i = 0; i < t.rowCount; i++) {
+    if (!strcmp(t.rows[i].name, name)) return t.rows[i].age;
+  }
+  return -1;
+}
+
+// Hours and minutes, where the hour alone would say too little.
+static String spanLong(int seconds) {
+  if (seconds < 3600) return span(seconds);
+  int hours = seconds / 3600, minutes = (seconds % 3600) / 60;
+  return minutes ? String(hours) + " 时 " + minutes + " 分" : String(hours) + " 时";
+}
+
+// How the renders are doing, for the row of labels: how many at once, and how long the whole queue has to go.
+static void renderLabels(uint16_t* frame) {
   const State& s = g_state;
-  float fraction = s.topPercent / 100.0f;
-  ring(frame, RING_ARC, s.topPercent, MINT, AQUA, TRACK);
+  Label list[3];
+  int count = 0;
+  if (s.rendering > 1) list[count++] = {String(s.rendering) + " 段在渲", MINT, MINT_UNDER, 1, 0};
+  if (s.queueEta >= 0) list[count++] = {String("整队剩约 ") + spanLong(s.queueEta), BRIGHT, GREY_UNDER, 0, 0};
+  else if (s.queued > 0) list[count++] = {String("排队 ") + s.queued + " 段", SOFT, GREY_UNDER, 0, 0};
+  if (count) labels(frame, list, count);
+}
+
+// The render's job on the line under the title: the name, one piece per shot, and how many are done.
+// `fraction` is how far the shot being rendered has got, for the piece that stands for it.
+static void jobLine(uint16_t* frame, float fraction) {
+  const State& s = g_state;
+  if (!s.jobTitle[0]) return;
+  TextStyle text = name26();
+  bool pieces = s.jobTotal > 1 && s.jobTotal <= 16;
+  String count = s.jobTotal > 1 ? String(s.jobDone) + "/" + s.jobTotal + " 段" : String("");
+  int countWidth = fontWidth(text, count.c_str());
+  // Beside the pieces the name has little room; alone on the line it has nearly all of it.
+  String name = fontFit(text, s.jobTitle, pieces ? 170 : 392 - (count.length() ? countWidth + 30 : 0), false);
+  int nameWidth = fontWidth(text, name.c_str());
+  if (pieces) {
+    fontDraw(frame, text, 44, LINE_Y, SOFT, name.c_str());
+    fontDrawRight(frame, text, 436, LINE_Y, SOFT, count.c_str());
+    int left = 44 + nameWidth + 14, right = 436 - countWidth - 14;
+    float each = (right - left - 8.0f * (s.jobTotal - 1)) / s.jobTotal;
+    for (int i = 0; i < s.jobTotal && each >= 6; i++) {
+      int pieceLeft = left + (int)(i * (each + 8) + 0.5f), pieceWidth = (int)(each + 0.5f);
+      shapeRoundRect(frame, pieceLeft, LINE_MIDDLE - 5, pieceWidth, 10, 5, i < s.jobDone ? MINT : EMPTY);
+      if (i == s.jobDone && fraction > 0) shapeRoundRect(frame, pieceLeft, LINE_MIDDLE - 5, max(10, (int)(pieceWidth * min(1.0f, fraction))), 10, 5, MINT);
+    }
+  } else {
+    fontDrawCentred(frame, text, CX, LINE_Y, SOFT, (count.length() ? name + " · " + count : name).c_str());
+  }
+}
+
+void screenRendering(uint16_t* frame, const Side& t) {
+  bool render = !strcmp(t.topKind, "render");
+  float fraction = t.topPercent / 100.0f;
+  ring(frame, RING_ARC, t.topPercent, MINT, AQUA, TRACK);
 
   // The number with its sign, as one group in the middle. Three digits take the smaller numerals.
   char number[8];
-  snprintf(number, sizeof(number), "%d", s.topPercent);
+  snprintf(number, sizeof(number), "%d", t.topPercent);
   bool wide = strlen(number) >= 3;
   TextStyle big = {rounded(wide ? 4 : 3), 0}, small = {rounded(wide ? 1 : 2), 0};
-  int about = s.topExact ? 0 : fontWidth(small, "≈") + 4;
+  int about = t.topExact ? 0 : fontWidth(small, "≈") + 4;
   int numberWidth = fontWidth(big, number), signWidth = fontWidth(small, "%");
   int x = CX - (about + numberWidth + 6 + signWidth) / 2;
   if (about) fontDraw(frame, small, x, NUMBER_Y - 47, SOFT, "≈");
   fontDraw(frame, big, x + about, NUMBER_Y, WHITE, number);
   fontDraw(frame, small, x + about + numberWidth + 6, NUMBER_Y, SOFT, "%");
-  if (s.topEta >= 0) fontDrawCentred(frame, name30(), CX, UNDER_NUMBER_Y, BRIGHT, (String("剩约 ") + span(s.topEta)).c_str());
+  if (t.topEta >= 0) fontDrawCentred(frame, name30(), CX, UNDER_NUMBER_Y, BRIGHT, (String("剩约 ") + span(t.topEta)).c_str());
 
-  // The shot.
-  fontDrawCentred(frame, name38(), CX, TITLE_Y, WHITE, fontFit(name38(), s.topName, 440, true).c_str());
+  // The shot, or the task.
+  fontDrawCentred(frame, name38(), CX, TITLE_Y, WHITE, fontFit(name38(), t.topName, 440, true).c_str());
 
-  // Its job: the name, one piece per shot, and how many are done.
-  if (s.jobTitle[0]) {
-    TextStyle text = name26();
-    bool pieces = s.jobTotal > 1 && s.jobTotal <= 16;
-    String count = s.jobTotal > 1 ? String(s.jobDone) + "/" + s.jobTotal + " 段" : String("");
-    int countWidth = fontWidth(text, count.c_str());
-    // Beside the pieces the name has little room; alone on the line it has nearly all of it.
-    String name = fontFit(text, s.jobTitle, pieces ? 170 : 392 - (count.length() ? countWidth + 30 : 0), false);
-    int nameWidth = fontWidth(text, name.c_str());
-    if (pieces) {
-      fontDraw(frame, text, 44, LINE_Y, SOFT, name.c_str());
-      fontDrawRight(frame, text, 436, LINE_Y, SOFT, count.c_str());
-      int left = 44 + nameWidth + 14, right = 436 - countWidth - 14;
-      float each = (right - left - 8.0f * (s.jobTotal - 1)) / s.jobTotal;
-      for (int i = 0; i < s.jobTotal && each >= 6; i++) {
-        int pieceLeft = left + (int)(i * (each + 8) + 0.5f), pieceWidth = (int)(each + 0.5f);
-        shapeRoundRect(frame, pieceLeft, LINE_MIDDLE - 5, pieceWidth, 10, 5, i < s.jobDone ? MINT : EMPTY);
-        if (i == s.jobDone && fraction > 0) shapeRoundRect(frame, pieceLeft, LINE_MIDDLE - 5, max(10, (int)(pieceWidth * min(1.0f, fraction))), 10, 5, MINT);
-      }
-    } else {
-      fontDrawCentred(frame, text, CX, LINE_Y, SOFT, (count.length() ? name + " · " + count : name).c_str());
-    }
-  } else if (!strcmp(s.topKind, "task") && s.topTool[0]) {
+  if (render) {
+    jobLine(frame, fraction);
+    renderLabels(frame);
+  } else {
     // A task another program reports on: who is reporting.
-    int age = ageOf(s.topName);
-    toolLine(frame, s.topTool, age >= 0 ? String("已经 ") + span(age) : String(""));
+    if (t.topTool[0]) {
+      int age = ageOn(t, t.topName);
+      toolLine(frame, t.topTool, age >= 0 ? String("已经 ") + span(age) : String(""));
+    }
+    sessionLabels(frame, false, false);
   }
-  // "No sessions at work" is worth saying next to a render, not next to another program's task.
-  sessionLabels(frame, false, strcmp(s.topKind, "task") != 0);
 }
 
-void screenAgents(uint16_t* frame) {
+// A render that does not say how far along it is: no number to show, only that it is going.
+void screenRenderGoing(uint16_t* frame, const Side& t) {
+  ring(frame, RING_DOTS, 0, MINT, MINT, rgb(10, 34, 26));
+  for (int i = -1; i <= 1; i++) shapeDisc(frame, CX + i * 34, CY - 6, 9, MINT);
+  fontDrawCentred(frame, text30(), CX, UNDER_NUMBER_Y, BRIGHT, "渲染中");
+  if (t.topName[0]) fontDrawCentred(frame, name38(), CX, TITLE_Y, WHITE, fontFit(name38(), t.topName, 440, true).c_str());
+  jobLine(frame, 0);
+  renderLabels(frame);
+}
+
+void screenAgents(uint16_t* frame, const Side& t) {
   const State& s = g_state;
   ring(frame, RING_DOTS, 0, AQUA, AQUA, rgb(10, 29, 38));
-  if (!strcmp(s.topKind, "task")) {
+  if (!strcmp(t.topKind, "task")) {
     // A task that does not say how far along it is: no number to show, only that it is going.
     for (int i = -1; i <= 1; i++) shapeDisc(frame, CX + i * 34, CY - 6, 9, AQUA);
     fontDrawCentred(frame, text30(), CX, UNDER_NUMBER_Y, BRIGHT, "进行中");
-    fontDrawCentred(frame, name38(), CX, TITLE_Y, WHITE, fontFit(name38(), s.topName, 440, true).c_str());
-    int age = ageOf(s.topName);
-    toolLine(frame, s.topTool, age >= 0 ? String("已经 ") + span(age) : String(""));
+    fontDrawCentred(frame, name38(), CX, TITLE_Y, WHITE, fontFit(name38(), t.topName, 440, true).c_str());
+    int age = ageOn(t, t.topName);
+    toolLine(frame, t.topTool, age >= 0 ? String("已经 ") + span(age) : String(""));
     sessionLabels(frame, false, false);
     return;
   }
   numberInRing(frame, s.extended ? s.agentsWorking : s.running, AQUA, "在干活");
   if (s.extended) {
-    if (s.topName[0]) {
-      fontDrawCentred(frame, name38(), CX, TITLE_Y, WHITE, fontFit(name38(), s.topName, 440, true).c_str());
-      int age = ageOf(s.topName);
-      toolLine(frame, s.topTool, age >= 0 ? String("已经 ") + span(age) : String(""));
+    if (t.topName[0]) {
+      fontDrawCentred(frame, name38(), CX, TITLE_Y, WHITE, fontFit(name38(), t.topName, 440, true).c_str());
+      int age = ageOn(t, t.topName);
+      toolLine(frame, t.topTool, age >= 0 ? String("已经 ") + span(age) : String(""));
     }
     sessionLabels(frame, true, false);
   } else {
@@ -303,22 +342,28 @@ void screenAgents(uint16_t* frame) {
   }
 }
 
-void screenWaiting(uint16_t* frame) {
+void screenWaiting(uint16_t* frame, const Side& t) {
   const State& s = g_state;
+  bool render = !strcmp(t.topKind, "render");
   ring(frame, RING_WHOLE, 100, AMBER, AMBER, TRACK);
   // The mark breathes: there is something to do, and it is not urgent enough to flash.
   float phase = (millis() % 2400) / 2400.0f;
   uint8_t strength = (uint8_t)(140 + 115 * (phase < 0.5f ? phase * 2 : (1 - phase) * 2));
   shapeRoundRect(frame, CX - 14, 84, 28, 90, 14, AMBER, strength);
   shapeDisc(frame, CX, 204, 15.5f, AMBER, strength);
-  if (s.extended && s.topName[0]) {
-    const char* tail = " 在等你";
-    String who = fontFit(name38(), s.topName, 440 - fontWidth(name38(), tail), true) + tail;
+  if (s.extended && t.topName[0]) {
+    // A session waits for the user. A render that has stopped moving waits for nobody: it is stuck.
+    const char* tail = render ? " 卡住了" : " 在等你";
+    String who = fontFit(name38(), t.topName, 440 - fontWidth(name38(), tail), true) + tail;
     fontDrawCentred(frame, name38(), CX, TITLE_Y, WHITE, who.c_str());
-    int age = ageOf(s.topName);
-    toolLine(frame, s.topTool, age >= 0 ? String("等了 ") + span(age) : String(""));
+    if (render) {
+      if (s.jobTitle[0]) fontDrawCentred(frame, name26(), CX, LINE_Y, SOFT, fontFit(name26(), s.jobTitle, 440, false).c_str());
+    } else {
+      int age = ageOn(t, t.topName);
+      toolLine(frame, t.topTool, age >= 0 ? String("等了 ") + span(age) : String(""));
+    }
     // Not a button: a line of text with a small computer beside it.
-    const char* note = "这一条要到电脑上处理";
+    const char* note = render ? "有一阵没有出新的帧了" : "这一条要到电脑上处理";
     int x = CX - (30 + 10 + fontWidth(text26(), note)) / 2;
     laptop(frame, x, LABELS_TOP + 10, 1, SOFT);
     fontDraw(frame, text26(), x + 40, LABELS_TOP + 31, SOFT, note);
@@ -328,9 +373,9 @@ void screenWaiting(uint16_t* frame) {
   }
 }
 
-void screenFinished(uint16_t* frame, bool failed) {
+void screenFinished(uint16_t* frame, const Side& t, bool failed) {
   const State& s = g_state;
-  bool render = !strcmp(s.topKind, "render");
+  bool render = !strcmp(t.topKind, "render");
   if (failed) {
     ring(frame, RING_WHOLE, 100, CORAL, CORAL, TRACK);
     shapeLine(frame, CX - 41, CY - 41, CX + 41, CY + 41, 23, CORAL);
@@ -341,18 +386,20 @@ void screenFinished(uint16_t* frame, bool failed) {
     shapeLine(frame, CX - 15.5f, CY + 41, CX + 54.5f, CY - 37, 23, TEAL);
   }
   fontDrawCentred(frame, text38(), CX, TITLE_Y, WHITE, failed ? (render ? "渲染失败" : "出错了") : (render ? "渲完了" : "做完了"));
-  if (s.topName[0]) {
-    if (render || !s.topTool[0]) {
-      String what = s.jobTitle[0] ? String(s.topName) + " · " + s.jobTitle : String(s.topName);
+  if (t.topName[0]) {
+    if (render || !t.topTool[0]) {
+      String what = render && s.jobTitle[0] ? String(t.topName) + " · " + s.jobTitle : String(t.topName);
       fontDrawCentred(frame, name26(), CX, LINE_Y, SOFT, fontFit(name26(), what.c_str(), 440, false).c_str());
     } else {
-      toolLine(frame, s.topTool, String(s.topName));
+      toolLine(frame, t.topTool, String(t.topName));
     }
   }
-  sessionLabels(frame, false, false);
+  if (render) renderLabels(frame);
+  else sessionLabels(frame, false, false);
 }
 
-void screenIdle(uint16_t* frame) {
+// Nothing on this page. `page` 0 is the renders', 1 the agents'; -1 when the computer does not tell them apart.
+void screenIdle(uint16_t* frame, int page) {
   int hour, minute;
   if (protoClock(hour, minute)) {
     char clock[8];
@@ -364,7 +411,7 @@ void screenIdle(uint16_t* frame) {
       fontDrawCentred(frame, name30(), CX, 283, DIM, (String(month) + " 月 " + day + " 日 · " + DAYS[weekday % 7]).c_str());
     }
   }
-  Label nothing = {String("没有任务"), SOFT, GREY_UNDER, 1, MINT};
+  Label nothing = {String(page == 0 ? "没有在渲染" : (page == 1 ? "没有会话在干活" : "没有任务")), SOFT, GREY_UNDER, 1, MINT};
   labels(frame, &nothing, 1);
 }
 
@@ -378,31 +425,37 @@ static uint16_t stateColor(const char* state) {
   return SOFT;
 }
 
-static const char* stateWord(const char* state) {
-  if (!strcmp(state, "waiting")) return "等你";
-  if (!strcmp(state, "working")) return "在干活";
-  if (!strcmp(state, "done")) return "刚做完";
-  if (!strcmp(state, "error")) return "出错";
+static const char* stateWord(const char* state, bool render) {
+  if (!strcmp(state, "waiting")) return render ? "卡住了" : "等你";
+  if (!strcmp(state, "working")) return render ? "在渲" : "在干活";
+  if (!strcmp(state, "done")) return render ? "渲完了" : "刚做完";
+  if (!strcmp(state, "error")) return render ? "失败" : "出错";
   return "";
 }
 
-void screenList(uint16_t* frame) {
+// One side's list. `page` as for `screenIdle`.
+void screenList(uint16_t* frame, const Side& t, int page) {
   const State& s = g_state;
-  fontDraw(frame, text26(), 36, 41, SOFT, "现在");
+  fontDraw(frame, name26(), 36, 41, SOFT, page == 0 ? "渲染" : (page == 1 ? "Agent" : "现在"));
   String counts;
-  if (s.agentsWaiting > 0) counts += String(s.agentsWaiting) + " 等你";
-  if (s.agentsWorking > 0) counts += (counts.length() ? " · " : "") + String(s.agentsWorking) + " 在干活";
+  if (page == 0) {
+    if (s.rendering > 0) counts += String(s.rendering) + " 在渲";
+    if (s.queued > 0) counts += (counts.length() ? " · " : "") + String("排队 ") + s.queued;
+  } else {
+    if (s.agentsWaiting > 0) counts += String(s.agentsWaiting) + " 等你";
+    if (s.agentsWorking > 0) counts += (counts.length() ? " · " : "") + String(s.agentsWorking) + " 在干活";
+  }
   fontDrawRight(frame, name26(), 444, 41, SOFT, counts.c_str());
 
-  if (s.rowCount == 0) {
-    fontDrawCentred(frame, name30(), CX, 240, SOFT, s.extended ? "没有在跑的" : fontFit(name30(), s.msg, 440, false).c_str());
+  if (t.rowCount == 0) {
+    fontDrawCentred(frame, name30(), CX, 240, SOFT, s.extended ? (page == 0 ? "没有在渲的" : "没有在跑的") : fontFit(name30(), s.msg, 440, false).c_str());
     for (int i = 0; !s.extended && i < min(s.entryCount, 3); i++) {
       fontDrawCentred(frame, name26(), CX, 290 + i * 36, DIM, fontFit(name26(), s.entries[i], 440, false).c_str());
     }
     return;
   }
-  for (int i = 0; i < min(s.rowCount, 4); i++) {
-    const Row& r = s.rows[i];
+  for (int i = 0; i < min(t.rowCount, 4); i++) {
+    const Row& r = t.rows[i];
     int top = 58 + i * 92;
     bool waiting = !strcmp(r.state, "waiting");
     // A bar is for what is still going. What finished or failed says so in words, whatever percentage it reached.
@@ -424,18 +477,119 @@ void screenList(uint16_t* frame) {
       shapeRoundRect(frame, 62, top + 56, barRight - 62, 10, 5, EMPTY);
       shapeRoundRect(frame, 62, top + 56, max(10, (barRight - 62) * min(100, r.percent) / 100), 10, 5, MINT);
     } else {
-      String right = String(stateWord(r.state)) + (r.age >= 0 ? " · " + span(r.age) : "");
+      String right = String(stateWord(r.state, !r.tool[0])) + (r.age >= 0 ? " · " + span(r.age) : "");
       rightWidth = fontWidth(name26(), right.c_str());
       fontDraw(frame, name26(), 442 - rightWidth, top + 52, color, right.c_str());
       fontDraw(frame, name26(), 62, top + 70, SOFT, fontFit(name26(), r.tool, 442 - rightWidth - 16 - 62, false).c_str());
     }
     fontDraw(frame, name30(), 62, top + 37, WHITE, fontFit(name30(), r.name, 442 - rightWidth - 16 - 62, true).c_str());
   }
-  int more = max(0, s.rowCount - 4);
+  int more = max(0, t.rowCount - 4);
   String foot;
   if (more > 0) foot = String("还有 ") + more + " 个";
-  if (s.agentsIdle > 0) foot += (foot.length() ? " · " : "") + String("另有 ") + s.agentsIdle + " 个空闲";
-  if (foot.length()) fontDrawCentred(frame, name26(), CX, 458, DIM, foot.c_str());
+  if (page != 0 && s.agentsIdle > 0) foot += (foot.length() ? " · " : "") + String("另有 ") + s.agentsIdle + " 个空闲";
+  if (foot.length()) fontDrawCentred(frame, name26(), CX, 444, DIM, foot.c_str());
+}
+
+// MARK: this Mac
+
+// Gigabytes in as few figures as say enough: "8.2", "32".
+static String gigabytes(float value) {
+  if (value >= 10 || fabsf(value - roundf(value)) < 0.05f) return String((int)roundf(value));
+  return String(value, 1);
+}
+
+// One of the four tiles: what is measured, a few words beside it, the number, and a bar for how full.
+// A negative `value` is one the computer could not read.
+static void tile(uint16_t* frame, int x, int y, const char* title, const String& beside, int value, bool degrees, float fraction, uint16_t tint) {
+  const int W = 214, H = 166;
+  shapeRoundRect(frame, x, y, W, H, 26, CARD);
+  shapeRoundRectLine(frame, x, y, W, H, 26, 1.0f, HAIR);
+  fontDraw(frame, name26(), x + 20, y + 38, SOFT, title);
+  int room = W - 20 - 18 - fontWidth(name26(), title) - 12;
+  if (beside.length()) fontDrawRight(frame, name26(), x + W - 18, y + 38, DIM, fontFit(name26(), beside.c_str(), room, false).c_str());
+  if (value < 0) {
+    fontDraw(frame, {rounded(2), 0}, x + 20, y + 112, DIM, "–");
+  } else {
+    char number[8];
+    snprintf(number, sizeof(number), "%d", value);
+    TextStyle big = {rounded(4), 0};
+    int numberWidth = fontWidth(big, number);
+    fontDraw(frame, big, x + 16, y + 124, WHITE, number);
+    // The sign goes after the number where there is room for it; a hundred fills the tile by itself.
+    TextStyle small = degrees ? text30() : TextStyle{rounded(1), 0};
+    const char* sign = degrees ? "℃" : "%";
+    if (16 + numberWidth + 6 + fontWidth(small, sign) <= W - 12) fontDraw(frame, small, x + 16 + numberWidth + 6, y + 124, SOFT, sign);
+  }
+  shapeRoundRect(frame, x + 20, y + 140, W - 40, 10, 5, EMPTY);
+  if (value >= 0 && fraction > 0.0f) shapeRoundRect(frame, x + 20, y + 140, max(10, (int)((W - 40) * min(1.0f, fraction))), 10, 5, tint);
+}
+
+// The computer itself: how busy its processor and its graphics chip are, how full its memory, how hot it runs,
+// and under those its disk, its power and whether it will go to sleep.
+void screenMac(uint16_t* frame) {
+  const Mac& m = g_mac;
+  fontDraw(frame, name26(), 36, 41, SOFT, "这台 Mac");
+  int hour, minute;
+  if (protoClock(hour, minute)) {
+    char clock[8];
+    snprintf(clock, sizeof(clock), "%02d:%02d", hour, minute);
+    fontDrawRight(frame, {rounded(0), 0}, 444, 41, SOFT, clock);
+  }
+  if (!m.have || millis() - m.at > 45000) {
+    fontDrawCentred(frame, text30(), CX, 226, SOFT, m.have ? "电脑有一阵没说它自己了" : "电脑还没说它自己的情况");
+    fontDrawCentred(frame, text26(), CX, 274, DIM, m.have ? "连接还在的话，过一会儿会再来" : "要新一些的渲染坞才会发来");
+    return;
+  }
+  uint16_t memoryTint = m.memPressure >= 4 ? CORAL : (m.memPressure >= 2 ? AMBER : MINT);
+  uint16_t heatTint = m.thermal >= 2 || m.temp >= 95 ? CORAL : AMBER;
+  String heat = m.thermal >= 3 ? String("严重过热") : (m.thermal == 2 ? String("过热降速") : (m.thermal == 1 ? String("偏热")
+              : (m.tempMax >= 0 ? String("最高 ") + m.tempMax + "°" : String(""))));
+  int memory = m.memTotal > 0 && m.memUsed >= 0 ? (int)(m.memUsed * 100.0f / m.memTotal + 0.5f) : -1;
+  tile(frame, 18, 56, "CPU", m.cores > 0 ? String(m.cores) + " 核" : String(""), m.cpu, false, m.cpu / 100.0f, AQUA);
+  tile(frame, 248, 56, "显卡", m.vram >= 0 ? String("显存 ") + String((int)roundf(m.vram)) + "G" : String(""), m.gpu, false, m.gpu / 100.0f, MINT);
+  tile(frame, 18, 230, "内存", memory >= 0 ? gigabytes(m.memUsed) + "/" + gigabytes(m.memTotal) + "G" : String(""), memory, false, memory / 100.0f, memoryTint);
+  tile(frame, 248, 230, "温度", heat, m.temp, true, (m.temp - 30) / 80.0f, heatTint);
+
+  Label list[3];
+  int count = 0;
+  if (m.diskFree >= 0) {
+    bool low = m.diskFree < 60;
+    list[count++] = {String("磁盘剩 ") + m.diskFree + " GB", low ? AMBER : SOFT, low ? AMBER_UNDER : GREY_UNDER, 0, 0};
+  }
+  if (m.onAC == 1) list[count++] = {String("电源"), SOFT, GREY_UNDER, 0, 0};
+  else if (m.battery >= 0) list[count++] = {String("电池 ") + m.battery + "%", AMBER, AMBER_UNDER, 0, 0};
+  if (m.awake) list[count++] = {String("不睡"), MINT, MINT_UNDER, 1, 0};
+  else list[count++] = {String("会睡"), SOFT, GREY_UNDER, 0, 0};
+  labels(frame, list, count);
+}
+
+// MARK: which page
+
+static uint16_t sideColor(Overall overall) {
+  switch (overall) {
+    case OV_ERROR: return CORAL;
+    case OV_WAITING: return AMBER;
+    case OV_WORKING: return AQUA;
+    case OV_DONE: return MINT;
+    default: return rgb(96, 96, 96);
+  }
+}
+
+// Three marks along the bottom edge, one per page: the renders, the agents, the computer. The page showing has
+// the long one. Each is in the colour of how its page is doing, so that what goes on elsewhere is seen from here.
+void screenPages(uint16_t* frame, int page) {
+  const State& s = g_state;
+  const Mac& m = g_mac;
+  bool macFresh = m.have && millis() - m.at <= 45000;
+  uint16_t mac = !macFresh ? rgb(96, 96, 96) : (m.thermal >= 2 || m.memPressure >= 4 ? CORAL : (m.thermal == 1 || m.memPressure >= 2 ? AMBER : rgb(96, 96, 96)));
+  uint16_t colors[3] = {sideColor(s.r.overall), sideColor(s.a.overall), mac};
+  const int y = 470, step = 26;
+  for (int i = 0; i < 3; i++) {
+    int x = CX + (i - 1) * step;
+    if (i == page) shapeRoundRect(frame, x - 11, y - 4, 22, 8, 4, colors[i] == rgb(96, 96, 96) ? SOFT : colors[i]);
+    else shapeDisc(frame, x, y, 4, colors[i]);
+  }
 }
 
 // MARK: a request

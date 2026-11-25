@@ -137,6 +137,7 @@ static void debugConsole() {
     }
     else if (input == "up") uiDebugTouch(false, 0, 0);
     else if (input.startsWith("passkey ")) uiDebugPasskey((uint32_t)atol(input.c_str() + 8));
+    else if (input.startsWith("page ")) uiDebugPage(atoi(input.c_str() + 5));
     else if (input.startsWith("down ")) {
       int x = 0, y = 0;
       if (sscanf(input.c_str() + 5, "%d %d", &x, &y) == 2) uiDebugTouch(true, x, y);

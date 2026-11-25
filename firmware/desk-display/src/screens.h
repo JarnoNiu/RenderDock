@@ -12,16 +12,26 @@ static const int SCREEN_DENY_X = 24, SCREEN_ALLOW_X = 248, SCREEN_BUTTON_Y = 302
 
 // Nothing has connected (or the computer went quiet); `passkey` not 0 shows the six digits to type on the computer.
 void screenLink(uint16_t* frame, uint32_t passkey, bool connected, const char* name);
-// Something is rendering: the ring, the percentage, the time left, the shot, its job and the sessions.
-void screenRendering(uint16_t* frame);
-// Sessions are working and nothing renders. Also what the plain protocol's counts are shown with.
-void screenAgents(uint16_t* frame);
-// A session needs the user, and it cannot be answered here.
-void screenWaiting(uint16_t* frame);
+// The screens below are drawn for one side of what the computer is doing (state.h): its renders, or its agents
+// and other programs' tasks. Each side has a page.
+struct Side;
+// Something has a percentage: the ring, the number, the time left, its name; for a render its job and queue.
+void screenRendering(uint16_t* frame, const Side& side);
+// A render that does not say how far along it is.
+void screenRenderGoing(uint16_t* frame, const Side& side);
+// Sessions are working. Also what the plain protocol's counts are shown with.
+void screenAgents(uint16_t* frame, const Side& side);
+// A session needs the user and cannot be answered here; or a render has stopped moving.
+void screenWaiting(uint16_t* frame, const Side& side);
 // Something finished, or failed.
-void screenFinished(uint16_t* frame, bool failed);
-void screenIdle(uint16_t* frame);
-void screenList(uint16_t* frame);
+void screenFinished(uint16_t* frame, const Side& side, bool failed);
+// Nothing on this page: the clock. `page` 0 is the renders', 1 the agents', -1 when the two are not told apart.
+void screenIdle(uint16_t* frame, int page);
+void screenList(uint16_t* frame, const Side& side, int page);
+// The computer itself: processor, graphics, memory, heat, and under them disk, power and sleep.
+void screenMac(uint16_t* frame);
+// The three marks along the bottom edge that say which page this is and how the others are doing.
+void screenPages(uint16_t* frame, int page);
 // A request to answer. Both buttons have to be held: on a screen this small a touch is too easily a mistake.
 // `holdAllow` and `holdDeny` are how far a finger held on that button has got (0…1), or negative when none is;
 // `allowed` says which answer was given, once one has been.

@@ -7,6 +7,7 @@
 #include <ArduinoJson.h>
 
 State g_state = {};
+Mac g_mac = {};
 #if RD_DEBUG_SERIAL
 bool g_protoFromConsole = false;
 #endif
@@ -60,8 +61,20 @@ static bool takeText(JsonVariantConst value, char* to, size_t size, bool needed 
   return whole;
 }
 
+static void emptySide(Side& side) {
+  side.overall = OV_IDLE;
+  side.topKind[0] = side.topName[0] = side.topTool[0] = side.topWait[0] = 0;
+  side.topPercent = side.topEta = side.topAge = -1;
+  side.topExact = true;
+  side.rowCount = 0;
+}
+
 void protoReset() {
   g_state = {};
+  g_mac = {};
+  emptySide(g_state.r);
+  emptySide(g_state.a);
+  g_state.queueEta = -1;
   g_state.topPercent = -1;
   g_state.topEta = -1;
   g_state.promptLeft = -1;
@@ -98,14 +111,124 @@ static void sendStatus() {
   sys["heap"] = ESP.getFreeHeap();
   // Not part of the published protocol: tells RenderDock it may send its "rd" fields and text beyond ASCII.
   // 2 says this device also shows questions, notices and tasks from other programs, which only the screens
-  // drawn with the fonts in flash do.
-  data["rd"] = screensReady() ? 2 : 1;
+  // drawn with the fonts in flash do. 3 says it also keeps renders and agents on pages of their own and has a
+  // page for the computer itself, so both sides and the "mac" lines are worth sending.
+  data["rd"] = screensReady() ? 3 : 1;
   // The first screens (a board without the font file) draw from a small bitmap font that has only some
   // characters, and leave out the rest without a trace. Such a board says it cannot draw beyond ASCII.
   data["utf8"] = screensReady();
   String out;
   serializeJson(doc, out);
   linkSendLine(out);
+}
+
+static void readRows(JsonArrayConst from, Row* rows, int& count) {
+  count = 0;
+  for (JsonObjectConst row : from) {
+    if (count >= 6) break;
+    Row& r = rows[count++];
+    copy(r.name, sizeof(r.name), row["n"] | "");
+    copy(r.tool, sizeof(r.tool), row["t"] | "");
+    copy(r.state, sizeof(r.state), row["s"] | "");
+    r.age = row["a"] | -1;
+    r.percent = row["p"] | -1;
+  }
+}
+
+// One side as the computer describes it.
+static void readSide(JsonObjectConst from, Side& side, const char* kind) {
+  emptySide(side);
+  side.overall = overallOf(from["state"] | "idle");
+  JsonObjectConst top = from["top"];
+  if (!top.isNull()) {
+    copy(side.topKind, sizeof(side.topKind), top["kind"] | kind);
+    copy(side.topName, sizeof(side.topName), top["name"] | "");
+    copy(side.topTool, sizeof(side.topTool), top["tool"] | "");
+    copy(side.topWait, sizeof(side.topWait), top["wait"] | "");
+    side.topPercent = top["pct"] | -1;
+    side.topExact = top["exact"] | true;
+    side.topEta = top["eta"] | -1;
+    side.topAge = top["age"] | -1;
+  }
+  readRows(from["rows"], side.rows, side.rowCount);
+}
+
+// Both sides worked out from the one list and the one "most urgent thing" an older RenderDock sends.
+static void sidesFromOne(State& s) {
+  emptySide(s.r);
+  emptySide(s.a);
+  s.rendering = s.queued = 0;
+  s.queueEta = -1;
+  for (int i = 0; i < s.rowCount; i++) {
+    Side& side = s.rows[i].tool[0] ? s.a : s.r;   // a render names no tool
+    if (side.rowCount < 6) side.rows[side.rowCount++] = s.rows[i];
+    if (!s.rows[i].tool[0] && !strcmp(s.rows[i].state, "working")) s.rendering++;
+  }
+  bool topIsRender = !strcmp(s.topKind, "render");
+  // The side the most urgent thing belongs to takes it, and the overall state with it.
+  if (s.topKind[0]) {
+    Side& mine = topIsRender ? s.r : s.a;
+    mine.overall = s.overall;
+    strlcpy(mine.topKind, s.topKind, sizeof(mine.topKind));
+    strlcpy(mine.topName, s.topName, sizeof(mine.topName));
+    strlcpy(mine.topTool, s.topTool, sizeof(mine.topTool));
+    strlcpy(mine.topWait, s.topWait, sizeof(mine.topWait));
+    mine.topPercent = s.topPercent;
+    mine.topExact = s.topExact;
+    mine.topEta = s.topEta;
+    for (int i = 0; i < mine.rowCount; i++) {
+      if (!strcmp(mine.rows[i].name, mine.topName)) mine.topAge = mine.rows[i].age;
+    }
+  }
+  // The other side is worked out from what is left: the sessions from their counts, the renders from their rows.
+  if (topIsRender || !s.topKind[0]) {
+    s.a.overall = s.agentsError > 0 ? OV_ERROR : (s.agentsWaiting > 0 ? OV_WAITING : (s.agentsWorking > 0 ? OV_WORKING : (s.agentsDone > 0 ? OV_DONE : OV_IDLE)));
+  }
+  if (!topIsRender) {
+    for (int i = 0; i < s.r.rowCount; i++) {
+      if (!strcmp(s.r.rows[i].state, "waiting")) s.r.overall = OV_WAITING;
+      else if (!strcmp(s.r.rows[i].state, "working") && s.r.overall == OV_IDLE) s.r.overall = OV_WORKING;
+    }
+  }
+  // It was sent no "most urgent thing" of its own: the first of its rows in that state stands in.
+  Side& other = topIsRender ? s.a : s.r;
+  if (other.overall != OV_IDLE && !other.topName[0] && other.rowCount > 0) {
+    const char* wanted = other.overall == OV_ERROR ? "error" : (other.overall == OV_WAITING ? "waiting" : (other.overall == OV_WORKING ? "working" : "done"));
+    const Row* row = nullptr;
+    for (int i = 0; i < other.rowCount && !row; i++) {
+      if (!strcmp(other.rows[i].state, wanted)) row = &other.rows[i];
+    }
+    if (row) {
+      strlcpy(other.topKind, row->tool[0] ? "agent" : "render", sizeof(other.topKind));
+      strlcpy(other.topName, row->name, sizeof(other.topName));
+      strlcpy(other.topTool, row->tool, sizeof(other.topTool));
+      other.topPercent = row->percent;
+      other.topAge = row->age;
+    }
+  }
+}
+
+// The computer about itself: {"mac":{"cpu":37,"cores":10,"gpu":92,"vram":8.2,"mem":[21.4,32],"mp":1,"swap":1.2,
+// "t":71,"tmax":78,"th":0,"disk":212,"ac":true,"bat":82,"awake":true}}. Whatever is missing is shown as unknown.
+static void readMac(JsonObjectConst mac) {
+  Mac& m = g_mac;
+  m.have = true;
+  m.at = millis();
+  m.cpu = mac["cpu"] | -1;
+  m.cores = mac["cores"] | 0;
+  m.gpu = mac["gpu"] | -1;
+  m.vram = mac["vram"] | -1.0f;
+  m.memUsed = mac["mem"][0] | -1.0f;
+  m.memTotal = mac["mem"][1] | -1.0f;
+  m.memPressure = mac["mp"] | 1;
+  m.swap = mac["swap"] | -1.0f;
+  m.temp = mac["t"] | -1;
+  m.tempMax = mac["tmax"] | -1;
+  m.thermal = mac["th"] | 0;
+  m.diskFree = mac["disk"] | -1;
+  m.onAC = mac["ac"].is<bool>() ? (mac["ac"].as<bool>() ? 1 : 0) : -1;
+  m.battery = mac["bat"] | -1;
+  m.awake = mac["awake"] | false;
 }
 
 static void readSnapshot(JsonDocument& doc) {
@@ -165,6 +288,9 @@ static void readSnapshot(JsonDocument& doc) {
     s.agentsWorking = s.running;
     s.ask = s.note = false;
     s.askId[0] = s.noteId[0] = 0;
+    // The plain protocol knows no renders: what it counts is all on the one side.
+    sidesFromOne(s);
+    s.a.overall = s.overall;
     return;
   }
   s.overall = overallOf(rd["state"] | "idle");
@@ -190,15 +316,23 @@ static void readSnapshot(JsonDocument& doc) {
   s.agentsWorking = agents["working"] | 0;
   s.agentsDone = agents["done"] | 0;
   s.agentsIdle = agents["idle"] | 0;
-  JsonArray rows = rd["rows"];
-  for (JsonObject row : rows) {
-    if (s.rowCount >= 6) break;
-    Row& r = s.rows[s.rowCount++];
-    copy(r.name, sizeof(r.name), row["n"] | "");
-    copy(r.tool, sizeof(r.tool), row["t"] | "");
-    copy(r.state, sizeof(r.state), row["s"] | "");
-    r.age = row["a"] | -1;
-    r.percent = row["p"] | -1;
+  readRows(rd["rows"], s.rows, s.rowCount);
+  // Each side as the computer sees it, when it says; otherwise taken apart here.
+  JsonObjectConst renders = rd["r"], sessions = rd["a"];
+  if (!renders.isNull() && !sessions.isNull()) {
+    readSide(renders, s.r, "render");
+    readSide(sessions, s.a, "agent");
+    s.rendering = renders["n"]["run"] | 0;
+    s.queued = renders["n"]["queue"] | 0;
+    s.queueEta = renders["qeta"] | -1;
+    JsonObjectConst queue = renders["job"];
+    if (!queue.isNull()) {
+      copy(s.jobTitle, sizeof(s.jobTitle), queue["title"] | "");
+      s.jobDone = queue["done"] | 0;
+      s.jobTotal = queue["total"] | 0;
+    }
+  } else {
+    sidesFromOne(s);
   }
 
   JsonObject ask = rd["ask"];
@@ -258,6 +392,10 @@ void protoHandle(const String& line) {
     s_clockOffset = doc["time"][1] | 0;
     s_clockAt = millis();
     s_clockSet = s_clockEpoch > 0;
+    return;
+  }
+  if (doc["mac"].is<JsonObject>()) {
+    readMac(doc["mac"]);
     return;
   }
   const char* command = doc["cmd"] | "";

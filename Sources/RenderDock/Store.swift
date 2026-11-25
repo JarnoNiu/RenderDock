@@ -244,7 +244,10 @@ final class Store {
                 self.deviceStatus = self.device.status
                 self.onChange?()
             }
-            device.onReady = { [weak self] in self?.sendToDevice() }
+            device.onReady = { [weak self] in
+                self?.sendToDevice()
+                self?.sendMacToDevice(now: true)   // the device has just said what it understands, or the link has just become encrypted
+            }
             // An answer from the device goes through the same broker as one from the panel: it must be for a
             // request that may be allowed from a display, it counts once, and it is written to the record.
             device.onAnswer = { [weak self] id, decision in
@@ -266,7 +269,17 @@ final class Store {
         device.send(BuddyProtocol.heartbeat(state: snapshot(now: Date()), requests: requests, inbox: inbox,
                                             options: BuddyProtocol.Options(secure: device.secure, unicode: deviceUnicode || device.unicode,
                                                                            extended: device.extended, inbox: device.inbox,
-                                                                           offerRequests: deviceAnswers)))
+                                                                           offerRequests: deviceAnswers, pages: device.pages)))
+    }
+
+    /// This Mac's own numbers, for a device with a page for them. They are measured every two seconds; the device
+    /// is told every four at most, and only what has changed (the link leaves out a line it has just sent).
+    @ObservationIgnored private var macSentAt = Date.distantPast
+    private func sendMacToDevice(now: Bool = false) {
+        guard deviceEnabled, !demo, device.isConnected, device.pages else { return }
+        guard now || Date().timeIntervalSince(macSentAt) >= 4 else { return }
+        macSentAt = Date()
+        device.sendMac(BuddyProtocol.mac(metrics, cores: ProcessInfo.processInfo.activeProcessorCount))
     }
 
     @ObservationIgnored private let scanner = TaskScanner()
@@ -502,6 +515,7 @@ final class Store {
 
     private func apply(_ m: Metrics) {
         metrics = m
+        sendMacToDevice()
         push(&cpuHistory, m.cpu)
         push(&gpuHistory, m.gpu ?? 0)
         push(&memHistory, m.memFraction)

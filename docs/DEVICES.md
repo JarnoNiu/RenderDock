@@ -48,6 +48,33 @@ A device that answers `"rd": 2` also says it can show what other programs send t
 "note": { "id": "hbxwe", "from": "builder", "title": "Build", "body": "All 42 tests passed", "level": "done" }
 ```
 
+### A page for each side, and one for the Mac (`"rd": 3`, from 0.4)
+
+`state` and `top` above are renders and agents taken together: the most urgent thing, and nothing about the side that is less urgent. A device that keeps the two on pages of their own answers `"rd": 3`, and is then told about each side by itself, inside `rd`:
+
+```json
+"r": { "state": "working",
+       "top":  { "name": "s040_explode", "pct": 62, "exact": true, "eta": 1500 },
+       "job":  { "title": "Product film", "done": 3, "total": 8 },
+       "n":    { "run": 2, "queue": 4 }, "qeta": 21900,
+       "rows": [ { "n": "s040_explode", "s": "working", "p": 62 }, { "n": "s045_explode_alt", "s": "working", "p": 18 } ] },
+"a": { "state": "waiting",
+       "top":  { "kind": "agent", "name": "docs", "tool": "Claude Code", "wait": "permission", "age": 42 },
+       "rows": [ { "n": "docs", "t": "Claude Code", "s": "waiting", "a": 42 }, { "n": "billing-api", "t": "Codex", "s": "working", "a": 913 } ] }
+```
+
+- `r` is the renders: its own `state` (a failed render is `error`, one that stopped moving `waiting`), the shot furthest along, the job that shot belongs to, how many shots are being rendered (`run`) and how many wait their turn (`queue`), and the seconds until that job's whole queue is through (`qeta`, when RenderDock can say).
+- `a` is the agents' sessions, with the tasks other programs report on: `top.kind` is `agent` or `task`, `age` the seconds it has been in its state.
+- Each side has its own `rows`, up to six. The one list `rd.rows` is then left out.
+
+Such a device is also sent, **on lines of their own**, how the Mac itself is doing:
+
+```json
+{"mac":{"ac":true,"awake":true,"cores":10,"cpu":37,"disk":212,"gpu":92,"mem":[21.4,32],"mp":1,"swap":1.2,"t":71,"th":0,"tmax":78,"vram":8.2}}
+```
+
+`cpu` and `gpu` are percentages; `mem` is used and total in GB, `mp` the system's memory-pressure level (1, 2 or 4), `swap` and `vram` GB; `t` and `tmax` the chip's temperature in °C, average and hottest sensor, `th` the system's own word for the heat (0 fine, 1 warm, 2 slowed down, 3 critical); `disk` the free space in GB; `ac` whether it is on the adapter, `bat` the battery's percentage when there is one; `awake` whether something keeps it from idle sleep. What the Mac could not read is left out, not sent as nought. A line goes out every four seconds at most, only when it differs from the last one, only on an encrypted link, and once more with each keepalive so the device can tell "unchanged" from "gone quiet".
+
 `ask` is the oldest waiting question the device can draw, with the seconds left to answer it. `note` is the newest notice, for the first minute after it arrived; `level` is `info`, `done` or `error`. A task a program reports on appears in `rows` (`t` is whoever reports) and may be `top`, with `"kind": "task"`. The device answers a question with
 
 ```json

@@ -114,6 +114,58 @@ package enum BuddyProtocol {
         package var percent: Int?
     }
 
+    /// One side of what is going on, for a device that keeps the renders and the agents on pages of their own
+    /// (`Options.pages`): what is most urgent on that side, and that side's list.
+    package struct Side: Equatable {
+        /// error | waiting | working | done | idle
+        package var state: String
+        /// "agent" or "task" on the agents' side; a render says nothing here.
+        package var topKind: String?
+        package var topName: String?
+        package var topTool: String?
+        package var topWait: String?
+        package var topPercent: Int?
+        package var topExact: Bool?
+        package var topEtaSec: Int?
+        /// Seconds it has been in its state.
+        package var topAgeSec: Int?
+        package var rows: [Row]
+        /// The renders' side only: how many shots are being rendered and how many wait their turn; the job the
+        /// top render belongs to, and how long until its whole queue is through.
+        package var rendering: Int?
+        package var queued: Int?
+        package var queueEtaSec: Int?
+        package var jobTitle: String?
+        package var jobDone: Int?
+        package var jobTotal: Int?
+
+        func object() -> [String: Any] {
+            var o: [String: Any] = ["state": state]
+            if let topName {
+                var top: [String: Any] = ["name": topName]
+                if let topKind { top["kind"] = topKind }
+                if let topTool { top["tool"] = topTool }
+                if let topWait { top["wait"] = topWait }
+                if let topPercent { top["pct"] = topPercent }
+                if let topExact { top["exact"] = topExact }
+                if let topEtaSec { top["eta"] = topEtaSec }
+                if let topAgeSec { top["age"] = topAgeSec }
+                o["top"] = top
+            }
+            o["rows"] = rows.map { r -> [String: Any] in
+                var row: [String: Any] = ["n": r.name, "s": r.state]
+                if !r.tool.isEmpty { row["t"] = r.tool }
+                if let age = r.ageSec { row["a"] = age }
+                if let percent = r.percent { row["p"] = percent }
+                return row
+            }
+            if let rendering, let queued { o["n"] = ["run": rendering, "queue": queued] }
+            if let queueEtaSec { o["qeta"] = queueEtaSec }
+            if let jobTitle { o["job"] = ["title": jobTitle, "done": jobDone ?? 0, "total": jobTotal ?? 0] }
+            return o
+        }
+    }
+
     /// What RenderDock adds for a device that has said it understands it. Not part of the published protocol:
     /// it travels under one extra key, "rd", which other devices never see.
     package struct Extended: Equatable {
@@ -140,6 +192,10 @@ package enum BuddyProtocol {
         /// Only for a device that said it understands these two.
         package var ask: Ask?
         package var note: Note?
+        /// Only for a device with a page for each side. The fields above stay as they are, the two sides taken
+        /// together; these say what each is doing by itself, and carry the lists (`rows` is then left empty).
+        package var renders: Side?
+        package var sessions: Side?
 
         func object() -> [String: Any] {
             var o: [String: Any] = ["state": state,
@@ -166,6 +222,10 @@ package enum BuddyProtocol {
             if let promptProject { o["by"] = ["n": promptProject, "t": promptAgent ?? ""] }
             if let ask { o["ask"] = ["id": ask.id, "from": ask.from, "text": ask.text, "choices": ask.choices, "left": ask.leftSec] as [String: Any] }
             if let note { o["note"] = ["id": note.id, "from": note.from, "title": note.title, "body": note.body, "level": note.level] }
+            if let renders, let sessions {
+                o["r"] = renders.object()
+                o["a"] = sessions.object()
+            }
             return o
         }
     }
@@ -206,13 +266,17 @@ package enum BuddyProtocol {
         /// Whether a request may be answered on the device at all. When not, the device is only told that
         /// something waits on the Mac.
         package var offerRequests: Bool
+        /// …and that it keeps the renders and the agents on pages of their own (firmware that reports "rd": 3),
+        /// so each side is described by itself.
+        package var pages: Bool
 
-        package init(secure: Bool, unicode: Bool = false, extended: Bool = false, inbox: Bool = false, offerRequests: Bool = true) {
+        package init(secure: Bool, unicode: Bool = false, extended: Bool = false, inbox: Bool = false, offerRequests: Bool = true, pages: Bool = false) {
             self.secure = secure
             self.unicode = unicode
             self.extended = extended
             self.inbox = inbox
             self.offerRequests = offerRequests
+            self.pages = pages
         }
     }
 
@@ -307,6 +371,38 @@ package enum BuddyProtocol {
         }
         e.rows = Array((agentRows(["error", "waiting"]) + taskRows("error") + shots + taskRows("working") + agentRows(["working"])
             + agentRows(["done"]) + taskRows("done")).prefix(Limit.rows))
+        if options.pages {
+            // Each side by itself. The renders: what the summary says about them, their job and its queue.
+            var r = Side(state: s.renderSide?.state ?? "idle", rows: Array(shots.prefix(Limit.rows)))
+            r.rendering = s.rendering
+            r.queued = s.queued
+            if let top = s.renderSide?.top {
+                r.topName = name(top.name)
+                r.topPercent = top.fraction.map { Int(($0 * 100).rounded(.down)) }
+                r.topExact = top.exact
+                r.topEtaSec = top.etaSec
+                if let job = state.jobs.first(where: { $0.shots.contains { $0.name == top.name } }) {
+                    r.jobTitle = name(job.title)
+                    r.jobDone = job.shotsDone
+                    r.jobTotal = job.shotsTotal
+                    r.queueEtaSec = job.queueEtaSec
+                }
+            }
+            // The agents, with the tasks other programs report on.
+            var a = Side(state: s.agentSide?.state ?? "idle",
+                         rows: Array((agentRows(["error", "waiting"]) + taskRows("error") + taskRows("working") + agentRows(["working"])
+                             + agentRows(["done"]) + taskRows("done")).prefix(Limit.rows)))
+            if let top = s.agentSide?.top {
+                a.topKind = "agent"
+                a.topName = name(top.name)
+                a.topTool = top.tool.map(AgentTool.displayName)
+                a.topWait = top.waitingFor.map { fit($0, Limit.name, unicode: options.unicode) }
+                a.topAgeSec = state.agents.first { $0.project == top.name && $0.state == top.state }?.sinceSec
+            }
+            e.renders = r
+            e.sessions = a
+            e.rows = []
+        }
         if let offered {
             e.promptLeftSec = max(0, Int(offered.expiresAt.timeIntervalSince(now).rounded()))
             e.promptProject = name(offered.project)
@@ -333,6 +429,20 @@ package enum BuddyProtocol {
             e.jobDone = nil
             e.jobTotal = nil
         }
+        // The same on the agents' side by itself, where a task has only the sessions to be weighed against.
+        if var a = e.sessions, let task = recent("error") ?? inbox.tasks.first(where: { $0.state == "working" }) ?? recent("done"),
+           (rank[task.state] ?? 0) > (rank[a.state] ?? 0) {
+            a.state = task.state
+            a.topKind = "task"
+            a.topName = name(task.title)
+            a.topTool = task.from.isEmpty ? nil : fit(task.from, InboxLimits.from, unicode: options.unicode)
+            a.topWait = nil
+            a.topPercent = task.fraction.map { Int(($0 * 100).rounded(.down)) }
+            a.topExact = task.fraction == nil ? nil : true
+            a.topEtaSec = task.state == "working" ? task.etaSec : nil
+            a.topAgeSec = max(0, Int(now.timeIntervalSince(task.state == "working" ? task.startedAt : task.updatedAt)))
+            e.sessions = a
+        }
         e.ask = inbox.questions.lazy.compactMap { self.ask(for: $0, options: options, now: now) }.first
         if let notice = inbox.notices.first, now.timeIntervalSince(notice.at) <= Limit.noteLife {
             let drawable = options.unicode || [notice.from, notice.title, notice.body].allSatisfy { $0.allSatisfy(\.isASCII) }
@@ -341,6 +451,39 @@ package enum BuddyProtocol {
             }
         }
         return e
+    }
+
+    /// The computer about itself, for a device with a page for it. A line of its own, apart from the snapshots:
+    /// these numbers change every few seconds, and a snapshot should go out only when something happened.
+    /// Percentages and degrees are whole numbers and sizes are in tenths of a gigabyte, so that the line stays
+    /// the same (and is not sent again) while nothing that would show has changed.
+    package static func mac(_ m: Metrics, cores: Int) -> Data {
+        // Written out by hand: the system's JSON writer turns 21.4 into 21.399999999999999, which is longer on a
+        // link that is slow, and different from one sample to the next for no reason anyone could see.
+        func tenths(_ bytes: UInt64) -> String {
+            let value = (Double(bytes) / 1_073_741_824 * 10).rounded()
+            return value.truncatingRemainder(dividingBy: 10) == 0 ? String(Int(value / 10)) : String(format: "%.1f", value / 10)
+        }
+        let thermal: Int
+        switch m.thermal {
+        case .nominal: thermal = 0
+        case .fair: thermal = 1
+        case .serious: thermal = 2
+        case .critical: thermal = 3
+        @unknown default: thermal = 0
+        }
+        var o: [String: String] = ["cpu": String(Int((min(1, max(0, m.cpu)) * 100).rounded())), "cores": String(cores),
+                                   "mem": "[\(tenths(m.memUsed)),\(tenths(m.memTotal))]", "mp": String(m.memPressure), "swap": tenths(m.swapUsed),
+                                   "th": String(thermal), "awake": m.awakeHeld ? "true" : "false"]
+        if let gpu = m.gpu { o["gpu"] = String(Int((min(1, max(0, gpu)) * 100).rounded())) }
+        if let bytes = m.gpuMemBytes { o["vram"] = tenths(bytes) }
+        if let degrees = m.tempC { o["t"] = String(Int(degrees.rounded())) }
+        if let degrees = m.tempMaxC { o["tmax"] = String(Int(degrees.rounded())) }
+        if let free = m.diskFree { o["disk"] = String(Int(Double(free) / 1_073_741_824)) }
+        if let onAC = m.onAC { o["ac"] = onAC ? "true" : "false" }
+        if let battery = m.battery { o["bat"] = String(battery) }
+        let fields = o.keys.sorted().map { "\"\($0)\":\(o[$0]!)" }.joined(separator: ",")
+        return Data("{\"mac\":{\(fields)}}\n".utf8)
     }
 
     /// A request may go to the device only if it may be allowed from a display at all, and if the device can
@@ -413,8 +556,11 @@ package enum BuddyProtocol {
         package var unicode: Bool
         /// The device understands questions, notices and tasks from other programs.
         package var inbox: Bool
+        /// The device keeps renders and agents on pages of their own and has one for the computer itself.
+        package var pages: Bool
 
-        package init(name: String?, secure: Bool, batteryPercent: Int?, onUSB: Bool?, extended: Bool = false, unicode: Bool = false, inbox: Bool = false) {
+        package init(name: String?, secure: Bool, batteryPercent: Int?, onUSB: Bool?, extended: Bool = false, unicode: Bool = false, inbox: Bool = false,
+                     pages: Bool = false) {
             self.name = name
             self.secure = secure
             self.batteryPercent = batteryPercent
@@ -422,6 +568,7 @@ package enum BuddyProtocol {
             self.extended = extended
             self.unicode = unicode
             self.inbox = inbox
+            self.pages = pages
         }
     }
 
@@ -457,7 +604,7 @@ package enum BuddyProtocol {
                 return .status(DeviceStatus(name: data["name"] as? String, secure: data["sec"] as? Bool ?? false,
                                             batteryPercent: battery?["pct"] as? Int, onUSB: battery?["usb"] as? Bool,
                                             extended: (data["rd"] as? Int ?? 0) >= 1, unicode: data["utf8"] as? Bool ?? false,
-                                            inbox: (data["rd"] as? Int ?? 0) >= 2))
+                                            inbox: (data["rd"] as? Int ?? 0) >= 2, pages: (data["rd"] as? Int ?? 0) >= 3))
             }
             return .ack(ack, ok: ok)
         }

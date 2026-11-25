@@ -41,6 +41,15 @@ package struct StateSnapshot: Codable, Equatable {
         package var etaSec: Int?
     }
 
+    /// One side of what is going on, by itself: the renders, or the coding agents. For a display that keeps the
+    /// two on pages of their own.
+    package struct SideSummary: Codable, Equatable {
+        /// error | waiting | working | done | idle
+        package var state: String
+        /// What that word is about. Absent when idle.
+        package var top: Top?
+    }
+
     package struct Summary: Codable, Equatable {
         package var rendering: Int
         package var paused: Int
@@ -55,6 +64,10 @@ package struct StateSnapshot: Codable, Equatable {
         package var top: Top?
         /// One line of plain ASCII, at most 23 characters, for the smallest displays: "1 waiting | render 62%".
         package var line: String
+        /// The renders alone, and the agents alone: `state` and `top` above are the two taken together, and say
+        /// nothing about the side that is less urgent. (From 0.4.)
+        package var renderSide: SideSummary?
+        package var agentSide: SideSummary?
     }
 
     package struct Shot: Codable, Equatable {
@@ -221,6 +234,25 @@ package struct StateSnapshot: Codable, Equatable {
             top = nil
         }
 
+        // Each side by itself, in the same order of urgency.
+        let renderSide: SideSummary
+        if let failedRun {
+            renderSide = SideSummary(state: AgentState.error.rawValue, top: renderTop(failedRun.shot, .error))
+        } else if let stalledItem {
+            renderSide = SideSummary(state: AgentState.waiting.rawValue, top: renderTop(stalledItem.name, .waiting))
+        } else if groups.activeCount > 0 {
+            renderSide = SideSummary(state: AgentState.working.rawValue, top: focus.map {
+                Top(kind: "render", name: $0.name, state: AgentState.working.rawValue, fraction: $0.fraction, exact: $0.exact, etaSec: $0.etaSec)
+            })
+        } else if let finishedRun {
+            renderSide = SideSummary(state: AgentState.done.rawValue, top: renderTop(finishedRun.shot, .done))
+        } else {
+            renderSide = SideSummary(state: AgentState.idle.rawValue, top: nil)
+        }
+        let agentsAre: AgentState = agents.count(.error) > 0 ? .error : (agents.count(.waiting) > 0 ? .waiting
+            : (agents.count(.working) > 0 ? .working : (agents.count(.done) > 0 ? .done : .idle)))
+        let agentSide = SideSummary(state: agentsAre.rawValue, top: agentsAre == .idle ? nil : agentTop(agentsAre))
+
         // The line: most urgent first, as many parts as fit.
         var parts: [String] = []
         let failed = agents.count(.error) + (failedRun == nil ? 0 : 1)
@@ -249,7 +281,7 @@ package struct StateSnapshot: Codable, Equatable {
                        queued: groups.waitingCount, focus: focus,
                        agents: AgentCounts(error: agents.count(.error), waiting: agents.count(.waiting), working: agents.count(.working),
                                            done: agents.count(.done), idle: agents.count(.idle), stale: agents.count(.stale)),
-                       state: state.rawValue, top: top, line: line)
+                       state: state.rawValue, top: top, line: line, renderSide: renderSide, agentSide: agentSide)
     }
 
     /// Compact single-line JSON (safe to send as one server-sent-event line).

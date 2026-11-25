@@ -58,6 +58,10 @@ It lists, most urgent first and as many as fit: sessions and renders that failed
 
 It never contains a project name or a title, so it is safe on any display.
 
+## Each side by itself: `summary.renderSide`, `summary.agentSide` (from 0.4)
+
+`summary.state` and `summary.top` are the more urgent of the two sides, which is right for one light or one line. A display with room for a page each wants both: while a session waits for you, the render behind it is still at 62%. `renderSide` and `agentSide` each have a `state` and a `top` of their own, in the same vocabulary. A render that failed in the last five minutes is `error`, one that stopped moving is `waiting`; `top` is absent when that side is idle.
+
 ## Counts
 
 `summary.agents` has the number of sessions in each state. `summary.rendering`, `paused`, `stalled` and `queued` count render shots and jobs, as before.

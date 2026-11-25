@@ -1558,6 +1558,69 @@ do {
     check("the time is sent with the zone's offset", sync == "{\"time\":[1800000000,28800]}\n")
     check("a long line is cut into writes of the size the link allows",
           BuddyProtocol.chunks(Data(repeating: 1, count: 50), size: 20).map(\.count) == [20, 20, 10] && BuddyProtocol.chunks(Data(), size: 20).isEmpty)
+
+    // A device with a page for the renders and one for the agents is told about each side by itself.
+    check("the summary says how each side is doing: a render going, a session waiting",
+          state.summary.renderSide?.state == "working" && state.summary.renderSide?.top?.name == "s2" && state.summary.renderSide?.top?.kind == "render"
+          && state.summary.agentSide?.state == "waiting" && state.summary.agentSide?.top?.name == "docs" && state.summary.state == "waiting")
+    let paged = BuddyProtocol.heartbeat(state: state, requests: [], options: BuddyProtocol.Options(secure: true, unicode: true, extended: true, pages: true))
+    let renders = paged.extended?.renders, sessions = paged.extended?.sessions
+    check("the renders' side: its state, the shot furthest along with its percentage, how many are going",
+          renders?.state == "working" && renders?.topName == "s2" && renders?.topPercent == 50 && renders?.topKind == nil && renders?.rendering == 1)
+    check("…its job, and no session among its rows",
+          renders?.jobTitle != nil && renders?.jobDone == 1 && renders?.jobTotal == 3 && renders?.rows.map(\.name) == ["s2"] && renders?.rows.allSatisfy { $0.tool.isEmpty } == true)
+    check("the agents' side: its state, who waits and for what, how long, and no render among its rows",
+          sessions?.state == "waiting" && sessions?.topKind == "agent" && sessions?.topName == "docs" && sessions?.topTool == "Claude Code"
+          && sessions?.topWait == "permission prompt" && sessions?.topAgeSec == 20 && sessions?.rows.isEmpty == false
+          && sessions?.rows.allSatisfy { !$0.tool.isEmpty } == true)
+    check("the one list is left out then (each side has its own); the two together are still said",
+          paged.extended?.rows.isEmpty == true && paged.extended?.state == "waiting" && paged.extended?.topName == "docs")
+    let pagedLine = String(decoding: paged.line(), as: UTF8.self)
+    check("on the wire: \"r\" and \"a\" under \"rd\"", pagedLine.contains("\"r\":{") && pagedLine.contains("\"a\":{") && pagedLine.contains("\"n\":{\"queue\":"))
+    let unpaged = BuddyProtocol.heartbeat(state: state, requests: [], options: BuddyProtocol.Options(secure: true, unicode: true, extended: true))
+    check("a device without pages gets neither side, and the one list as before",
+          unpaged.extended?.renders == nil && unpaged.extended?.sessions == nil && unpaged.extended?.rows.isEmpty == false
+          && !String(decoding: unpaged.line(), as: UTF8.self).contains("\"r\":{"))
+    let quiet = StateSnapshot.make(groups: [], metrics: Metrics(), agents: [agent("c", .idle)], now: agentNow, host: "Test Mac")
+    let quietPaged = BuddyProtocol.heartbeat(state: quiet, requests: [], options: BuddyProtocol.Options(secure: true, extended: true, pages: true))
+    check("nothing going on: both sides idle, with no top and no rows",
+          quietPaged.extended?.renders?.state == "idle" && quietPaged.extended?.renders?.topName == nil && quietPaged.extended?.renders?.rows.isEmpty == true
+          && quietPaged.extended?.sessions?.state == "idle" && quietPaged.extended?.sessions?.rows.isEmpty == true)
+    check("a link that is not encrypted gets neither side", BuddyProtocol.heartbeat(state: state, requests: [], options: BuddyProtocol.Options(secure: false, extended: true, pages: true)).extended == nil)
+
+    // The computer about itself.
+    var machine = Metrics()
+    machine.cpu = 0.368
+    machine.gpu = 0.92
+    machine.gpuMemBytes = 8_804_682_957        // 8.2 GB
+    machine.memUsed = 22_978_150_810           // 21.4 GB
+    machine.memTotal = 34_359_738_368          // 32 GB
+    machine.memPressure = 2
+    machine.swapUsed = 1_288_490_189           // 1.2 GB
+    machine.tempC = 70.6
+    machine.tempMaxC = 78.2
+    machine.thermal = .serious
+    machine.diskFree = 228_170_137_600         // 212.5 GB
+    machine.onAC = true
+    machine.awakeHeld = true
+    let macLine = String(decoding: BuddyProtocol.mac(machine, cores: 10), as: UTF8.self)
+    check("this Mac in one line: whole percentages and degrees, sizes in tenths of a gigabyte",
+          macLine == "{\"mac\":{\"ac\":true,\"awake\":true,\"cores\":10,\"cpu\":37,\"disk\":212,\"gpu\":92,\"mem\":[21.4,32],\"mp\":2,\"swap\":1.2,\"t\":71,\"th\":2,\"tmax\":78,\"vram\":8.2}}\n")
+    var bare = Metrics()
+    bare.cpu = 0.04
+    bare.memUsed = 10_200_547_328
+    bare.memTotal = 17_179_869_184
+    let bareLine = String(decoding: BuddyProtocol.mac(bare, cores: 8), as: UTF8.self)
+    check("what could not be read is left out, not sent as nought", !bareLine.contains("gpu") && !bareLine.contains("\"t\"") && !bareLine.contains("disk") && !bareLine.contains("bat") && !bareLine.contains("\"ac\""))
+    var jitter = machine
+    jitter.cpu = 0.3712
+    jitter.memUsed += 20_000_000
+    check("numbers that would show the same make the same line (so it is not sent again)", BuddyProtocol.mac(jitter, cores: 10) == BuddyProtocol.mac(machine, cores: 10))
+    check("a device says it has pages with \"rd\" 3, and not with 2",
+          BuddyProtocol.parse(Data("{\"ack\":\"status\",\"ok\":true,\"data\":{\"sec\":true,\"rd\":3,\"utf8\":true}}".utf8))
+          == .status(BuddyProtocol.DeviceStatus(name: nil, secure: true, batteryPercent: nil, onUSB: nil, extended: true, unicode: true, inbox: true, pages: true))
+          && BuddyProtocol.parse(Data("{\"ack\":\"status\",\"ok\":true,\"data\":{\"sec\":true,\"rd\":2,\"utf8\":true}}".utf8))
+          == .status(BuddyProtocol.DeviceStatus(name: nil, secure: true, batteryPercent: nil, onUSB: nil, extended: true, unicode: true, inbox: true)))
 }
 
 section("a connection the device refuses")

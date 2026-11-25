@@ -98,6 +98,7 @@ curl -s http://127.0.0.1:47600/v1/state
 | Field | Meaning |
 |---|---|
 | `summary.focus` | The one shot a small display should show: the furthest-along running shot, otherwise a stalled or paused one. Absent when nothing is going on |
+| `summary.renderSide`, `summary.agentSide` | From 0.4: each side by itself, as `{"state": …, "top": …}` in the same vocabulary as `summary.state` and `summary.top`. Those two are the more urgent of the sides; these say what the other one is doing as well, for a display with a page for each |
 | `summary.state`, `summary.top`, `summary.line`, `summary.agents` | From 0.3: renders and agents' sessions together, for a light or a small screen: one word, the one thing it is about, one line of ASCII, and counts. See [SMALL-DISPLAYS.md](SMALL-DISPLAYS.md) |
 | `fraction` | 0–1. Present only when a total is known |
 | `exact` | `true` when `framesTotal` is exact (from `render-progress.json` or the command line). `false` when it is an estimate or unknown. **Show `≈` or no percentage when this is false** |

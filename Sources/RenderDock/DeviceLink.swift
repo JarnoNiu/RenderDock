@@ -75,6 +75,8 @@ final class DeviceLink: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     private var deviceExtended = false
     private var deviceUnicode = false
     private var deviceInbox = false
+    private var devicePages = false
+    private var lastMac: Data?
     /// Connections in a row that ended before the link was encrypted. Each one waits longer before the next try,
     /// so a pairing the user dismissed does not come back every two seconds.
     private var failures = 0
@@ -115,6 +117,8 @@ final class DeviceLink: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     var unicode: Bool { queue.sync { deviceUnicode } }
     /// …and that it understands questions, notices and tasks from other programs.
     var inbox: Bool { queue.sync { deviceInbox } }
+    /// …and that it keeps renders and agents on pages of their own, with one for this Mac.
+    var pages: Bool { queue.sync { devicePages } }
 
     /// `~/Library/Application Support/RenderDock/device-link.log`: the last hundred or so events, rewritten whole.
     static let logURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -176,6 +180,17 @@ final class DeviceLink: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         }
     }
 
+    /// This Mac's own numbers (`BuddyProtocol.mac`), for a device that has a page for them. Like everything but
+    /// counts, they go out only on an encrypted link; and only when the line differs from the last one sent.
+    func sendMac(_ line: Data) {
+        queue.async {
+            guard case .connected(_, true, _) = self.state, self.devicePages, let p = self.peripheral, self.rx != nil, p.state == .connected else { return }
+            guard line != self.lastMac else { return }
+            self.lastMac = line
+            self.write(line)
+        }
+    }
+
     // MARK: on `queue`
 
     private func set(_ new: Status) {
@@ -210,11 +225,13 @@ final class DeviceLink: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         offered = []
         offeredAsks = []
         lastLine = nil
+        lastMac = nil
         lastWriteError = ""
         assembler = BuddyProtocol.LineAssembler()
         deviceExtended = false
         deviceUnicode = false
         deviceInbox = false
+        devicePages = false
     }
 
     private func look() {
@@ -261,7 +278,11 @@ final class DeviceLink: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         timer.setEventHandler { [weak self] in
             guard let self else { return }
             self.ticks += 1
-            if self.ticks % Self.heartbeatTicks == 0, let line = self.lastLine { self.write(line) }
+            if self.ticks % Self.heartbeatTicks == 0 {
+                if let line = self.lastLine { self.write(line) }
+                // The device takes this Mac's numbers for stale after three quarters of a minute without them.
+                if let mac = self.lastMac { self.write(mac) }
+            }
             // The device says nothing until the link is encrypted, and pairing takes as long as the user takes to
             // type six digits. So for the first minute and a half it is asked often; after that, now and then
             // (for the battery, and in case the answer changes).
@@ -435,17 +456,20 @@ final class DeviceLink: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
             case .status(let device):
                 guard case .connected(let name, let wasSecure, _) = state else { continue }
                 let changed = device.secure != wasSecure || device.extended != deviceExtended || device.unicode != deviceUnicode || device.inbox != deviceInbox
+                    || device.pages != devicePages
                 deviceExtended = device.extended
                 deviceUnicode = device.unicode
                 deviceInbox = device.inbox
+                devicePages = device.pages
                 set(.connected(name: device.name ?? name, secure: device.secure, battery: device.batteryPercent))
                 if changed {
-                    note("the device says: encrypted \(device.secure), RenderDock's fields \(device.extended), beyond ASCII \(device.unicode), questions and notices \(device.inbox)")
+                    note("the device says: encrypted \(device.secure), RenderDock's fields \(device.extended), beyond ASCII \(device.unicode), questions and notices \(device.inbox), pages \(device.pages)")
                     if device.secure && !wasSecure {
                         failures = 0
                         write(BuddyProtocol.timeSync())   // the one sent on connecting was refused if pairing was not done yet
                     }
                     lastLine = nil   // what may be sent has changed
+                    lastMac = nil
                     DispatchQueue.main.async { self.onReady?() }
                 }
             case .ack, .unknown:

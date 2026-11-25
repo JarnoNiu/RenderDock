@@ -21,7 +21,7 @@
 
 ---
 
-RenderDock ist eine kleine native macOS-App für alle, die Renderings aus Skripten und Terminals starten. Sie findet jeden Blender-Job, der ohne Oberfläche (headless) auf dem Rechner läuft, zeigt, wie weit jeder ist, und behält die Hardware im Blick, die die Arbeit erledigt. Eine Einrichtung ist nicht nötig, und die Jobs selbst werden nie angefasst.
+RenderDock ist eine kleine native macOS-App für alle, die Renderings aus Skripten und Terminals starten. Sie findet jeden Blender-Job, der ohne Oberfläche (headless) auf dem Rechner läuft, zeigt, wie weit jeder ist, und behält die Hardware im Blick, die die Arbeit erledigt. Eine Einrichtung ist nicht nötig, und die App schaut nur zu: Alles, was darüber hinausgeht, ist ein Schalter, der aus bleibt, bis er eingeschaltet wird.
 
 ## Warum
 
@@ -64,6 +64,8 @@ Außerdem enthalten: ein Menüleisten-Symbol mit Fortschrittsring, ein optionale
 Neu in 0.2: exakter Fortschritt für jedes Rendering über [`renderdock run`](../EXACT-PROGRESS.md), [Benachrichtigungen](../NOTIFICATIONS.md) auf dem Mac und auf dem Smartphone, wenn ein Job fertig wird, fehlschlägt oder hängt, und eine [lokale API](../API.md), damit andere Anzeigen denselben Fortschritt zeigen können. Diese drei Dokumente gibt es bisher nur auf Englisch.
 
 Neu in 0.3: ein [Verlauf](../HISTORY.md) mit Restzeit-Schätzungen für eine ganze Warteschlange, die [Sitzungen von Coding-Agenten](../AGENT-TASKS.md) neben den Renderings, echter Fortschritt für [ffmpeg-Encodes](../EXACT-PROGRESS.md#ffmpeg-from-03) und die Warteschlange von [ComfyUI](../COMFYUI.md). Weitere Dinge sind dabei und bleiben aus, bis sie eingeschaltet werden: [die Berechtigungsanfrage eines Agenten beantworten](../ANSWERING-AGENTS.md), direkt im Panel, ein [kleines Bluetooth-Display für den Schreibtisch](../DEVICES.md) mit [offener Firmware](../../firmware/desk-display/README.md) für ein Board, ein [Eingang für andere Programme](../AGENT-ENTRY.md), über den jedes Skript und jeder Agent eine Mitteilung schicken, Fortschritt melden oder eine Frage stellen kann, und [MQTT](../MQTT.md) für Home Assistant. Zwei [Beispiele](../../examples) bauen auf der lokalen API auf: ein LED-Streifen als Fortschrittsbalken und eine Stream-Deck-Taste. Diese Dokumente gibt es bisher nur auf Englisch.
+
+Neu in 0.4: RenderDock in einem [hellen Design, als Teil der Notch und als Desktop-Widget](../LOOKS.md); die Lüfterdrehzahl, die Leistungsaufnahme des Rechners und die [Energie, die jeder Shot verbraucht hat](../HISTORY.md); eine größere Ansicht eines Shots, mit einem Schieberegler durch die bisher gerenderten Frames; Sitzungen von Googles Agent (die Gemini-App, Antigravity) neben Claude Code, Codex und Hermes. Aus, bis sie eingeschaltet werden: die [API aus dem lokalen Netzwerk](../API.md#from-the-local-network-04-off-by-default), geschützt durch ein Token; das [Schreibtisch-Display über WLAN](../DEVICES.md#over-wi-fi-where-bluetooth-does-not-reach-04), wo Bluetooth nicht hinreicht, jetzt mit je einer Seite für die Renderings, die Agenten und den Mac; der Eingang für andere Programme als [MCP-Server](../AGENT-ENTRY.md); und zum ersten Mal [Eingriffe in ein Rendering](../CONTROLS.md): pausieren und fortsetzen, zur Seite schieben, immer nur ein Job auf einmal, pausieren im Batteriebetrieb oder wenn der Mac heiß wird. Diese Dokumente gibt es bisher nur auf Englisch.
 
 ## Schnellstart
 
@@ -145,10 +147,10 @@ Alles, was eine Datei schreiben kann, kann auf diese Weise Fortschritt melden, n
 
 ## Was die App nicht tut
 
-- Sie **fasst die Renderings nie an**: Sie sendet ihnen keine Signale und schreibt nie in die Render-Ordner. Alles, was über das Zuschauen hinausgeht, ist aus, bis es eingeschaltet wird: Benachrichtigungskanäle, die lokale API (nur auf `127.0.0.1`), Bluetooth für ein Schreibtisch-Display, das Beantworten von Agenten-Anfragen, der Eingang für andere Programme und MQTT. Netzwerkverbindungen baut sie nur auf, wenn ein Benachrichtigungskanal oder ein MQTT-Broker hinzugefügt wird.
-- Buttons für Pausieren, Fortsetzen oder Stoppen gibt es noch nicht. Warteschlangen-Skripte verwalten `STOP`/`CONT` oft selbst, und zwei Hände am selben Schalter sind keine gute Idee.
+- Sie **fasst die Renderings nicht an, solange man es ihr nicht sagt**: Von sich aus sendet sie ihnen keine Signale, und sie schreibt nie in die Render-Ordner. Alles, was über das Zuschauen hinausgeht, ist aus, bis es eingeschaltet wird: Benachrichtigungskanäle, die lokale API (auf `127.0.0.1`; aus dem Netzwerk nur hinter einem zweiten Schalter und einem Token), Bluetooth und WLAN für ein Schreibtisch-Display, das Beantworten von Agenten-Anfragen, der Eingang für andere Programme, MQTT und die Steuerung im nächsten Punkt. Netzwerkverbindungen baut sie nur auf, wenn ein Benachrichtigungskanal oder ein MQTT-Broker hinzugefügt wird.
+- Ab 0.4 lässt sich ein Rendering pausieren, fortsetzen und zur Seite schieben, jedes davon hinter einem eigenen Schalter, und alle Schalter sind aus ([docs/CONTROLS.md](../CONTROLS.md)). Einen Job beendet die App nie: Einen Stopp-Button gibt es nicht. Warteschlangen-Skripte verwalten `STOP`/`CONT` oft selbst, und zwei Hände am selben Schalter sind keine gute Idee: Wer ein solches Skript nutzt, lässt die Schalter aus.
 - Wenn weder der Ausgabeordner noch der Frame-Bereich in der Kommandozeile stehen, erscheint der Job trotzdem, mit CPU, Arbeitsspeicher und verstrichener Zeit, aber ohne Frames.
-- Die SoC-Temperatur wird über IOHID-Sensoren gelesen, eine private Schnittstelle, die auf Apple Silicon verfügbar ist. Auf Intel-Macs oder nach einem Systemupdate, das die Sensoren verschiebt, zeigt die Kachel `–`. Lüfterdrehzahl und Leistungsaufnahme werden nicht ausgelesen.
+- Die SoC-Temperatur wird über IOHID-Sensoren gelesen, eine private Schnittstelle, die auf Apple Silicon verfügbar ist. Auf Intel-Macs oder nach einem Systemupdate, das die Sensoren verschiebt, zeigt die Kachel `–`. Lüfterdrehzahl und Leistungsaufnahme des Rechners kommen vom System Management Controller und werden auf einem Mac, der sie nicht meldet, weggelassen.
 - Gebaut und getestet unter macOS 26 auf einem M5 Max. Die App kompiliert für macOS 14, aber 14 und 15 sowie Intel-Macs sind ungetestet. Erfahrungsberichte sind willkommen.
 - Sprachen der Oberfläche: Englisch und vereinfachtes Chinesisch (richtet sich nach der Systemsprache; mit `--lang en` oder `--lang zh` lässt sich eine Sprache erzwingen).
 
@@ -158,9 +160,8 @@ Die vollständige TODO-Liste mit Zeitplan steht in **[ROADMAP.md](../../ROADMAP.
 
 Kurz gefasst (Pläne, keine Versprechen):
 
-- Aus dem Netzwerk erreichbar: die API, geschützt durch ein Token, und das Schreibtisch-Display über WLAN
+- Andere Rechner: ein zweiter Computer oder ein Render-Knoten in der Cloud, die an dieselbe Kapsel melden
 - Weitere Renderer mit eigenem Fortschritt
-- Optionale Steuerung: pausieren, fortsetzen, Priorität senken
 - Signierte und notarisierte Releases, Homebrew, weitere Oberflächensprachen
 
 ## Entwicklung

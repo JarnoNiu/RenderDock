@@ -21,7 +21,7 @@
 
 ---
 
-RenderDock es una pequeña app nativa de macOS para quienes lanzan sus renders desde scripts y terminales. Encuentra todos los trabajos de Blender sin interfaz que se ejecutan en el equipo, muestra por dónde va cada uno y vigila el hardware que hace el trabajo. No requiere configuración y nunca toca tus trabajos.
+RenderDock es una pequeña app nativa de macOS para quienes lanzan sus renders desde scripts y terminales. Encuentra todos los trabajos de Blender sin interfaz que se ejecutan en el equipo, muestra por dónde va cada uno y vigila el hardware que hace el trabajo. No requiere configuración, y solo observa: todo lo que va más allá es un interruptor que permanece desactivado hasta que lo actives.
 
 ## Por qué
 
@@ -64,6 +64,8 @@ También incluye un elemento en la barra de menús con un anillo de progreso, un
 Novedades de la versión 0.2: progreso exacto para cualquier render mediante [`renderdock run`](../EXACT-PROGRESS.md), [notificaciones](../NOTIFICATIONS.md) en el Mac y en el teléfono cuando un trabajo termina, falla o se atasca, y una [API local](../API.md) para que otros dispositivos puedan mostrar el mismo progreso. Estos tres documentos están, por ahora, solo en inglés.
 
 Novedades de la versión 0.3: un [historial](../HISTORY.md) con estimaciones del tiempo restante para toda una cola; las [sesiones de los agentes de programación](../AGENT-TASKS.md) junto a tus renders; progreso real para las [codificaciones con ffmpeg](../EXACT-PROGRESS.md#ffmpeg-from-03), y la cola de [ComfyUI](../COMFYUI.md). Hay más cosas que permanecen desactivadas hasta que las actives: [responder a la petición de permiso de un agente](../ANSWERING-AGENTS.md) desde el panel, una [pequeña pantalla Bluetooth para el escritorio](../DEVICES.md) con [firmware abierto](../../firmware/desk-display/README.md) para una placa, una [entrada para otros programas](../AGENT-ENTRY.md), para que cualquier script o agente pueda enviar un aviso, informar de su progreso o hacerte una pregunta, y [MQTT](../MQTT.md) para Home Assistant. Dos [ejemplos](../../examples) se apoyan en la API local: una tira LED como barra de progreso y una tecla de Stream Deck. Estos documentos están, por ahora, solo en inglés.
+
+Novedades de la versión 0.4: RenderDock en un [tema claro, como parte del notch y como widget en el escritorio](../LOOKS.md); la velocidad de los ventiladores, la potencia que consume el equipo y la [energía que gastó cada plano](../HISTORY.md); una vista más grande de un plano, con un deslizador para recorrer los fotogramas renderizados hasta el momento; las sesiones del agente de Google (la app Gemini, Antigravity) junto a las de Claude Code, Codex y Hermes. Desactivado hasta que lo actives: la [API desde la red local](../API.md#from-the-local-network-04-off-by-default), protegida con un token; la [pantalla de escritorio por Wi-Fi](../DEVICES.md#over-wi-fi-where-bluetooth-does-not-reach-04) donde el Bluetooth no llega, ahora con una página para los renders, otra para los agentes y otra para el Mac; la entrada para otros programas como [servidor MCP](../AGENT-ENTRY.md); y, por primera vez, [actuar sobre un render](../CONTROLS.md): pausarlo y reanudarlo, apartarlo para que no estorbe, un solo trabajo a la vez, pausar cuando el Mac funciona con batería o se calienta. Estos documentos están, por ahora, solo en inglés.
 
 ## Inicio rápido
 
@@ -145,10 +147,10 @@ Cualquier cosa que pueda escribir un archivo puede informar de su progreso así,
 
 ## Lo que no hace
 
-- **Nunca toca tus renders**: no les envía señales y nunca escribe en tus carpetas de render. Todo lo que va más allá de observar está desactivado hasta que lo actives: los canales de notificaciones, la API local (solo en `127.0.0.1`), el Bluetooth para una pantalla de escritorio, responder a las peticiones de los agentes, la entrada para otros programas y MQTT. No establece conexiones de red a menos que añadas un canal de notificaciones o un broker MQTT.
-- Todavía no hay botones para pausar, reanudar ni detener. Los scripts de cola suelen gestionar `STOP`/`CONT` por sí mismos, y dos manos sobre el mismo interruptor son mala idea.
+- **No toca tus renders a menos que se lo digas**: por sí sola no les envía señales, y nunca escribe en tus carpetas de render. Todo lo que va más allá de observar está desactivado hasta que lo actives: los canales de notificaciones, la API local (en `127.0.0.1`; desde la red, solo tras un segundo interruptor y un token), el Bluetooth y el Wi-Fi para una pantalla de escritorio, responder a las peticiones de los agentes, la entrada para otros programas, MQTT y los controles del punto siguiente. No establece conexiones de red a menos que añadas un canal de notificaciones o un broker MQTT.
+- Pausar un render, reanudarlo y apartarlo para que no estorbe es posible desde la versión 0.4, cada cosa tras su propio interruptor, y todos desactivados ([docs/CONTROLS.md](../CONTROLS.md)). Nunca pone fin a un trabajo: no hay botón para detener. Los scripts de cola suelen gestionar `STOP`/`CONT` por sí mismos, y dos manos sobre el mismo interruptor son mala idea: si el tuyo lo hace, deja los interruptores desactivados.
 - Si ni la carpeta de salida ni el rango de fotogramas están en la línea de comandos, el trabajo aparece igualmente, con CPU, memoria y tiempo transcurrido, pero sin fotogramas.
-- La temperatura del SoC se lee de los sensores IOHID, una interfaz privada disponible en Apple Silicon. En los Mac con Intel, o tras una actualización del sistema que cambie los sensores de sitio, el recuadro muestra `–`. No se leen la velocidad de los ventiladores ni la potencia consumida.
+- La temperatura del SoC se lee de los sensores IOHID, una interfaz privada disponible en Apple Silicon. En los Mac con Intel, o tras una actualización del sistema que cambie los sensores de sitio, el recuadro muestra `–`. La velocidad de los ventiladores y la potencia que consume el equipo se obtienen del controlador de gestión del sistema, y se omiten en un Mac que no las comunique.
 - Compilada y probada en macOS 26 con un M5 Max. Compila para macOS 14, pero no se ha probado en 14, en 15 ni en Mac con Intel. Se agradecen los informes.
 - Idiomas de la interfaz: inglés y chino simplificado (sigue el idioma del sistema; se puede forzar uno con `--lang en` o `--lang zh`).
 
@@ -158,9 +160,8 @@ La lista completa de tareas pendientes, con su cronograma, está en **[ROADMAP.m
 
 En resumen (planes, no promesas):
 
-- Acceso desde la red: la API protegida con un token, la pantalla de escritorio por Wi-Fi
+- Otras máquinas: un segundo equipo o un nodo de render en la nube que informen a la misma cápsula
 - Más renderizadores con su propio progreso
-- Controles opcionales: pausar, reanudar, bajar la prioridad
 - Versiones firmadas y notarizadas, Homebrew, más idiomas de interfaz
 
 ## Desarrollo

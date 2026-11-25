@@ -2,7 +2,7 @@
 
 **English** · [简体中文](docs/i18n/ROADMAP.zh-CN.md)
 
-Where RenderDock stands, what is missing, and what comes next. Last updated: 2026-11-25.
+Where RenderDock stands, what is missing, and what comes next. Last updated: 2026-11-26.
 
 ## Timeline
 
@@ -11,10 +11,10 @@ Where RenderDock stands, what is missing, and what comes next. Last updated: 202
 | 2026-11-23 | **0.1.0** | First release: detection, the capsule, system metrics | Released |
 | 2026-11-24 | **0.2.0** | Exact progress, notifications, a local API | Released |
 | 2026-11-25 | **0.3.0** | History, coding agents, a display on the desk, more than Blender | Released |
-| Target: February–March 2027 | **0.4** | The desk display in pages, reaching it from the network, optional controls, preview | Under way |
+| Built 2026-11-25/26, ahead of its target (February–March 2027) | **0.4** | The desk display in pages and over Wi-Fi, reaching it from the network, optional controls, preview, a light theme, the notch, a widget | Built, not yet released |
 | Later in 2027 | **1.0 and beyond** | Other machines, new UI forms, custom hardware | Ideas |
 
-The dates are targets, not commitments. 0.2 and 0.3 arrived ahead of their targets (December and January); that is no promise about the ones below. This is a one-person project, and when priorities move, this file is updated rather than quietly ignored.
+The dates are targets, not commitments. 0.2, 0.3 and 0.4 were built ahead of their targets (December, January, and February–March); that is no promise about what comes after. This is a one-person project, and when priorities move, this file is updated rather than quietly ignored.
 
 0.3 grew on the way: coding agents and a display on the desk, which were further out, came in. One thing planned for it moved out: access to the API from the local network is now in 0.4.
 
@@ -74,7 +74,7 @@ Not checked yet:
 | No reading of the frame range inside a `.blend` | 0.3, done |
 | The `scene:shot` queue convention is still built in rather than a rule | 0.3, done |
 | No history: time-left uses the last 30 frames and nothing is kept | 0.3, done |
-| Not notarised, so no download and no Homebrew | when there is an Apple developer account |
+| Not notarised, so no download to double-click | when there is an Apple developer account. A Homebrew formula that builds from source is written, and is switched on with the next release |
 | The API is local only; nothing on the network can read it | 0.4, opt-in, with a token: built |
 | Read-only: no pause, resume or stop | 0.4, opt-in: pause and resume built; RenderDock still ends nothing |
 | Thumbnail only: no large preview, no scrubbing through frames | 0.4: built |
@@ -109,9 +109,9 @@ Done when: estimated and actual finish times are both on record for a week of re
 
 Where that stands: the desk display is that piece of hardware. History has been recording since 2026-11-24, so the week was not up when 0.3 was released. It also turned out that 0.3 kept what happened and not what had been estimated: the estimates are written down from 0.3.1 on (`renderdock estimates`), and the comparison is owed until a week of them is on record.
 
-### 0.4 — beyond this Mac, and hands on, carefully · target February–March 2027
+### 0.4 — beyond this Mac, and hands on, carefully · built, not yet released
 
-- [x] The desk display in three pages instead of one screen: the renders, the agents, and this Mac itself (processor, graphics, memory, heat, disk, power, sleep), with the two kinds of task no longer mixed in one list. Built on the branch `feat/device-pages` and running on one board; turning the pages with a real finger and the real key has not been tried yet
+- [x] The desk display in three pages instead of one screen: the renders, the agents, and this Mac itself (processor, graphics, memory, heat, disk, power, sleep), with the two kinds of task no longer mixed in one list. Running on one board; turning the pages with a real finger and the real key has not been tried yet
 - [x] Access to the API from the local network: a separate switch, off by default, with a token. Plain HTTP, so for a network you trust; see [docs/API.md](docs/API.md). Read by a second real device (the desk display, over Wi-Fi) with the token, and refused with a wrong one
 - [x] The desk display over Wi-Fi as well as Bluetooth: where Bluetooth does not reach, it reads the same lines from the API on the local network. Set up from the menu (the display lists the networks it sees; the password is typed, and RenderDock does not keep it); it only shows that way, and Bluetooth comes first. See [docs/DEVICES.md](docs/DEVICES.md). Run on one board on a real network, with "no Bluetooth" put on from its console; **not yet with the board really out of Bluetooth's reach**
 - [x] The entry for other programs as an MCP server (`renderdock mcp`), for agents that would rather call a tool than run a command. Run against a stand-in client; not yet with a real agent's client
@@ -126,6 +126,8 @@ Where that stands: the desk display is that piece of hardware. History has been 
 - [x] Fan speed and power draw, in the dock, the API and on the desk display's page for the Mac; what each shot drew, kept with the history (the whole Mac's draw, shared among shots rendering together: see [docs/HISTORY.md](docs/HISTORY.md))
 
 Done when: another device on the network can read the state with the token and cannot without it; controls can be enabled one by one and never act without being enabled.
+
+Where that stands: the first half is met. The desk display read the state over Wi-Fi with the token and was refused with a wrong one (2026-11-26). Of the second half, "never act without being enabled" is what the checks hold it to; no switch has yet been turned on over a real render, and until one has, the other half is owed. Each item above says what of it has not been tried.
 
 ### 1.0 and beyond — ideas, in no fixed order
 

@@ -21,7 +21,7 @@
 
 ---
 
-RenderDock is a small native macOS app for people who start renders from scripts and terminals. It finds every headless Blender job running on the machine, shows how far each one is, and keeps an eye on the hardware doing the work. It needs no setup and it never touches your jobs.
+RenderDock is a small native macOS app for people who start renders from scripts and terminals. It finds every headless Blender job running on the machine, shows how far each one is, and keeps an eye on the hardware doing the work. It needs no setup, and it only watches: whatever goes further is a switch that stays off until you turn it on.
 
 ## Why
 
@@ -64,6 +64,8 @@ Also included: a menu-bar item with a progress ring, an optional **Keep Awake Wh
 New in 0.2: exact progress for any render through [`renderdock run`](docs/EXACT-PROGRESS.md), [notifications](docs/NOTIFICATIONS.md) on the Mac and on your phone when a job finishes, fails or stalls, and a [local API](docs/API.md) so other displays can show the same progress.
 
 New in 0.3: [history](docs/HISTORY.md) with time-left estimates for a whole queue; [coding agents' sessions](docs/AGENT-TASKS.md) next to your renders; real progress for [ffmpeg encodes](docs/EXACT-PROGRESS.md#ffmpeg-from-03), and a [ComfyUI](docs/COMFYUI.md) queue shown as it drains. More things are there and stay off until you switch them on: [answering an agent's permission request](docs/ANSWERING-AGENTS.md) from the panel, a [small Bluetooth display for the desk](docs/DEVICES.md) with [open firmware](firmware/desk-display/README.md) for one board, an [entry for other programs](docs/AGENT-ENTRY.md), so that any script or agent can post a notice, report progress, or ask you a question, and [MQTT](docs/MQTT.md) for Home Assistant. Two [examples](examples) build on the local API: an LED strip as a progress bar, and a Stream Deck key.
+
+New in 0.4: the dock in a [light theme, as part of the notch, and as a desktop widget](docs/LOOKS.md); fan speed, the machine's power draw and the [energy each shot took](docs/HISTORY.md); a larger look at a shot, with a slider through the frames rendered so far; sessions of Google's agent (the Gemini app, Antigravity) beside Claude Code, Codex and Hermes. Off until you switch them on: the [API from the local network](docs/API.md#from-the-local-network-04-off-by-default), behind a token; the [desk display over Wi-Fi](docs/DEVICES.md#over-wi-fi-where-bluetooth-does-not-reach-04) where Bluetooth does not reach, now with a page each for the renders, the agents and the Mac; the entry for other programs as an [MCP server](docs/AGENT-ENTRY.md); and, for the first time, [hands on a render](docs/CONTROLS.md): pause and resume, move it out of the way, one job at a time, pause on battery or when the Mac runs hot.
 
 ## Quick start
 
@@ -145,10 +147,10 @@ Anything that can write a file can report progress this way, not just Blender.
 
 ## What it will not do
 
-- It **never touches your renders**: it sends them no signals and never writes into your render folders. Whatever goes beyond watching is off until you switch it on: notification channels, the local API (`127.0.0.1` only), Bluetooth for a desk display, answering agents' requests, the entry for other programs, and MQTT. It makes no network connections unless you add a notification channel or an MQTT broker.
-- There are no pause, resume or stop buttons yet. Queue scripts often manage `STOP`/`CONT` themselves, and two hands on the same switch is a bad idea.
+- It **does not touch your renders unless you tell it to**: by itself it sends them no signals, and it never writes into your render folders. Whatever goes beyond watching is off until you switch it on: notification channels, the local API (on `127.0.0.1`; from the network only behind a second switch and a token), Bluetooth and Wi-Fi for a desk display, answering agents' requests, the entry for other programs, MQTT, and the controls in the next point. It makes no network connections unless you add a notification channel or an MQTT broker.
+- Pausing, resuming and moving a render out of the way are there from 0.4, each behind its own switch, and all of them off ([docs/CONTROLS.md](docs/CONTROLS.md)). It never ends a job: there is no stop button. Queue scripts often manage `STOP`/`CONT` themselves, and two hands on the same switch is a bad idea: leave the switches off if yours does.
 - If neither the output folder nor the frame range is on the command line, a job still appears, with CPU, memory and elapsed time, but without frames.
-- SoC temperature is read from IOHID sensors, a private interface available on Apple Silicon. On Intel Macs, or after a system update that moves the sensors, the tile shows `–`. Fan speed and wattage are not read.
+- SoC temperature is read from IOHID sensors, a private interface available on Apple Silicon. On Intel Macs, or after a system update that moves the sensors, the tile shows `–`. Fan speed and the machine's power draw come from the system management controller, and are left out on a Mac that does not report them.
 - Built and tested on macOS 26 with an M5 Max. It compiles for macOS 14, but 14 and 15 and Intel Macs are untested. Reports are welcome.
 - UI languages: English and Simplified Chinese (it follows the system language; force one with `--lang en` or `--lang zh`).
 
@@ -158,9 +160,8 @@ The full TODO list, with a timeline, is in **[ROADMAP.md](ROADMAP.md)**.
 
 In short (plans, not promises):
 
-- Reaching it from the network: the API behind a token, the desk display over Wi-Fi
+- Other machines: a second computer or a cloud render node reporting into the same capsule
 - More renderers with their own progress
-- Optional controls: pause, resume, lower priority
 - Signed and notarised releases, Homebrew, more UI languages
 
 ## Development

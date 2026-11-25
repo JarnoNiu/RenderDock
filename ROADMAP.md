@@ -81,7 +81,7 @@ Not checked yet:
 | No fan speed, no power draw | 0.4: built |
 | Only this Mac | 1.0 and beyond |
 | Two UI languages | ongoing, contributions welcome |
-| Dark capsule only: no light theme, no notch mode, no desktop widget | 1.0 and beyond |
+| Dark capsule only: no light theme, no notch mode, no desktop widget | 0.4: done |
 
 ## Plan by version
 
@@ -118,6 +118,9 @@ Where that stands: the desk display is that piece of hardware. History has been 
 - [x] Optional controls, off by default, each its own switch: pause and resume from the dock, move a render out of the way and back, and one job at a time (the next goes on when one ends). See [docs/CONTROLS.md](docs/CONTROLS.md). Checked on a stand-in process and against made-up jobs; **not yet with a switch on over a real render**
 - [x] Rules: pause on battery, pause when the Mac is slowed down for heat; each lets go again by itself, and only of what it stopped
 - [x] Large preview and scrubbing through rendered frames: click a shot's thumbnail. Run on made-up frames; not yet on a real render's folder
+- [x] A light theme, and following the system's appearance (dark stays the default). See [docs/LOOKS.md](docs/LOOKS.md)
+- [x] The dock as part of the notch: ears beside it while something is going on, the panel opening downwards from the top edge; a small island on a screen without one. Looked at in pictures and placed on one real notch; not yet lived with
+- [x] A desktop widget (small and medium): the render in front, the queue, the agents. A sandboxed extension that reads one small file in RenderDock's own folder; built without Xcode. Registered and started by macOS on one Mac; **not yet placed on a desktop and watched**
 - [x] Fan speed and power draw, in the dock, the API and on the desk display's page for the Mac; what each shot drew, kept with the history (the whole Mac's draw, shared among shots rendering together: see [docs/HISTORY.md](docs/HISTORY.md))
 
 Done when: another device on the network can read the state with the token and cannot without it; controls can be enabled one by one and never act without being enabled.
@@ -126,7 +129,6 @@ Done when: another device on the network can read the state with the token and c
 
 - [ ] Other machines: a small agent on a second computer or a cloud render node, reporting into the same capsule
 - [ ] After Effects and other command-line renderers
-- [ ] Notch mode, a desktop widget, a light theme
 - [ ] A reference design for a dedicated desk device, if the prototype shows people want one
 
 ### Whenever there is an Apple developer account

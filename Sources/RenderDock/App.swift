@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import RenderDockCore
+import RenderDockWidgetViews
 
 /// Menu bar item: a small progress ring plus the number of shots rendering; its menu lists the jobs and a few toggles.
 final class StatusItemController: NSObject, NSMenuDelegate {
@@ -81,8 +82,25 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         }
         menu.addItem(.separator())
         add(menu, store.expanded ? L("收起面板", "Collapse Panel") : L("展开面板", "Expand Panel"), #selector(togglePanel))
-        add(menu, L("显示悬浮胶囊", "Show Floating Capsule"), #selector(toggleCapsule), on: panel?.isVisible == true)
-        add(menu, L("回到右上角", "Move to Top-Right"), #selector(resetPosition))
+        if store.form == .notch {
+            add(menu, L("显示在刘海旁", "Show at the Notch"), #selector(toggleCapsule), on: panel?.isVisible == true)
+        } else {
+            add(menu, L("显示悬浮胶囊", "Show Floating Capsule"), #selector(toggleCapsule), on: panel?.isVisible == true)
+            add(menu, L("回到右上角", "Move to Top-Right"), #selector(resetPosition))
+        }
+        let lookItem = NSMenuItem(title: L("外观", "Appearance"), action: nil, keyEquivalent: "")
+        let lookMenu = NSMenu()
+        add(lookMenu, L("深色", "Dark"), #selector(lookDark), on: store.appearance == .dark)
+        add(lookMenu, L("浅色", "Light"), #selector(lookLight), on: store.appearance == .light)
+        add(lookMenu, L("跟随系统", "Follow the System"), #selector(lookSystem), on: store.appearance == .system)
+        lookItem.submenu = lookMenu
+        menu.addItem(lookItem)
+        let formItem = NSMenuItem(title: L("形态", "Form"), action: nil, keyEquivalent: "")
+        let formMenu = NSMenu()
+        add(formMenu, L("悬浮胶囊", "Floating Capsule"), #selector(formCapsule), on: store.form == .capsule)
+        add(formMenu, L("刘海（贴在屏幕顶部正中）", "Notch (at the top centre of the screen)"), #selector(formNotch), on: store.form == .notch)
+        formItem.submenu = formMenu
+        menu.addItem(formItem)
         menu.addItem(.separator())
         add(menu, L("渲染时保持唤醒", "Keep Awake While Rendering"), #selector(toggleAwake), on: store.keepAwakeWhileRendering)
         add(menu, L("显示 Agent 任务（只读）", "Show Agents' Sessions (read-only)"), #selector(toggleAgents), on: store.agentsEnabled)
@@ -238,6 +256,11 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     }
 
     @objc private func resetPosition() { panel?.resetPosition() }
+    @objc private func formCapsule() { store.form = .capsule }
+    @objc private func formNotch() { store.form = .notch }
+    @objc private func lookDark() { store.appearance = .dark }
+    @objc private func lookLight() { store.appearance = .light }
+    @objc private func lookSystem() { store.appearance = .system }
     @objc private func toggleAwake() { store.keepAwakeWhileRendering.toggle() }
     @objc private func toggleAPI() { store.apiEnabled.toggle() }
 
@@ -521,11 +544,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var status: StatusItemController!
     private let preview = PreviewController()
 
+    private var systemLook: NSKeyValueObservation?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         quitCleanlyOnSIGTERM()
         panel = PanelController(store: store)
         status = StatusItemController(store: store, panel: panel)
         store.onChange = { [weak self] in self?.status.update() }
+        // The look: the window follows the choice, and the system when that is the choice.
+        store.systemIsDark = Appearance.systemIsDark
+        store.onLook = { [weak self] in self?.panel.lookChanged() }
+        store.onForm = { [weak self] in self?.panel.formChanged() }
+        systemLook = NSApp.observe(\.effectiveAppearance) { [weak self] _, _ in
+            DispatchQueue.main.async { self?.store.systemIsDark = Appearance.systemIsDark }
+        }
         store.onPreview = { [weak self] item in
             guard let dir = item.outDir else { return }
             self?.preview.show(dir: dir, title: item.name)
@@ -561,6 +593,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case "collapse": panel.setExpanded(false)
         case "reset": panel.resetPosition()
         case "pin": store.pinned = arg == "on" ? true : (arg == "off" ? false : !store.pinned)
+        case "look": if let look = Appearance(rawValue: arg) { store.appearance = look }   // "look dark|light|system"
+        case "form": if let form = DockForm(rawValue: arg) { store.form = form }           // "form capsule|notch"
+        case "widget-shot":    // "widget-shot <path> small|medium dark|light [idle|off|none]": the desktop widget's face as a picture
+            let words = arg.split(separator: " ").map(String.init)
+            if words.count >= 3 {
+                var data: WidgetData? = store.widgetData(now: Date())
+                if words.count > 3 {
+                    switch words[3] {
+                    case "idle": data = WidgetData(at: Date(), state: "idle", agentsWaiting: 1, chinese: data?.chinese ?? true)
+                    case "off": data?.state = "off"
+                    case "none": data = nil
+                    default: break
+                    }
+                }
+                MainActor.assumeIsolated { widgetPicture(data, wide: words[1] == "medium", light: words[2] == "light", now: Date(), to: words[0]) }
+            }
+        case "notch-as":       // "notch-as W H": as if the screen's notch were that large; "notch-as 0 26" is a screen without one
+            let n = arg.split(separator: " ").compactMap { Double($0) }
+            if n.count == 2 { panel.debugNotch(width: CGFloat(n[0]), height: CGFloat(n[1])) }
         case "notify-test": store.notifier.sendTest()
         case "stress": store.stress = arg != "off"   // demo only: every readout at its widest, to watch the live window follow
         case "answer":   // "answer allow <id>" / "answer deny <id>": what a click on the panel's buttons does

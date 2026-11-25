@@ -20,7 +20,19 @@ struct RootView: View {
 
     var body: some View {
         ZStack(alignment: store.anchor.alignment) {
-            if store.expanded {
+            if store.form == .notch {
+                // Part of the notch: it opens downwards from the top edge, and is black whatever the look.
+                if store.expanded {
+                    NotchPanelView(store: store, notch: store.notch, onCollapse: { controller?.setExpanded(false) })
+                        .onGeometryChange(for: CGSize.self) { $0.size } action: { controller?.contentSizeChanged($0, expanded: true) }
+                        .transition(.opacity.combined(with: .scale(scale: 0.6, anchor: .top)))
+                } else {
+                    NotchView(store: store, notch: store.notch)
+                        .onTapGesture { controller?.capsuleTapped() }
+                        .onGeometryChange(for: CGSize.self) { $0.size } action: { controller?.contentSizeChanged($0, expanded: false) }
+                        .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .top)))
+                }
+            } else if store.expanded {
                 PanelView(store: store, onCollapse: { controller?.setExpanded(false) })
                     .onGeometryChange(for: CGSize.self) { $0.size } action: { controller?.contentSizeChanged($0, expanded: true) }
                     .transition(.opacity.combined(with: .scale(scale: 0.92, anchor: store.anchor.unitPoint)))
@@ -33,7 +45,7 @@ struct RootView: View {
         }
         .padding(Layout.pad)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: store.anchor.alignment)
-        .environment(\.colorScheme, .dark)
+        .environment(\.colorScheme, store.form == .notch ? .dark : store.scheme)
     }
 }
 
@@ -71,18 +83,65 @@ final class PanelController {
         panel.hasShadow = false
         panel.isMovable = false
         panel.animationBehavior = .none
-        panel.appearance = NSAppearance(named: .darkAqua)
+        panel.appearance = NSAppearance(named: store.form != .notch && store.scheme == .light ? .aqua : .darkAqua)
         panel.isReleasedWhenClosed = false
 
         let host = FirstMouseHostingView(rootView: RootView(store: store, controller: self))
         host.sizingOptions = []
         panel.contentView = host
 
-        restorePosition()
+        if isNotch { placeAtNotch() } else { restorePosition() }
         installMonitors()
         NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
         ) { [weak self] _ in self?.screensChanged() }
+    }
+
+    /// The look changed (the user chose another, or the system switched while it is being followed).
+    func lookChanged() {
+        panel.appearance = NSAppearance(named: store.form != .notch && store.scheme == .light ? .aqua : .darkAqua)
+        panel.contentView?.needsDisplay = true
+    }
+
+    // MARK: The notch form
+
+    private var isNotch: Bool { store.form == .notch }
+
+    /// The form changed: the dock closes, and goes to the notch or back to where the capsule was left.
+    func formChanged() {
+        store.expanded = false
+        transitioning = false
+        home = nil
+        panelSize = nil
+        lookChanged()
+        if isNotch {
+            placeAtNotch()
+        } else {
+            capsuleSize = CGSize(width: 250, height: Layout.capsuleHeight)
+            restorePosition()
+        }
+    }
+
+    /// Puts the closed dock at the top edge of the notch's screen, on its centre line, and tells the views how
+    /// large that notch is.
+    private func placeAtNotch() {
+        let screen = NotchMetrics.screen()
+        store.notch = NotchMetrics.of(screen)
+        store.anchor = Anchor(h: .center, v: .top)
+        let size = store.notch.real ? CGSize(width: store.notch.width, height: store.notch.height) : capsuleSize
+        panel.setFrame(notchRect(size, on: screen).insetBy(dx: -Layout.pad, dy: -Layout.pad).integral, display: true)
+    }
+
+    /// Debug only: as if the screen's notch were this large (0 wide: a screen without one).
+    func debugNotch(width: CGFloat, height: CGFloat) {
+        guard isNotch else { return }
+        store.notch = NotchMetrics(width: width, height: height)
+        fit(width > 0 ? CGSize(width: width, height: height) : capsuleSize)
+    }
+
+    /// Where something of this size hangs: flush with the very top of the screen (over the menu bar), centred.
+    private func notchRect(_ size: CGSize, on screen: NSScreen) -> NSRect {
+        NSRect(x: (screen.frame.midX - size.width / 2).rounded(), y: screen.frame.maxY - size.height, width: size.width, height: size.height)
     }
 
     func show() { panel.orderFrontRegardless() }
@@ -106,7 +165,7 @@ final class PanelController {
             let screen = currentScreen()
             store.listMaxHeight = max(150, min(480, screen.visibleFrame.height - 320))
             store.listContentHeight = measure(TaskListContent(store: store)).height
-            let size = measure(PanelView(store: store))
+            let size = isNotch ? measure(NotchPanelView(store: store, notch: store.notch)) : measure(PanelView(store: store))
             home = visual(panel.frame)
             fit(size)   // Grow the window to the panel size first (the extra area is transparent), then animate
             withAnimation(.spring(response: 0.36, dampingFraction: 0.84)) { store.expanded = true }
@@ -148,6 +207,7 @@ final class PanelController {
     private func visual(_ frame: NSRect) -> NSRect { frame.insetBy(dx: Layout.pad, dy: Layout.pad) }
 
     private func currentScreen() -> NSScreen {
+        if isNotch { return NotchMetrics.screen() }
         let v = visual(panel.frame)
         let c = NSPoint(x: v.midX, y: v.midY)
         return NSScreen.screens.first { $0.frame.contains(c) }
@@ -157,6 +217,12 @@ final class PanelController {
 
     /// Resizes the window to the content size, keeping the anchor (the corner it sticks to) in place.
     private func fit(_ content: CGSize) {
+        if isNotch {
+            // Nothing to keep in place and nothing to clamp: it hangs from the same point whatever its size.
+            let f = notchRect(content, on: NotchMetrics.screen()).insetBy(dx: -Layout.pad, dy: -Layout.pad).integral
+            if f != panel.frame { panel.setFrame(f, display: true) }
+            return
+        }
         let old = visual(panel.frame)
         var v = NSRect(origin: .zero, size: content)
         switch store.anchor.h {
@@ -217,6 +283,7 @@ final class PanelController {
     }
 
     func resetPosition() {
+        if isNotch { return show() }   // it has one place
         if store.expanded { store.expanded = false }
         home = nil
         store.anchor = Anchor(h: .right, v: .top)
@@ -266,6 +333,12 @@ final class PanelController {
     }
 
     private func screensChanged() {
+        if isNotch {
+            // The notch's screen may have gone (the lid was closed) or come back.
+            store.notch = NotchMetrics.of(NotchMetrics.screen())
+            fit(store.expanded ? (panelSize ?? capsuleSize) : capsuleSize)
+            return
+        }
         // A display was unplugged or rearranged: pull the window back if it ended up off-screen
         let v = visual(panel.frame)
         if !NSScreen.screens.contains(where: { $0.visibleFrame.intersects(v) }) {
@@ -362,7 +435,7 @@ final class PanelController {
             if store.expanded {
                 zone = NSRect(x: v.minX, y: v.maxY - Layout.headerHeight, width: v.width - 84, height: Layout.headerHeight)
             }
-            dragStartMouse = zone.contains(p) ? p : nil
+            dragStartMouse = zone.contains(p) && !isNotch ? p : nil   // the notch form stays where the notch is
             dragStartFrame = panel.frame
             dragging = false
             suppressTap = false

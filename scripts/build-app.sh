@@ -48,6 +48,34 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
+# The desktop widget: an app extension, which the system finds in PlugIns. It is signed first, with its own
+# entitlements (a sandbox that may read the app's folder), and the app's signature then seals it in.
+APPEX="$APP/Contents/PlugIns/RenderDockWidget.appex"
+mkdir -p "$APPEX/Contents/MacOS"
+cp .build/release/RenderDockWidget "$APPEX/Contents/MacOS/RenderDockWidget"
+cat > "$APPEX/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key><string>io.github.jarnoniu.renderdock.widget</string>
+    <key>CFBundleName</key><string>RenderDockWidget</string>
+    <key>CFBundleDisplayName</key><string>RenderDock</string>
+    <key>CFBundleExecutable</key><string>RenderDockWidget</string>
+    <key>CFBundlePackageType</key><string>XPC!</string>
+    <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+    <key>CFBundleSupportedPlatforms</key><array><string>MacOSX</string></array>
+    <key>CFBundleShortVersionString</key><string>0.4.0-dev</string>
+    <key>CFBundleVersion</key><string>3</string>
+    <key>LSMinimumSystemVersion</key><string>14.0</string>
+    <key>NSExtension</key>
+    <dict>
+        <key>NSExtensionPointIdentifier</key><string>com.apple.widgetkit-extension</string>
+    </dict>
+</dict>
+</plist>
+PLIST
+codesign --force --sign - --entitlements scripts/widget.entitlements "$APPEX" 2>&1 | grep -v "replacing existing signature" || true
 codesign --force --sign - "$APP/Contents/Helpers/renderdock" 2>&1 | grep -v "replacing existing signature" || true
 codesign --force --sign - "$APP" 2>&1 | grep -v "replacing existing signature" || true
 echo "Built $PWD/$APP"

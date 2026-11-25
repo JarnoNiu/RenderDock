@@ -42,6 +42,29 @@ final class Store {
     var expanded = false
     var pinned = false
     var anchor = Anchor(h: .right, v: .top)
+    /// The look of the dock: dark (as it always was), light, or whichever the system is in.
+    var appearance = Appearance.saved {
+        didSet {
+            UserDefaults.standard.set(appearance.rawValue, forKey: Appearance.key)
+            onLook?()
+        }
+    }
+    /// Whether the system is in its dark look now (kept current by the app; only matters when following it).
+    var systemIsDark = true { didSet { if systemIsDark != oldValue { onLook?() } } }
+    var scheme: ColorScheme { appearance.scheme(systemIsDark: systemIsDark) }
+    /// The look changed: the window has to follow.
+    @ObservationIgnored var onLook: (() -> Void)?
+    /// The shape the dock takes: the floating capsule, or part of the notch.
+    var form = DockForm.saved {
+        didSet {
+            guard form != oldValue else { return }
+            UserDefaults.standard.set(form.rawValue, forKey: DockForm.key)
+            onForm?()
+        }
+    }
+    /// The notch the dock hangs from while it has that form (set by the window, which knows the screen).
+    var notch = NotchMetrics(width: 0, height: 26)
+    @ObservationIgnored var onForm: (() -> Void)?
     var now = Date()
     var scanned = false
     /// Maximum height of the job list (depends on the screen it is on)
@@ -605,6 +628,7 @@ final class Store {
         notifier.handle(events)
         sendToDevice()
         mqtt?.publish(state: snapshot(now: now))
+        widgetFeed.update(widgetData(now: now))   // the desktop widget's file: needs no API
         guard apiEnabled else { return }
         api.publish(state: snapshot(now: now).json(), events: events)
         publishForWiFi(now: now)
@@ -629,6 +653,7 @@ final class Store {
         notifier.handle(events)
         sendToDevice()
         mqtt?.publish(state: snapshot(now: Date()))
+        widgetFeed.update(widgetData(now: Date()))
         guard apiEnabled else { return }
         api.publish(state: snapshot(now: Date()).json(), events: events)
         publishForWiFi(now: Date())
@@ -646,7 +671,14 @@ final class Store {
     }
 
     /// Release the port and the discovery file before the app exits.
+    /// The desktop widget's file, and the word to the system that it changed (see WidgetFeed.swift).
+    @ObservationIgnored private lazy var widgetFeed = WidgetFeed(demo: demo)
+
     func shutdown() {
+        var gone = widgetData(now: Date())
+        gone.state = "off"
+        gone.focus = nil
+        widgetFeed.update(gone)   // the widget says the app is not running, and does not go on showing a render
         // Nothing RenderDock stopped stays stopped once it is gone, and nothing it moved stays moved.
         if !hands.isIdle { hands.releaseEverything(why: "RenderDock is quitting") }
         if apiEnabled { api.stop() }

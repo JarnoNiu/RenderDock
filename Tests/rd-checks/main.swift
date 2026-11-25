@@ -4,6 +4,7 @@ import Foundation
 import Network
 import SQLite3
 import RenderDockCore
+import RenderDockWidgetViews
 
 var total = 0
 var failures = 0
@@ -2708,6 +2709,89 @@ if let port {
     check("stop releases the port", get("/v1/state").0 == 0)
 }
 try? FileManager.default.removeItem(at: discovery.deletingLastPathComponent())
+
+// The desktop widget's data: what the app leaves for it, and what the widget makes of it between two readings.
+section("Desktop widget")
+do {
+    let t0 = Date(timeIntervalSince1970: 1_795_000_000)
+    let going = WidgetData(at: t0, state: "rendering", active: 2, queued: 1,
+                           focus: .init(name: "s040", job: "Hero", fraction: 0.5, estimate: false, etaSec: 600, framesDone: 100),
+                           shotsDone: 3, shotsTotal: 8, queueEtaSec: 3600, agentsWaiting: 1, chinese: false)
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent("rd-widget-\(UUID().uuidString).json")
+    defer { try? FileManager.default.removeItem(at: file) }
+    check("what the app writes is what the widget reads", going.write(to: file) && WidgetData.read(from: file) == going)
+    check("no file, or one that is not this: nothing to show, not a crash",
+          WidgetData.read(from: file.appendingPathExtension("none")) == nil && { try? Data("{}".utf8).write(to: file); return WidgetData.read(from: file) == nil }())
+    let later = going.carried(to: t0.addingTimeInterval(300))
+    check("a render is carried forward at its own pace: half of what was left in half the time left",
+          abs((later.focus?.fraction ?? 0) - 0.75) < 0.0001 && later.focus?.etaSec == 300 && later.queueEtaSec == 3300 && later.at == t0.addingTimeInterval(300))
+    check("never to the end by itself: only the app can say a shot is through",
+          going.carried(to: t0.addingTimeInterval(600)).focus?.fraction == 0.99 && going.carried(to: t0.addingTimeInterval(5000)).focus?.fraction == 0.99)
+    check("and never for more than a quarter of an hour", {
+        var slow = going
+        slow.focus?.etaSec = 36_000
+        return slow.carried(to: t0.addingTimeInterval(7200)).at == t0.addingTimeInterval(900)
+    }())
+    check("not carried backwards", going.carried(to: t0.addingTimeInterval(-60)) == going)
+    var paused = going
+    paused.state = "paused"
+    var blind = going
+    blind.focus?.fraction = nil
+    var noEta = going
+    noEta.focus?.etaSec = nil
+    check("what does not move by itself is left as written: paused, no percentage, no time left",
+          !paused.movesByItself && paused.carried(to: t0.addingTimeInterval(300)) == paused
+          && !blind.movesByItself && blind.carried(to: t0.addingTimeInterval(300)) == blind && !noEta.movesByItself)
+    var moved = going
+    moved.at = t0.addingTimeInterval(20)
+    moved.focus?.fraction = 0.52
+    moved.focus?.etaSec = 580
+    moved.focus?.framesDone = 104
+    moved.queueEtaSec = 3580
+    check("further along is the same situation; another shot, a pause, a session waiting is not", {
+        var other = going
+        other.focus?.name = "s050"
+        var waiting = going
+        waiting.agentsWaiting = 2
+        var done = going
+        done.shotsDone = 4
+        return going.sameSituation(as: moved) && !going.sameContent(as: moved) && !going.sameSituation(as: other) && !going.sameSituation(as: paused)
+            && !going.sameSituation(as: waiting) && !going.sameSituation(as: done) && !going.sameSituation(as: blind)
+    }())
+    check("the widget is asked to read again at once when the situation changes, and the first time", {
+        var other = going
+        other.at = t0.addingTimeInterval(5)
+        other.focus?.name = "s050"
+        return WidgetData.worthTelling(going, told: nil, toldAt: .distantPast) && WidgetData.worthTelling(other, told: going, toldAt: t0)
+    }())
+    check("a render going as expected is left alone for ten minutes, then asked once", {
+        func onPace(_ seconds: Double) -> WidgetData { going.carried(to: t0.addingTimeInterval(seconds)) }
+        return !WidgetData.worthTelling(onPace(30), told: going, toldAt: t0) && !WidgetData.worthTelling(onPace(300), told: going, toldAt: t0)
+            && WidgetData.worthTelling(onPace(599.9).carried(to: t0.addingTimeInterval(600)), told: going, toldAt: t0)
+    }())
+    check("one that drifted from its pace is told sooner, but not within the minute", {
+        var slow = going
+        slow.at = t0.addingTimeInterval(120)
+        slow.focus?.fraction = 0.52          // the widget will have carried it to 0.6
+        slow.focus?.etaSec = 2000
+        var early = slow
+        early.at = t0.addingTimeInterval(40)
+        return WidgetData.worthTelling(slow, told: going, toldAt: t0) && !WidgetData.worthTelling(early, told: going, toldAt: t0)
+    }())
+    check("written again unchanged is the same content", {
+        var again = going
+        again.at = t0.addingTimeInterval(30)
+        return going.sameContent(as: again)
+    }())
+    check("a file that says rendering and has not been rewritten for long is not believed; idle and off always are", {
+        var idle = going
+        idle.state = "idle"
+        var off = going
+        off.state = "off"
+        return going.believable(at: t0.addingTimeInterval(600)) && !going.believable(at: t0.addingTimeInterval(1200))
+            && idle.believable(at: t0.addingTimeInterval(86_400)) && off.believable(at: t0.addingTimeInterval(86_400))
+    }())
+}
 
 print(failures == 0 ? "\(total)/\(total) checks passed" : "\(total - failures)/\(total) checks passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

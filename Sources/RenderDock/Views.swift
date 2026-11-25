@@ -16,7 +16,7 @@ struct CapsuleView: View {
             VStack(alignment: .leading, spacing: 1.5) {
                 Text(primary(focus, groups))
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Theme.ink)
                 Text(secondary(focus, groups))
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(Theme.text(0.55))
@@ -29,7 +29,7 @@ struct CapsuleView: View {
             if !store.agentsNeedingYou.isEmpty { AgentBadge(count: store.agentsNeedingYou.count, failed: store.agents.count(.error) > 0) }
             if !store.inbox.questions.isEmpty { QuestionBadge(count: store.inbox.questions.count) }
 
-            Capsule().fill(.white.opacity(0.13)).frame(width: 1, height: 22)
+            Capsule().fill(Theme.fill(0.13)).frame(width: 1, height: 22)
 
             MiniStat(label: "GPU", value: store.metrics.gpu, tint: Theme.mint)
             MiniStat(label: L("内存", "MEM"), value: store.metrics.memFraction, tint: memTint(store.metrics))
@@ -44,26 +44,27 @@ struct CapsuleView: View {
         .contentShape(Capsule())
     }
 
-    private func ringFraction(_ focus: RenderItem?) -> Double? {
+    // (Not private: the notch form says the same things in less room.)
+    func ringFraction(_ focus: RenderItem?) -> Double? {
         guard let f = focus, f.state.isActive || f.state == .paused else { return nil }
         return f.fraction
     }
 
-    private func ringTint(_ g: [RenderGroup]) -> Color {
+    func ringTint(_ g: [RenderGroup]) -> Color {
         if g.stalledCount > 0 { return Theme.coral }
         if g.activeCount > 0 { return Theme.mint }
         if g.pausedCount > 0 { return Theme.amber }
         return Theme.text(0.6)
     }
 
-    private func idleSymbol(_ g: [RenderGroup]) -> String {
+    func idleSymbol(_ g: [RenderGroup]) -> String {
         if g.stalledCount > 0 { return "exclamationmark" }
         if g.pausedCount > 0 { return "pause.fill" }
         if g.waitingCount > 0 { return "hourglass" }
         return "checkmark"
     }
 
-    private func primary(_ focus: RenderItem?, _ g: [RenderGroup]) -> String {
+    func primary(_ focus: RenderItem?, _ g: [RenderGroup]) -> String {
         guard let f = focus else {
             if g.waitingCount > 0 { return L("排队等待", "Queued") }
             // Nothing renders: the capsule speaks for the agents instead.
@@ -143,7 +144,7 @@ private struct MiniStat: View {
     var body: some View {
         HStack(spacing: 5) {
             ZStack(alignment: .bottom) {
-                Capsule().fill(.white.opacity(0.13))
+                Capsule().fill(Theme.fill(0.13))
                 Capsule().fill(tint).frame(height: max(3, 22 * CGFloat(value ?? 0)))
                     .animation(.easeOut(duration: 0.4), value: value)
             }
@@ -154,7 +155,7 @@ private struct MiniStat: View {
                 ZStack(alignment: .leading) {
                     Text("100").hidden()
                     Text(value.map { "\(Int(($0 * 100).rounded()))" } ?? "–")
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Theme.ink)
                 }
                 .font(Theme.num(12.5))
                 .lineLimit(1)
@@ -174,19 +175,26 @@ private struct MiniStat: View {
 struct PanelView: View {
     let store: Store
     var onCollapse: () -> Void = {}
+    /// Without its own ground and outline: for the notch form, which gives it both.
+    var bare = false
     @Environment(\.snapshotMode) private var snapshot
 
     var body: some View {
-        VStack(spacing: 0) {
+        let content = VStack(spacing: 0) {
             header
-            Rectangle().fill(.white.opacity(0.08)).frame(height: 0.8)
+            Rectangle().fill(Theme.fill(0.08)).frame(height: 0.8)
             taskList
-            Rectangle().fill(.white.opacity(0.08)).frame(height: 0.8)
+            Rectangle().fill(Theme.fill(0.08)).frame(height: 0.8)
             SystemSection(store: store)
         }
         .frame(width: Layout.panelWidth)
-        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .background(HUDBackground(shape: RoundedRectangle(cornerRadius: 24, style: .continuous)))
+        if bare {
+            content
+        } else {
+            content
+                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .background(HUDBackground(shape: RoundedRectangle(cornerRadius: 24, style: .continuous)))
+        }
     }
 
     private var header: some View {
@@ -197,7 +205,7 @@ struct PanelView: View {
                        idleSymbol: groups.pausedCount > 0 ? "pause.fill" : (groups.waitingCount > 0 ? "hourglass" : "checkmark"), lineWidth: 3.2)
                 .frame(width: 32, height: 32)
             VStack(alignment: .leading, spacing: 2) {
-                Text(L("渲染任务", "Render Jobs")).font(.system(size: 14.5, weight: .semibold)).foregroundStyle(.white)
+                Text(L("渲染任务", "Render Jobs")).font(.system(size: 14.5, weight: .semibold)).foregroundStyle(Theme.ink)
                 Text(store.summary).font(.system(size: 10.5, weight: .medium)).foregroundStyle(Theme.text(0.55)).monospacedDigit()
                     .lineLimit(1)
             }
@@ -218,7 +226,7 @@ struct PanelView: View {
                        help: store.pinned ? L("取消固定：点别处会自动收起", "Unpin: collapse when you click elsewhere") : L("固定面板：点别处也不收起", "Pin: stay open when you click elsewhere")) {
                 store.pinned.toggle()
             }
-            IconButton(symbol: "chevron.up", help: L("收起成胶囊", "Collapse"), action: onCollapse)
+            IconButton(symbol: "chevron.up", help: bare ? L("收起", "Collapse") : L("收起成胶囊", "Collapse"), action: onCollapse)
         }
         .padding(.horizontal, 14)
         .frame(height: Layout.headerHeight)
@@ -351,7 +359,7 @@ private struct RequestCard: View {
             HStack(spacing: 6) {
                 Image(systemName: "hand.raised.fill").font(.system(size: 10, weight: .bold)).foregroundStyle(Theme.amber)
                 Text("\(AgentTool.displayName(request.tool)) · \(request.project)")
-                    .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                    .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.ink).lineLimit(1)
                 Spacer(minLength: 4)
                 Text(L("还等 \(Fmt.duration(max(0, request.expiresAt.timeIntervalSince(now))))", "\(Fmt.duration(max(0, request.expiresAt.timeIntervalSince(now)))) left"))
                     .font(.system(size: 10, weight: .medium)).monospacedDigit().foregroundStyle(Theme.text(0.45)).fixedSize()
@@ -424,7 +432,7 @@ private struct QuestionCard: View {
             HStack(spacing: 6) {
                 Image(systemName: "questionmark.bubble.fill").font(.system(size: 10, weight: .bold)).foregroundStyle(Theme.lilac)
                 Text(question.from.isEmpty ? L("有个程序问你", "A program asks") : L("\(question.from) 问你", "\(question.from) asks"))
-                    .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                    .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.ink).lineLimit(1)
                 Spacer(minLength: 4)
                 Text(L("还等 \(Fmt.duration(max(0, question.expiresAt.timeIntervalSince(now))))", "\(Fmt.duration(max(0, question.expiresAt.timeIntervalSince(now)))) left"))
                     .font(.system(size: 10, weight: .medium)).monospacedDigit().foregroundStyle(Theme.text(0.45)).fixedSize()
@@ -480,7 +488,7 @@ private struct InboxSection: View {
         .padding(.horizontal, 11)
         .padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 13, style: .continuous).fill(.white.opacity(0.035)))
+        .background(RoundedRectangle(cornerRadius: 13, style: .continuous).fill(Theme.fill(0.035)))
     }
 }
 
@@ -493,7 +501,7 @@ private struct SenderTag: View {
             Text(name)
                 .font(.system(size: 9.5, weight: .semibold)).foregroundStyle(Theme.text(0.7))
                 .padding(.horizontal, 5).padding(.vertical, 1.5)
-                .background(Capsule().fill(.white.opacity(0.08)))
+                .background(Capsule().fill(Theme.fill(0.08)))
                 .lineLimit(1).fixedSize()
         }
     }
@@ -526,7 +534,7 @@ private struct InboxTaskRow: View {
                 Text(task.title).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.text(0.92)).lineLimit(1).layoutPriority(1)
                 Spacer(minLength: 4)
                 if let f = task.fraction, task.state == "working" {
-                    Text(Fmt.percent(f)).font(Theme.num(12)).foregroundStyle(.white).fixedSize()
+                    Text(Fmt.percent(f)).font(Theme.num(12)).foregroundStyle(Theme.ink).fixedSize()
                 }
                 CloseButton(help: L("从这里拿掉（那个程序自己不受影响）", "Take it off this list (the program itself is not affected)"), action: dismiss)
             }
@@ -613,7 +621,7 @@ private struct AgentSection: View {
         .padding(.horizontal, 11)
         .padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 13, style: .continuous).fill(.white.opacity(0.035)))
+        .background(RoundedRectangle(cornerRadius: 13, style: .continuous).fill(Theme.fill(0.035)))
     }
 
     private func rest(hidden: Int, idle: Int) -> String {
@@ -636,7 +644,7 @@ private struct AgentRow: View {
             Text(AgentTool.displayName(session.tool))
                 .font(.system(size: 9.5, weight: .semibold)).foregroundStyle(Theme.text(0.7))
                 .padding(.horizontal, 5).padding(.vertical, 1.5)
-                .background(Capsule().fill(.white.opacity(0.08)))
+                .background(Capsule().fill(Theme.fill(0.08)))
                 .fixedSize()
             // The project name is the part to keep: the title gives way first when the row is tight.
             Text(session.project).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.text(0.85)).lineLimit(1).layoutPriority(1)
@@ -707,7 +715,7 @@ private struct RecentRuns: View {
         .padding(.horizontal, 11)
         .padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 13, style: .continuous).fill(.white.opacity(0.035)))
+        .background(RoundedRectangle(cornerRadius: 13, style: .continuous).fill(Theme.fill(0.035)))
     }
 
     private func symbol(_ r: HistoryRun) -> String {
@@ -793,7 +801,7 @@ private struct HandButton: View {
             Image(systemName: symbol).font(.system(size: 8.5, weight: .bold))
                 .foregroundStyle(lit ? tint : Theme.text(0.6))
                 .frame(width: 20, height: 18)
-                .background(Capsule().fill((lit ? tint : .white).opacity(lit ? 0.18 : 0.08)))
+                .background(Capsule().fill(lit ? tint.opacity(0.18) : Theme.fill(0.08)))
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -816,7 +824,7 @@ private struct GroupCard: View {
                     .shadow(color: Theme.color(group.state).opacity(0.7), radius: 3)
                     .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 1.5 }
                 Text(group.title)
-                    .font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
+                    .font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
                     .lineLimit(1).truncationMode(.tail)
                     .help(group.note ?? group.title)
                 Spacer(minLength: 6)
@@ -912,7 +920,7 @@ private struct GroupCard: View {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(L("待渲", "Up next")).font(.system(size: 9.5, weight: .semibold)).foregroundStyle(Theme.text(0.45))
                         .padding(.horizontal, 5).padding(.vertical, 1.5)
-                        .background(Capsule().fill(.white.opacity(0.08)))
+                        .background(Capsule().fill(Theme.fill(0.08)))
                     Text(pending.map(\.name).joined(separator: " · "))
                         .font(.system(size: 10.5)).foregroundStyle(Theme.text(0.5)).lineLimit(2)
                 }
@@ -930,8 +938,8 @@ private struct GroupCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 15, style: .continuous)
-                .fill(.white.opacity(0.055))
-                .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous).strokeBorder(.white.opacity(0.07), lineWidth: 0.8))
+                .fill(Theme.fill(0.055))
+                .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous).strokeBorder(Theme.fill(0.07), lineWidth: 0.8))
         )
         .contextMenu {
             if let path = group.scriptPath {
@@ -957,7 +965,7 @@ private struct ItemRow: View {
                     .frame(width: thumbWidth(thumb), height: 50)
                     .background(Color.black.opacity(0.35))
                     .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(.white.opacity(0.14), lineWidth: 0.8))
+                    .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(Theme.fill(0.14), lineWidth: 0.8))
                     .help(onPreview == nil ? L("最新渲出的一帧", "Latest rendered frame") : L("最新渲出的一帧。点一下看大图，回看已渲的帧", "Latest rendered frame. Click for a larger look, and to go back through the frames"))
                     .onTapGesture { onPreview?() }
             }
@@ -975,10 +983,10 @@ private struct ItemRow: View {
                             .font(Theme.num(10, .medium)).foregroundStyle(Theme.text(0.5))
                             .lineLimit(1).fixedSize()
                         Text("\(item.totalIsEstimate ? "≈" : "")\(Fmt.percent(f))")
-                            .font(Theme.num(13)).foregroundStyle(.white)
+                            .font(Theme.num(13)).foregroundStyle(Theme.ink)
                             .lineLimit(1).fixedSize()
                     } else if let d = item.framesDone, item.pid != nil {
-                        Text("\(d)").font(Theme.num(13)).foregroundStyle(.white).lineLimit(1).fixedSize()
+                        Text("\(d)").font(Theme.num(13)).foregroundStyle(Theme.ink).lineLimit(1).fixedSize()
                         Text(L("帧", "frames")).font(.system(size: 10, weight: .medium)).foregroundStyle(Theme.text(0.5)).lineLimit(1).fixedSize()
                     }
                 }
@@ -1154,7 +1162,7 @@ private struct MetricTile: View {
                 Text(title).font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.text(0.6))
             }
             HStack(alignment: .firstTextBaseline, spacing: 1.5) {
-                Text(value).font(Theme.num(19)).foregroundStyle(.white)
+                Text(value).font(Theme.num(19)).foregroundStyle(Theme.ink)
                 Text(unit).font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.text(0.5))
             }
             .lineLimit(1)
@@ -1174,8 +1182,8 @@ private struct MetricTile: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 13, style: .continuous)
-                .fill(.white.opacity(0.055))
-                .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).strokeBorder(.white.opacity(0.07), lineWidth: 0.8))
+                .fill(Theme.fill(0.055))
+                .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).strokeBorder(Theme.fill(0.07), lineWidth: 0.8))
         )
     }
 }
@@ -1193,7 +1201,7 @@ private struct Chip: View {
         }
         .foregroundStyle(tint ?? Theme.text(0.6))
         .padding(.horizontal, 7).padding(.vertical, 3.5)
-        .background(Capsule().fill((tint ?? .white).opacity(tint == nil ? 0.07 : 0.14)))
+        .background(Capsule().fill(tint.map { $0.opacity(0.14) } ?? Theme.fill(0.07)))
         .fixedSize()
         .help(help)
     }

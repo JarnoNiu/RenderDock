@@ -13,14 +13,55 @@ enum Layout {
     static let headerHeight: CGFloat = 58
 }
 
-enum Theme {
-    static let mint = Color(red: 0.31, green: 0.93, blue: 0.69)
-    static let aqua = Color(red: 0.26, green: 0.76, blue: 1.00)
-    static let amber = Color(red: 1.00, green: 0.74, blue: 0.27)
-    static let coral = Color(red: 1.00, green: 0.43, blue: 0.41)
-    static let lilac = Color(red: 0.70, green: 0.63, blue: 1.00)
+/// How the dock looks: dark as it always was, light, or whichever the system is in.
+enum Appearance: String, CaseIterable {
+    case dark, light, system
 
-    static func text(_ opacity: Double) -> Color { .white.opacity(opacity) }
+    static let key = "appearance"
+    static var saved: Appearance { Appearance(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .dark }
+
+    /// Whether the system itself is in its dark look now.
+    static var systemIsDark: Bool { NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) != .aqua }
+
+    func scheme(systemIsDark: Bool) -> ColorScheme {
+        switch self {
+        case .dark: return .dark
+        case .light: return .light
+        case .system: return systemIsDark ? .dark : .light
+        }
+    }
+}
+
+enum Theme {
+    /// A colour that is one thing on the dark dock and another on the light one. The accents are bright on dark
+    /// and have to be deeper on light, where the bright ones cannot be read as text.
+    static func pair(dark: (Double, Double, Double), light: (Double, Double, Double), darkAlpha: Double = 1, lightAlpha: Double = 1) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let isLight = appearance.bestMatch(from: [.darkAqua, .aqua]) == .aqua
+            let c = isLight ? light : dark
+            return NSColor(srgbRed: c.0, green: c.1, blue: c.2, alpha: isLight ? lightAlpha : darkAlpha)
+        })
+    }
+
+    static let mint = pair(dark: (0.31, 0.93, 0.69), light: (0.00, 0.58, 0.42))
+    static let aqua = pair(dark: (0.26, 0.76, 1.00), light: (0.03, 0.46, 0.86))
+    static let amber = pair(dark: (1.00, 0.74, 0.27), light: (0.74, 0.45, 0.00))
+    static let coral = pair(dark: (1.00, 0.43, 0.41), light: (0.83, 0.23, 0.21))
+    static let lilac = pair(dark: (0.70, 0.63, 1.00), light: (0.40, 0.32, 0.84))
+    /// The colour of text and numbers at full strength.
+    static let ink = pair(dark: (1, 1, 1), light: (0.07, 0.09, 0.14))
+    private static let inkOnLight = (0.07, 0.09, 0.14)
+
+    /// Text at a strength. On light, weak text is a little stronger than the same number gives on dark: grey on
+    /// a pale ground loses more than grey on a dark one.
+    static func text(_ opacity: Double) -> Color {
+        pair(dark: (1, 1, 1), light: inkOnLight, darkAlpha: opacity, lightAlpha: min(1, opacity + (opacity < 0.95 ? 0.10 : 0)))
+    }
+
+    /// A see-through surface or a hairline: white laid over the dark dock, a lighter touch of ink over the light one.
+    static func fill(_ opacity: Double) -> Color {
+        pair(dark: (1, 1, 1), light: inkOnLight, darkAlpha: opacity, lightAlpha: opacity * 0.62)
+    }
 
     static let run = LinearGradient(colors: [mint, aqua], startPoint: .leading, endPoint: .trailing)
 
@@ -29,7 +70,7 @@ enum Theme {
         case .rendering, .compositing, .finishing, .encoding, .preparing, .done: return mint
         case .paused: return amber
         case .stalled: return coral
-        case .pending: return .white.opacity(0.35)
+        case .pending: return text(0.35)
         }
     }
 
@@ -38,7 +79,7 @@ enum Theme {
         case .running: return mint
         case .stalled: return coral
         case .paused: return amber
-        case .waiting: return Color(red: 0.62, green: 0.70, blue: 0.86)
+        case .waiting: return pair(dark: (0.62, 0.70, 0.86), light: (0.33, 0.41, 0.60))
         }
     }
 
@@ -69,26 +110,33 @@ extension EnvironmentValues {
     }
 }
 
-/// Behind-window blur (the dark HUD look).
+/// Behind-window blur (the HUD look, dark or light).
 struct BehindWindowBlur: NSViewRepresentable {
     func makeNSView(context: Context) -> NSVisualEffectView {
         let v = NSVisualEffectView()
         v.material = .hudWindow
         v.blendingMode = .behindWindow
         v.state = .active
-        v.appearance = NSAppearance(named: .vibrantDark)
+        v.appearance = NSAppearance(named: context.environment.colorScheme == .light ? .vibrantLight : .vibrantDark)
         return v
     }
 
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.appearance = NSAppearance(named: context.environment.colorScheme == .light ? .vibrantLight : .vibrantDark)
+    }
 }
 
 /// Background shared by the capsule and the panel: blur + darkening + hairline stroke + drop shadow.
 struct HUDBackground<S: InsettableShape>: View {
     @Environment(\.snapshotMode) private var snapshot
+    @Environment(\.colorScheme) private var scheme
     let shape: S
 
     var body: some View {
+        if scheme == .light { light } else { dark }
+    }
+
+    private var dark: some View {
         ZStack {
             shape.fill(Color.black.opacity(0.9))
                 .shadow(color: .black.opacity(0.42), radius: 13, y: 6)
@@ -105,6 +153,26 @@ struct HUDBackground<S: InsettableShape>: View {
                 lineWidth: 0.8)
         }
     }
+
+    /// The same build in light: a pale ground that lets a little of what is behind through, a soft shadow, and
+    /// a hairline that is white at the top (a lit edge) and ink at the bottom.
+    private var light: some View {
+        ZStack {
+            shape.fill(Color.white.opacity(0.92))
+                .shadow(color: Color(red: 0.10, green: 0.14, blue: 0.24).opacity(0.22), radius: 14, y: 6)
+            if snapshot {
+                shape.fill(Color(red: 0.955, green: 0.962, blue: 0.975))
+            } else {
+                BehindWindowBlur().clipShape(shape)
+            }
+            shape.fill(LinearGradient(
+                colors: [Color.white.opacity(0.72), Color(red: 0.93, green: 0.945, blue: 0.965).opacity(0.78)],
+                startPoint: .top, endPoint: .bottom))
+            shape.strokeBorder(
+                LinearGradient(colors: [.white.opacity(0.95), Color(red: 0.07, green: 0.09, blue: 0.14).opacity(0.16)], startPoint: .top, endPoint: .bottom),
+                lineWidth: 0.8)
+        }
+    }
 }
 
 /// Progress ring with the number of shots rendering in the middle.
@@ -117,7 +185,7 @@ struct StatusRing: View {
 
     var body: some View {
         ZStack {
-            Circle().stroke(.white.opacity(0.13), lineWidth: lineWidth)
+            Circle().stroke(Theme.fill(0.13), lineWidth: lineWidth)
             if let f = fraction {
                 Circle()
                     .trim(from: 0, to: max(0.02, f))
@@ -134,7 +202,7 @@ struct StatusRing: View {
                     .rotationEffect(.degrees(-90))
             }
             if count > 0 {
-                Text("\(count)").font(Theme.num(11.5, .bold)).foregroundStyle(.white)
+                Text("\(count)").font(Theme.num(11.5, .bold)).foregroundStyle(Theme.ink)
             } else {
                 Image(systemName: idleSymbol).font(.system(size: 9.5, weight: .bold)).foregroundStyle(tint.opacity(0.9))
             }
@@ -154,7 +222,7 @@ struct ProgressBar: View {
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
-                Capsule().fill(.white.opacity(0.10))
+                Capsule().fill(Theme.fill(0.10))
                 if let f = fraction {
                     Capsule()
                         .fill(fill)
@@ -212,7 +280,7 @@ struct SegmentBar: View {
             ForEach(items) { item in
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
-                        Capsule().fill(.white.opacity(0.11))
+                        Capsule().fill(Theme.fill(0.11))
                         switch item.state {
                         case .done:
                             Capsule().fill(Theme.mint.opacity(0.85))
@@ -287,7 +355,7 @@ struct IconButton: View {
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(active ? Theme.mint : Theme.text(hover ? 0.95 : 0.6))
                 .frame(width: 26, height: 26)
-                .background(Circle().fill(.white.opacity(hover ? 0.16 : 0.08)))
+                .background(Circle().fill(Theme.fill(hover ? 0.16 : 0.08)))
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)

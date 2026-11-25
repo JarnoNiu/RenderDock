@@ -9,6 +9,8 @@ void uiTick();
 // Bring-up only: show what arrives over USB as if a paired computer had sent it. A request fed this way is marked
 // as made up, and an answer to it is not sent anywhere.
 void uiDebugFeed(bool on);
+// Bring-up only: behave as if no computer were on Bluetooth.
+void uiDebugAway(bool on);
 #if RD_DEBUG_SERIAL
 // Whether snapshots fed in over USB may make the board sound. Off unless asked for.
 void uiDebugLoud(bool on);
@@ -25,6 +27,9 @@ void uiDebugTouch(bool down, int x, int y);
 void uiDebugPasskey(uint32_t passkey);
 // Puts a page on the screen: 0 the renders, 1 the agents, 2 the computer itself.
 void uiDebugPage(int page);
+// Shows the battery as if it stood at that many percent and the device ran from it; -1 as if on USB; -2 goes
+// back to the real reading.
+void uiDebugBattery(int percent);
 // Bring-up only: leave whatever is on the panel alone for this long (a picture sent over USB). A touch ends it.
 void uiDebugHold(uint32_t ms);
 // Bring-up only: how long the last frame took to draw and to send to the panel, in microseconds.

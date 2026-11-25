@@ -4,6 +4,7 @@
 #include "link.h"
 #include "hw.h"
 #include "screens.h"
+#include "net.h"
 #include <ArduinoJson.h>
 
 State g_state = {};
@@ -12,6 +13,8 @@ Mac g_mac = {};
 bool g_protoFromConsole = false;
 #endif
 
+// Set while a line that came over Wi-Fi is being read.
+static bool s_fromNetwork = false;
 static bool s_clockSet = false;
 static uint32_t s_clockEpoch = 0;
 static int32_t s_clockOffset = 0;
@@ -117,6 +120,8 @@ static void sendStatus() {
   // The first screens (a board without the font file) draw from a small bitmap font that has only some
   // characters, and leave out the rest without a trace. Such a board says it cannot draw beyond ASCII.
   data["utf8"] = screensReady();
+  // Whether Wi-Fi has been set up here and how it is doing (the numbers of NetState). Never what was set.
+  data["wifi"] = (int)netState();
   String out;
   serializeJson(doc, out);
   linkSendLine(out);
@@ -209,7 +214,8 @@ static void sidesFromOne(State& s) {
 }
 
 // The computer about itself: {"mac":{"cpu":37,"cores":10,"gpu":92,"vram":8.2,"mem":[21.4,32],"mp":1,"swap":1.2,
-// "t":71,"tmax":78,"th":0,"disk":212,"ac":true,"bat":82,"awake":true}}. Whatever is missing is shown as unknown.
+// "t":71,"tmax":78,"th":0,"disk":212,"ac":true,"bat":82,"awake":true,"w":143,"fan":100}}. Whatever is missing is
+// shown as unknown.
 static void readMac(JsonObjectConst mac) {
   Mac& m = g_mac;
   m.have = true;
@@ -229,6 +235,8 @@ static void readMac(JsonObjectConst mac) {
   m.onAC = mac["ac"].is<bool>() ? (mac["ac"].as<bool>() ? 1 : 0) : -1;
   m.battery = mac["bat"] | -1;
   m.awake = mac["awake"] | false;
+  m.watts = mac["w"] | -1;
+  m.fan = mac["fan"] | -1;
 }
 
 static void readSnapshot(JsonDocument& doc) {
@@ -249,7 +257,8 @@ static void readSnapshot(JsonDocument& doc) {
 
   JsonObject prompt = doc["prompt"];
   const char* id = prompt["id"] | "";
-  if (prompt.isNull() || !*id) {
+  // Over Wi-Fi nothing can be answered, so nothing is taken as a request, whatever the line says.
+  if (prompt.isNull() || !*id || s_fromNetwork) {
     s.prompt = false;
     s.answered = false;
     s.promptId[0] = 0;
@@ -337,7 +346,7 @@ static void readSnapshot(JsonDocument& doc) {
 
   JsonObject ask = rd["ask"];
   const char* askId = ask["id"] | "";
-  if (ask.isNull() || !*askId) {
+  if (ask.isNull() || !*askId || s_fromNetwork) {
     s.ask = false;
     s.askId[0] = 0;
     s.askPicked = -1;
@@ -383,9 +392,10 @@ static void readSnapshot(JsonDocument& doc) {
   }
 }
 
-void protoHandle(const String& line) {
+void protoHandle(const String& line, bool fromNetwork) {
   JsonDocument doc;
   if (deserializeJson(doc, line)) return;   // not JSON: not for us
+  s_fromNetwork = fromNetwork;
 
   if (doc["time"].is<JsonArray>()) {
     s_clockEpoch = doc["time"][0] | 0;
@@ -400,6 +410,22 @@ void protoHandle(const String& line) {
   }
   const char* command = doc["cmd"] | "";
   if (*command) {
+    // Commands are obeyed from the encrypted Bluetooth link alone. What comes over Wi-Fi can ask for nothing.
+    if (fromNetwork) return;
+    if (!strcmp(command, "wifi")) {
+      // The network to join and where the computer is on it; or, with "off", forget both.
+      // "scan": look for the networks in range. The answer is its own line, a few seconds later (see main.cpp).
+      if (doc["scan"] | false) {
+        netScanRequest();
+        return;
+      }
+      if (doc["off"] | false) netConfigure("", "", "", "", 0, "");
+      // Without a network's name: only where the computer is now (its address, port or token changed).
+      else if (doc["ssid"].isNull()) netPlace(doc["host"] | "", doc["ip"] | "", doc["port"] | 47600, doc["token"] | "");
+      else netConfigure(doc["ssid"] | "", doc["pass"] | "", doc["host"] | "", doc["ip"] | "", doc["port"] | 47600, doc["token"] | "");
+      ack(command, true);
+      return;
+    }
     if (!strcmp(command, "status")) sendStatus();
     else if (!strcmp(command, "name") || !strcmp(command, "owner")) ack(command, true);   // accepted, not used
     else if (!strcmp(command, "unpair")) {

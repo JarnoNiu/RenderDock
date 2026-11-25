@@ -46,6 +46,8 @@ struct Mac {
   int onAC;             // 1 on the adapter, 0 on the battery, -1 if not said
   int battery;          // percent, -1 if there is none or it is not said
   bool awake;           // something is keeping it from going to sleep when idle
+  int watts;            // what the whole machine is drawing, -1 if it does not say
+  int fan;              // how hard its fans work, percent between their slowest and fastest; -1 if it does not say
 };
 
 struct State {
@@ -128,7 +130,9 @@ extern bool g_protoFromConsole;
 #endif
 
 // Reads one line from the computer: updates g_state, or answers a command.
-void protoHandle(const String& line);
+// `fromNetwork`: the line came over Wi-Fi, not over the encrypted Bluetooth link. Such a line may say what to
+// show and nothing else: no command in it is obeyed, and nothing in it is offered to be answered.
+void protoHandle(const String& line, bool fromNetwork = false);
 // Sends the user's answer to the request on screen. Only once per request.
 void protoAnswer(bool allow);
 // Sends which answer the user picked for the question on screen (counted from 0). Only once per question.

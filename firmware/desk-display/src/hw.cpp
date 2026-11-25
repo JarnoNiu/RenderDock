@@ -210,8 +210,14 @@ void hwScreen(bool on) {
   }
 }
 
+// True while a frame is going out over the console: another task's log line in the middle of it would shift
+// every pixel after it. (The Wi-Fi task's did, the first time a frame was asked for while it was reading.)
+volatile bool g_dumpingFrame = false;
+
 void hwDumpFrame() {
   const uint8_t* pixels = (const uint8_t*)s_canvas->getFramebuffer();
+  g_dumpingFrame = true;
+  delay(30);   // a line already on its way out goes first
   size_t bytes = (size_t)LCD_W * LCD_H * 2;
   Serial.setTxTimeoutMs(200);   // this one is worth waiting for: someone asked for it and is reading
   Serial.printf("\nSHOT %d %d %u\n", LCD_W, LCD_H, (unsigned)bytes);
@@ -221,6 +227,7 @@ void hwDumpFrame() {
   Serial.print("\nEND\n");
   Serial.flush();
   Serial.setTxTimeoutMs(0);
+  g_dumpingFrame = false;
 }
 
 static TouchFix s_touchFix = {1.0f, 0.0f, 1.0f, 0.0f};

@@ -232,7 +232,10 @@ save('pages-idle', base(0, 0, 0, 'idle', rd={'state': 'idle', 'agents': none_at_
 
 # The computer about itself. These go on lines of their own.
 save('mac', {'mac': {'cpu': 37, 'cores': 10, 'gpu': 92, 'vram': 8.2, 'mem': [21.4, 32], 'mp': 1, 'swap': 1.2,
-                     't': 71, 'tmax': 78, 'th': 0, 'disk': 212, 'ac': True, 'awake': True}})
+                     't': 71, 'tmax': 78, 'th': 0, 'disk': 212, 'ac': True, 'awake': True, 'w': 86, 'fan': 35}})
 save('mac-hot', {'mac': {'cpu': 100, 'cores': 10, 'gpu': 100, 'vram': 14.6, 'mem': [30.9, 32], 'mp': 2, 'swap': 9.4,
-                         't': 101, 'tmax': 108, 'th': 2, 'disk': 38, 'ac': False, 'bat': 64, 'awake': False}})
+                         't': 101, 'tmax': 108, 'th': 2, 'disk': 38, 'ac': False, 'bat': 64, 'awake': False, 'w': 151, 'fan': 100}})
+# Working hard but not yet slowed down for heat: the fans say so before the system does.
+save('mac-busy', {'mac': {'cpu': 88, 'cores': 10, 'gpu': 97, 'vram': 11.3, 'mem': [26.2, 32], 'mp': 1, 'swap': 2.0,
+                          't': 88, 'tmax': 96, 'th': 0, 'disk': 212, 'ac': True, 'awake': True, 'w': 143, 'fan': 100}})
 save('mac-bare', {'mac': {'cpu': 4, 'mem': [9.5, 16], 'mp': 1, 'awake': False}})

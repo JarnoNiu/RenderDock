@@ -8,6 +8,7 @@
 #include "ui.h"
 #include "hw.h"
 #include "link.h"
+#include "net.h"
 #include "state.h"
 #include "board.h"
 #include "screens.h"
@@ -65,6 +66,15 @@ static const int PAGES = 3, PAGE_MAC = 2;
 static int s_page = 0;
 static Overall s_lastRenders = OV_IDLE, s_lastSessions = OV_IDLE;
 static uint32_t s_lastMacAt = 0;
+// This device's own battery: read every three seconds, shown while it runs from it. The number comes from the
+// cell's voltage, which jumps about with what the screen is doing, so it is evened out over the last few readings;
+// when USB is plugged in or pulled out the voltage steps, and the evening-out starts afresh.
+static Battery s_battery = {-1, 0, true};
+static uint32_t s_batteryAt = 0;
+static float s_batteryEven = -1;
+static bool s_batteryWarned = false;
+static int s_fakeBattery = -2;   // from the bring-up console: -2 is "use the real one"
+void uiDebugBattery(int percent) { s_fakeBattery = percent; }
 static uint32_t s_lastTouchAt = 0;
 static uint32_t s_lastContactAt = 0;   // when the touch controller last reported a finger
 static uint32_t s_lastDrawAt = 0;
@@ -76,6 +86,10 @@ static bool s_wasConnected = false;
 static bool s_debugFeed = false;
 
 void uiDebugFeed(bool on) { s_debugFeed = on; }
+// Bring-up only ("net force on"): the screen behaves as if no computer were on Bluetooth, to watch Wi-Fi take over.
+static bool s_debugAway = false;
+void uiDebugAway(bool on) { s_debugAway = on; }
+static bool bluetoothUp() { return linkConnected() && !s_debugAway; }
 #if RD_DEBUG_SERIAL
 // What is fed in over USB is made up, and may set the clock to any hour: it makes no sound unless asked to.
 static bool s_debugLoud = false;
@@ -989,7 +1003,24 @@ void uiTick() {
   uint32_t now = millis();
   handleKeys(now);
 
-  bool connected = linkConnected() || s_debugFeed;
+  // A computer is there if it is on the Bluetooth link, or if its lines are arriving over Wi-Fi.
+  bool connected = bluetoothUp() || netLive() || s_debugFeed;
+  switch (bluetoothUp() ? NET_UNSET : netState()) {
+    case NET_IDLE: screensNetWords("蓝牙不在，稍后改走 Wi-Fi", ""); break;
+    case NET_JOINING: screensNetWords("正在连 Wi-Fi…", ""); break;
+    case NET_READING: screensNetWords("Wi-Fi 连上了", "正在等电脑的数据…"); break;
+    case NET_NO_NETWORK: screensNetWords("Wi-Fi 连不上", "名字或密码不对，或者离得太远"); break;
+    case NET_REFUSED: screensNetWords("电脑不认这块小屏的口令", "拿到电脑旁连上蓝牙，会自动更新"); break;
+    case NET_NO_COMPUTER: screensNetWords("Wi-Fi 连上了，电脑没有应答", "渲染坞开着吗？接口打开了吗？"); break;
+    default: screensNetWords("", ""); break;
+  }
+  static bool s_wasOverWiFi = false;
+  bool overWiFi = netLive() && !bluetoothUp();
+  if (overWiFi != s_wasOverWiFi) {
+    s_wasOverWiFi = overWiFi;
+    screensOverWiFi(overWiFi);
+    s_dirty = true;
+  }
   if (s_wasConnected != connected) s_dirty = true;
   if (s_wasConnected && !connected) {
     protoReset();
@@ -1091,6 +1122,26 @@ void uiTick() {
     }
     s_lastOverall = s.overall;
   }
+  // The battery. On USB, or with none fitted, there is nothing to show. Running from it, the number is on the
+  // screen, and once, on the way down past a tenth, a line says so.
+  if (s_batteryAt == 0 || now - s_batteryAt >= 3000) {
+    s_batteryAt = now ? now : 1;
+    Battery read = hwBattery();
+    if (read.percent < 0 || read.usb != s_battery.usb || s_batteryEven < 0) s_batteryEven = read.percent;
+    else s_batteryEven = s_batteryEven * 0.75f + read.percent * 0.25f;
+    read.percent = read.percent < 0 ? -1 : (int)(s_batteryEven + 0.5f);
+    if (read.percent != s_battery.percent || read.usb != s_battery.usb) s_dirty = true;
+    s_battery = read;
+  }
+  int battery = s_fakeBattery != -2 ? s_fakeBattery : (!s_battery.usb ? s_battery.percent : -1);
+  if (battery >= 0 && battery <= 10 && !s_batteryWarned) {
+    s_batteryWarned = true;
+    wake();
+    toast("电量低，接上电源");
+  } else if (battery < 0 || battery >= 20) {
+    s_batteryWarned = false;
+  }
+  screensBattery(battery);
   if (g_mac.at != s_lastMacAt) {
     s_lastMacAt = g_mac.at;
     s_dirty = true;   // its page shows them, and its mark along the bottom may change colour
@@ -1167,7 +1218,7 @@ void uiTick() {
     const Side& side = page == 0 ? s.r : s.a;
     // What has a percentage is shown with the ring: a render, or a task another program reports on.
     bool measured = (!strcmp(side.topKind, "render") || !strcmp(side.topKind, "task")) && side.topPercent >= 0;
-    if (link) screenLink(frame, passkey, linkConnected(), linkName());
+    if (link) screenLink(frame, passkey, bluetoothUp(), linkName());
     else if (request) screenRequest(frame, hold, holdDeny, s_lastAllowed);
     else if (ask) screenAsk(frame, s_down ? s_downOnChoice : -1, max(0.0f, held));
     else if (note) screenNote(frame);
@@ -1181,7 +1232,12 @@ void uiTick() {
     else if (side.overall == OV_DONE) screenFinished(frame, side, false);
     else screenIdle(frame, paged ? page : -1);
     if (plain && paged) screenPages(frame, page);
-    if (plain && !list && page != PAGE_MAC && (s_dnd || s_mute)) screenBadge(frame, s_dnd ? "勿扰" : "静音");
+    if (plain && !list && page != PAGE_MAC) screenBatteryCorner(frame);
+    // In the corner: a switch that is on, and that what is shown is coming over Wi-Fi (so nothing can be answered here).
+    if (plain && !list && page != PAGE_MAC && (s_dnd || s_mute || overWiFi)) {
+      const char* word = s_dnd ? (overWiFi ? "勿扰 · Wi-Fi" : "勿扰") : (s_mute ? (overWiFi ? "静音 · Wi-Fi" : "静音") : "Wi-Fi");
+      screenBadge(frame, word);
+    }
     if (s_toast[0]) screenToast(frame, s_toast);
   } else {
     if (!fresh || passkey != 0) drawLink();

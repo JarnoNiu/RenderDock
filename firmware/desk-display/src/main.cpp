@@ -7,6 +7,7 @@
 #include "board.h"
 #include "hw.h"
 #include "link.h"
+#include "net.h"
 #include "screens.h"
 #include "sound.h"
 #include "state.h"
@@ -33,6 +34,7 @@ void setup() {
   }
   bool sound = soundBegin();
   linkBegin();
+  netBegin();
   uiBegin();
   Serial.printf("sound: the playback chip %s\n", sound ? "is ready" : "did not start; there will be no sound");
   Serial.printf("RenderDock desk display %s ready as %s\n", RD_VERSION, linkName());
@@ -43,6 +45,10 @@ static uint32_t debugWorstGap(bool reset);
 // "quiet SECONDS" on the console: what the paired computer sends is not shown for that long, so that snapshots
 // fed over USB stay on the screen long enough to be looked at.
 static uint32_t s_quietUntil = 0;
+// "net force on|off": Wi-Fi is used, and the screen behaves, as if Bluetooth were away, for trying it with the
+// computer still paired (what the computer sends over Bluetooth meanwhile is not shown).
+// "net" says how Wi-Fi is doing (a number of NetState, and whether lines are arriving).
+static bool s_netForce = false;
 
 // "image SECONDS", then one whole frame of pixels as the panel takes them (two bytes each, 460800 in all): shown
 // for that long, or until the screen is touched. For looking at a drawing on the glass itself.
@@ -138,6 +144,13 @@ static void debugConsole() {
     else if (input == "up") uiDebugTouch(false, 0, 0);
     else if (input.startsWith("passkey ")) uiDebugPasskey((uint32_t)atol(input.c_str() + 8));
     else if (input.startsWith("page ")) uiDebugPage(atoi(input.c_str() + 5));
+    else if (input == "net force on" || input == "net force off") {
+      s_netForce = input.endsWith("on");
+      uiDebugAway(s_netForce);
+    }
+    else if (input == "net") Serial.printf("net: state %d, set %d, lines arriving %d, memory free %u (least %u)\n", (int)netState(), netConfigured() ? 1 : 0, netLive() ? 1 : 0,
+                                           (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap());
+    else if (input.startsWith("battery ")) uiDebugBattery(atoi(input.c_str() + 8));
     else if (input.startsWith("down ")) {
       int x = 0, y = 0;
       if (sscanf(input.c_str() + 5, "%d %d", &x, &y) == 2) uiDebugTouch(true, x, y);
@@ -174,8 +187,23 @@ void loop() {
   while (linkReadLine(line)) {
 #if RD_DEBUG_SERIAL
     if (s_quietUntil != 0 && (int32_t)(millis() - s_quietUntil) < 0) continue;
+    // As if Bluetooth were away: what the paired computer sends is not shown. (Its commands are still obeyed.)
+    if (s_netForce && line.indexOf("\"cmd\"") < 0) continue;
 #endif
     protoHandle(line);
+  }
+  // Wi-Fi stands in while Bluetooth is away: once no paired computer has been on the link for a quarter of a
+  // minute, and for as long as none is. What arrives over it is shown, and nothing more is done with it.
+  static uint32_t s_bluetoothAt = 0;
+  if (linkSecure()) s_bluetoothAt = millis() ? millis() : 1;
+  bool away = !linkSecure() && (s_bluetoothAt == 0 ? millis() > 15000 : millis() - s_bluetoothAt > 15000);
+#if RD_DEBUG_SERIAL
+  if (s_netForce) away = true;   // "net force on" on the console: as if Bluetooth were away
+#endif
+  netWanted(netConfigured() && away);
+  if (netScanResult(line)) linkSendLine(line);   // the networks in range, for the computer that asked
+  while (netReadLine(line)) {
+    if (away) protoHandle(line, true);
   }
 #if RD_DEBUG_SERIAL
   debugConsole();

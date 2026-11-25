@@ -174,7 +174,31 @@ static void numberInRing(uint16_t* frame, int value, uint16_t color, const char*
   if (under[0]) fontDrawCentred(frame, text30(), CX, UNDER_NUMBER_Y, BRIGHT, under);
 }
 
-void screenBadge(uint16_t* frame, const char* text) { fontDraw(frame, text26(), 30, 40, DIM, text); }
+void screenBadge(uint16_t* frame, const char* text) { fontDraw(frame, name26(), 30, 40, DIM, text); }
+
+// This device's own battery, while it runs from it.
+static int s_battery = -1;
+void screensBattery(int percent) { s_battery = percent; }
+
+// The battery as a small outline with its filling and the number beside it, ending at `right`. Amber below a
+// fifth, red below a tenth. Returns how wide it was, so that whatever stands beside it can make room.
+static int battery(uint16_t* frame, int right, int baseline) {
+  if (s_battery < 0) return 0;
+  uint16_t color = s_battery < 10 ? CORAL : (s_battery < 20 ? AMBER : DIM);
+  String number = String(s_battery) + "%";
+  TextStyle style = {rounded(0), 0};
+  int numberWidth = fontWidth(style, number.c_str());
+  fontDrawRight(frame, style, right, baseline, color, number.c_str());
+  const int W = 30, H = 16;
+  int x = right - numberWidth - 8 - 3 - W, y = baseline - 18;
+  shapeRoundRectLine(frame, x, y, W, H, 4, 1.6f, color);
+  shapeRoundRect(frame, x + W + 1, y + 5, 3, 6, 1, color);
+  int filled = max(2, (W - 6) * min(100, s_battery) / 100);
+  shapeRoundRect(frame, x + 3, y + 3, filled, H - 6, 2, color);
+  return numberWidth + 8 + 3 + W;
+}
+
+void screenBatteryCorner(uint16_t* frame) { battery(frame, 452, 42); }
 
 void screenToast(uint16_t* frame, const char* text) {
   int width = fontWidth(text30(), text) + 60;
@@ -184,6 +208,13 @@ void screenToast(uint16_t* frame, const char* text) {
 }
 
 // MARK: link and pairing
+
+static const char* s_netFirst = "";
+static const char* s_netSecond = "";
+void screensNetWords(const char* first, const char* second) {
+  s_netFirst = first ? first : "";
+  s_netSecond = second ? second : "";
+}
 
 void screenLink(uint16_t* frame, uint32_t passkey, bool connected, const char* name) {
   if (passkey != 0) {
@@ -204,7 +235,11 @@ void screenLink(uint16_t* frame, uint32_t passkey, bool connected, const char* n
   shapeDisc(frame, CX, 108, 12, rgb(87, 87, 87));
   fontDrawCentred(frame, text38(), CX, 231, WHITE, connected ? "已连上，等电脑发数据" : "等电脑来连");
   fontDrawCentred(frame, name30(), CX, 280, SOFT, name);
-  if (!connected) {
+  if (!connected && s_netFirst[0]) {
+    // A device that has been given a network says how that is going instead.
+    fontDrawCentred(frame, name26(), CX, 358, SOFT, s_netFirst);
+    fontDrawCentred(frame, name26(), CX, 396, SOFT, s_netSecond);
+  } else if (!connected) {
     fontDrawCentred(frame, text26(), CX, 358, SOFT, "在渲染坞的菜单里打开");
     fontDrawCentred(frame, text26(), CX, 396, SOFT, "「连接蓝牙小设备」");
   }
@@ -527,15 +562,22 @@ static void tile(uint16_t* frame, int x, int y, const char* title, const String&
 
 // The computer itself: how busy its processor and its graphics chip are, how full its memory, how hot it runs,
 // and under those its disk, its power and whether it will go to sleep.
+// Whether what is shown is coming over Wi-Fi: this page says so in its heading (the others in their corner).
+static bool s_overWiFi = false;
+void screensOverWiFi(bool on) { s_overWiFi = on; }
+
 void screenMac(uint16_t* frame) {
   const Mac& m = g_mac;
-  fontDraw(frame, name26(), 36, 41, SOFT, "这台 Mac");
-  int hour, minute;
+  fontDraw(frame, name26(), 36, 41, SOFT, s_overWiFi ? "这台 Mac · Wi-Fi" : "这台 Mac");
+  int hour, minute, clockWidth = 0;
   if (protoClock(hour, minute)) {
     char clock[8];
     snprintf(clock, sizeof(clock), "%02d:%02d", hour, minute);
     fontDrawRight(frame, {rounded(0), 0}, 444, 41, SOFT, clock);
+    clockWidth = fontWidth({rounded(0), 0}, clock) + 18;
   }
+  // This device's own battery, beside the clock: not to be taken for the computer's, which is among the labels below.
+  battery(frame, 444 - clockWidth, 41);
   if (!m.have || millis() - m.at > 45000) {
     fontDrawCentred(frame, text30(), CX, 226, SOFT, m.have ? "电脑有一阵没说它自己了" : "电脑还没说它自己的情况");
     fontDrawCentred(frame, text26(), CX, 274, DIM, m.have ? "连接还在的话，过一会儿会再来" : "要新一些的渲染坞才会发来");
@@ -543,8 +585,11 @@ void screenMac(uint16_t* frame) {
   }
   uint16_t memoryTint = m.memPressure >= 4 ? CORAL : (m.memPressure >= 2 ? AMBER : MINT);
   uint16_t heatTint = m.thermal >= 2 || m.temp >= 95 ? CORAL : AMBER;
+  // Beside the temperature: the system's own word once it has one; else the fans, once they work hard; else
+  // the hottest sensor.
   String heat = m.thermal >= 3 ? String("严重过热") : (m.thermal == 2 ? String("过热降速") : (m.thermal == 1 ? String("偏热")
-              : (m.tempMax >= 0 ? String("最高 ") + m.tempMax + "°" : String(""))));
+              : (m.fan >= 95 ? String("风扇满速") : (m.fan >= 60 ? String("风扇 ") + m.fan + "%"
+              : (m.tempMax >= 0 ? String("最高 ") + m.tempMax + "°" : String(""))))));
   int memory = m.memTotal > 0 && m.memUsed >= 0 ? (int)(m.memUsed * 100.0f / m.memTotal + 0.5f) : -1;
   tile(frame, 18, 56, "CPU", m.cores > 0 ? String(m.cores) + " 核" : String(""), m.cpu, false, m.cpu / 100.0f, AQUA);
   tile(frame, 248, 56, "显卡", m.vram >= 0 ? String("显存 ") + String((int)roundf(m.vram)) + "G" : String(""), m.gpu, false, m.gpu / 100.0f, MINT);
@@ -555,9 +600,10 @@ void screenMac(uint16_t* frame) {
   int count = 0;
   if (m.diskFree >= 0) {
     bool low = m.diskFree < 60;
-    list[count++] = {String("磁盘剩 ") + m.diskFree + " GB", low ? AMBER : SOFT, low ? AMBER_UNDER : GREY_UNDER, 0, 0};
+    // Kept short: with the draw beside it, the three labels have to fit the width of the screen.
+    list[count++] = {String("磁盘 ") + m.diskFree + "G", low ? AMBER : SOFT, low ? AMBER_UNDER : GREY_UNDER, 0, 0};
   }
-  if (m.onAC == 1) list[count++] = {String("电源"), SOFT, GREY_UNDER, 0, 0};
+  if (m.onAC == 1) list[count++] = {m.watts > 0 ? String("电源 ") + m.watts + " W" : String("电源"), SOFT, GREY_UNDER, 0, 0};
   else if (m.battery >= 0) list[count++] = {String("电池 ") + m.battery + "%", AMBER, AMBER_UNDER, 0, 0};
   if (m.awake) list[count++] = {String("不睡"), MINT, MINT_UNDER, 1, 0};
   else list[count++] = {String("会睡"), SOFT, GREY_UNDER, 0, 0};

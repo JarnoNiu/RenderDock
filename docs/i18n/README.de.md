@@ -99,7 +99,9 @@ RenderDock liest die Prozesstabelle und die Ausgabeordner. Die App klinkt sich n
 |---|---|
 | Ein Blender-Prozess, der mit `-b` / `--background` gestartet wurde | Ein **Shot** |
 | Das äußerste Skript darüber im Prozessbaum (`zsh render_all.sh`, `python queue.py`, …) | Eine **Job-Kette**: eine Karte. Der Titel ist die erste Kommentarzeile dieses Skripts |
-| `scene:shot`-Argumente in der Kommandozeile eines Warteschlangen-Skripts | Die **Warteschlange**: welche Shots fertig sind, gerade rendern oder als Nächstes kommen |
+| `scene:shot`-Argumente in der Kommandozeile eines Warteschlangen-Skripts oder eine eigene Schreibweise für die Shots, beschrieben in einer [Regel](../ADAPTERS.md) | Die **Warteschlange**: welche Shots fertig sind, gerade rendern oder als Nächstes kommen |
+| Ein `ffmpeg`-Prozess | Eine **Kodierung**. Mit Prozentwert und Restzeit, wenn er über `renderdock run` gestartet wird oder seine Ausgabe in eine Logdatei geht |
+| Ein ComfyUI-Server auf diesem Mac mit Prompts in der Warteschlange | Ein **ComfyUI**-Job: welcher Prompt läuft, wie viele fertig sind und wie viele warten. Kein Prozentwert |
 | Ein in `caffeinate` verpacktes Skript, das noch keinen Render-Prozess hat | **Wartet** |
 | Ein mit `kill -STOP` angehaltener Prozess | **Pausiert** |
 | Kein neuer Frame seit dem 10-Fachen der üblichen Frame-Zeit (mindestens 5 Minuten) | **Hängt** |
@@ -115,6 +117,8 @@ RenderDock zeigt nur dann eine Prozentzahl an, wenn die Gesamtzahl bekannt ist. 
 |---|---|
 | `render-progress.json` im Ausgabeordner (siehe unten) | exakt: `412/720 frames · 57%` und Restzeit |
 | Ein Frame-Bereich in der Kommandozeile: `-s 1 -e 250 -a` oder `-f 1..250` | exakt |
+| Die Ausgabe des Renderings, in eine Logdatei umgeleitet (`blender -b … > render.log`) | exakt, aus den Zeilen gelesen, die Blender selbst in diese Datei schreibt |
+| Der in der `.blend`-Datei gespeicherte Frame-Bereich, wenn sonst nichts ihn angibt | exakt; `≈`, wenn in der Kommandozeile auch ein Skript übergeben wird, denn es kann den Bereich ändern. Nicht bei komprimiert gespeicherten Dateien |
 | Mit `renderdock run --` gestartet oder mit geladenem Blender-Hook | exakt, auch wenn in der Kommandozeile nichts steht. Unterscheidet außerdem einen fertigen Job von einem fehlgeschlagenen |
 | Ein älterer Clip mit gleichem Namen neben dem Ausgabeordner | Schätzung, mit `≈` markiert. Wird verworfen, sobald die Frame-Anzahl darüber liegt |
 | Nichts davon | nur Frame-Anzahl und Sekunden pro Frame, mit unbestimmtem Fortschrittsbalken |
@@ -126,7 +130,7 @@ blender -b shot_010.blend -o //render/frame_#### -s 1 -e 250 -a
 
 ### `render-progress.json`: exakter Fortschritt für jede Pipeline
 
-Wenn der Frame-Bereich in der `.blend`-Datei steckt oder das Skript die Frames selbst rendert, genügt es, nach jedem Frame eine kleine Datei in den Ausgabeordner zu schreiben:
+Wenn das Skript die Frames selbst rendert oder die `.blend`-Datei komprimiert gespeichert ist und der Bereich nirgends sonst steht, genügt es, nach jedem Frame eine kleine Datei in den Ausgabeordner zu schreiben:
 
 ```json
 {"done": 12, "total": 720}

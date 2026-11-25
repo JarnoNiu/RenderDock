@@ -99,7 +99,9 @@ O RenderDock lê a tabela de processos e as pastas de saída. Ele não se acopla
 |---|---|
 | Um processo do Blender iniciado com `-b` / `--background` | Um **shot** |
 | O script mais externo acima dele na árvore de processos (`zsh render_all.sh`, `python queue.py`, …) | Uma **cadeia de tarefas**: um cartão. O título é a primeira linha de comentário desse script |
-| Argumentos `scene:shot` na linha de comando de um script de fila | A **fila**: quais shots estão concluídos, quais estão renderizando e quais vêm a seguir |
+| Argumentos `scene:shot` na linha de comando de um script de fila, ou o seu próprio jeito de listar os shots, descrito em uma [regra](../ADAPTERS.md) | A **fila**: quais shots estão concluídos, quais estão renderizando e quais vêm a seguir |
+| Um processo `ffmpeg` | Uma **codificação**. Com porcentagem e tempo restante quando é iniciado com `renderdock run`, ou quando a saída dele vai para um arquivo de log |
+| Um servidor ComfyUI neste Mac com prompts na fila | Um trabalho **ComfyUI**: qual prompt está em execução, quantos terminaram e quantos estão esperando. Sem porcentagem |
 | Um script envolvido por `caffeinate`, ainda sem processo de render | **Na fila** |
 | Um processo parado com `kill -STOP` | **Pausado** |
 | Nenhum quadro novo por 10 vezes o tempo habitual por quadro (no mínimo 5 minutos) | **Travado** |
@@ -115,6 +117,8 @@ O RenderDock só mostra uma porcentagem quando conhece o total. Ele não tenta a
 |---|---|
 | `render-progress.json` na pasta de saída (veja abaixo) | exato: `412/720 frames · 57%` e tempo restante |
 | Um intervalo de quadros na linha de comando: `-s 1 -e 250 -a` ou `-f 1..250` | exato |
+| A saída da renderização redirecionada para um arquivo de log (`blender -b … > render.log`) | exato, lido das linhas que o próprio Blender escreve nesse arquivo |
+| O intervalo de quadros salvo no `.blend`, quando nada mais o informa | exato; `≈` se um script também é passado na linha de comando, porque ele pode mudar o intervalo. Não funciona com arquivos salvos com compressão |
 | Iniciado com `renderdock run --`, ou com o hook do Blender carregado | exato, mesmo quando não há nada na linha de comando. Também distingue uma tarefa concluída de uma que falhou |
 | Um clipe mais antigo com o mesmo nome ao lado da pasta de saída | estimativa, marcada com `≈`. Descartada assim que a contagem de quadros a ultrapassa |
 | Nenhuma dessas | apenas contagem de quadros e segundos por quadro, com uma barra indeterminada |
@@ -126,7 +130,7 @@ blender -b shot_010.blend -o //render/frame_#### -s 1 -e 250 -a
 
 ### `render-progress.json`: progresso exato para qualquer pipeline
 
-Se o intervalo fica dentro do `.blend` ou se o seu script renderiza os quadros por conta própria, grave um pequeno arquivo na pasta de saída depois de cada quadro:
+Se o seu script renderiza os quadros por conta própria, ou se o `.blend` foi salvo com compressão e o intervalo não está em nenhum outro lugar, grave um pequeno arquivo na pasta de saída depois de cada quadro:
 
 ```json
 {"done": 12, "total": 720}

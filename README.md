@@ -99,7 +99,9 @@ RenderDock reads the process table and the output folders. It does not hook into
 |---|---|
 | A Blender process started with `-b` / `--background` | A **shot** |
 | The outermost script above it in the process tree (`zsh render_all.sh`, `python queue.py`, …) | A **job chain**: one card. The title is the first comment line of that script |
-| `scene:shot` arguments on a queue script's command line | The **queue**: which shots are done, rendering and up next |
+| `scene:shot` arguments on a queue script's command line, or your own way of listing shots, described in a [rule](docs/ADAPTERS.md) | The **queue**: which shots are done, rendering and up next |
+| An `ffmpeg` process | An **encode**. With a percentage and time left when it is started through `renderdock run`, or when its output goes to a log file |
+| A ComfyUI server on this Mac with prompts in its queue | A **ComfyUI** job: which prompt is running, how many are done and waiting. No percentage |
 | A script wrapped in `caffeinate` with no render process yet | **Queued** |
 | A process stopped with `kill -STOP` | **Paused** |
 | No new frame for 10× the usual frame time (5 minutes at least) | **Stalled** |
@@ -115,6 +117,8 @@ RenderDock only shows a percentage when it knows the total. It does not guess.
 |---|---|
 | `render-progress.json` in the output folder (see below) | exact: `412/720 frames · 57%` and time left |
 | A frame range on the command line: `-s 1 -e 250 -a`, or `-f 1..250` | exact |
+| The render's output redirected to a log file (`blender -b … > render.log`) | exact, read from Blender's own lines in that file |
+| The frame range stored in the `.blend`, when nothing else says | exact; `≈` if a script is passed on the command line, since it may change the range. Not for files saved compressed |
 | Started with `renderdock run --`, or with the Blender hook loaded | exact, even when nothing is on the command line. It also tells a finished job from a failed one |
 | An older clip with the same name next to the output folder | estimate, marked `≈`. Dropped as soon as the frame count passes it |
 | None of these | frame count and seconds per frame only, with an indeterminate bar |
@@ -126,7 +130,7 @@ blender -b shot_010.blend -o //render/frame_#### -s 1 -e 250 -a
 
 ### `render-progress.json`: exact progress for any pipeline
 
-If your range lives inside the `.blend` or your script renders frames itself, write one small file to the output folder after each frame:
+If your script renders frames itself, or the `.blend` is saved compressed and the range is given nowhere else, write one small file to the output folder after each frame:
 
 ```json
 {"done": 12, "total": 720}

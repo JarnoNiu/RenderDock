@@ -99,7 +99,9 @@ RenderDock lee la tabla de procesos y las carpetas de salida. No se engancha a B
 |---|---|
 | Un proceso de Blender iniciado con `-b` / `--background` | Un **plano** |
 | El script más externo por encima de él en el árbol de procesos (`zsh render_all.sh`, `python queue.py`, …) | Una **cadena de trabajos**: una tarjeta. El título es la primera línea de comentario de ese script |
-| Argumentos `scene:shot` en la línea de comandos de un script de cola | La **cola**: qué planos están terminados, cuáles se están renderizando y cuáles vienen después |
+| Argumentos `scene:shot` en la línea de comandos de un script de cola, o tu propia forma de listar los planos, descrita en una [regla](../ADAPTERS.md) | La **cola**: qué planos están terminados, cuáles se están renderizando y cuáles vienen después |
+| Un proceso `ffmpeg` | Una **codificación**. Con porcentaje y tiempo restante si se inicia con `renderdock run`, o si su salida va a un archivo de registro |
+| Un servidor ComfyUI en este Mac con prompts en su cola | Un trabajo **ComfyUI**: qué prompt se está ejecutando, cuántos están terminados y cuántos esperan. Sin porcentaje |
 | Un script envuelto en `caffeinate` que aún no tiene proceso de render | **En cola** |
 | Un proceso detenido con `kill -STOP` | **En pausa** |
 | Ningún fotograma nuevo durante 10 veces el tiempo habitual por fotograma (5 minutos como mínimo) | **Atascado** |
@@ -115,6 +117,8 @@ RenderDock solo muestra un porcentaje cuando conoce el total. No adivina.
 |---|---|
 | `render-progress.json` en la carpeta de salida (ver más abajo) | exacto: `412/720 frames · 57%` y tiempo restante |
 | Un rango de fotogramas en la línea de comandos: `-s 1 -e 250 -a` o `-f 1..250` | exacto |
+| La salida del render redirigida a un archivo de registro (`blender -b … > render.log`) | exacto, leído de las líneas que el propio Blender escribe en ese archivo |
+| El rango de fotogramas guardado en el `.blend`, cuando nada más lo indica | exacto; `≈` si además se pasa un script en la línea de comandos, porque puede cambiar el rango. No sirve para archivos guardados con compresión |
 | Iniciado con `renderdock run --`, o con el hook de Blender cargado | exacto, aunque no haya nada en la línea de comandos. Además, distingue un trabajo terminado de uno que ha fallado |
 | Un clip anterior con el mismo nombre junto a la carpeta de salida | estimación, marcada con `≈`. Se descarta en cuanto el número de fotogramas la supera |
 | Ninguna de las anteriores | solo número de fotogramas y segundos por fotograma, con una barra indeterminada |
@@ -126,7 +130,7 @@ blender -b shot_010.blend -o //render/frame_#### -s 1 -e 250 -a
 
 ### `render-progress.json`: progreso exacto para cualquier pipeline
 
-Si el rango está guardado dentro del `.blend` o tu script renderiza los fotogramas por su cuenta, escribe un archivo pequeño en la carpeta de salida después de cada fotograma:
+Si tu script renderiza los fotogramas por su cuenta, o el `.blend` está guardado con compresión y el rango no aparece en ningún otro sitio, escribe un archivo pequeño en la carpeta de salida después de cada fotograma:
 
 ```json
 {"done": 12, "total": 720}

@@ -99,7 +99,9 @@ RenderDock lit la table des processus et les dossiers de sortie. L'application n
 |---|---|
 | Un processus Blender lancé avec `-b` / `--background` | Un **plan** |
 | Le script le plus externe au-dessus de lui dans l'arbre des processus (`zsh render_all.sh`, `python queue.py`, …) | Une **chaîne de tâches** : une carte. Le titre est la première ligne de commentaire de ce script |
-| Des arguments `scene:shot` sur la ligne de commande d'un script de file d'attente | La **file d'attente** : quels plans sont terminés, en cours de rendu ou à suivre |
+| Des arguments `scene:shot` sur la ligne de commande d'un script de file d'attente, ou votre propre façon de lister les plans, décrite dans une [règle](../ADAPTERS.md) | La **file d'attente** : quels plans sont terminés, en cours de rendu ou à suivre |
+| Un processus `ffmpeg` | Un **encodage**. Avec un pourcentage et le temps restant s'il est lancé via `renderdock run`, ou si sa sortie va dans un fichier journal |
+| Un serveur ComfyUI sur ce Mac, avec des prompts dans sa file | Une tâche **ComfyUI** : quel prompt est en cours, combien sont terminés et combien attendent. Pas de pourcentage |
 | Un script encapsulé dans `caffeinate`, sans processus de rendu pour l'instant | **En attente** |
 | Un processus arrêté avec `kill -STOP` | **En pause** |
 | Aucune nouvelle image depuis 10 fois le temps habituel par image (5 minutes au minimum) | **Bloqué** |
@@ -115,6 +117,8 @@ RenderDock n'affiche un pourcentage que si le total est connu. L'application ne 
 |---|---|
 | `render-progress.json` dans le dossier de sortie (voir ci-dessous) | exact : `412/720 frames · 57%` et le temps restant |
 | Une plage d'images sur la ligne de commande : `-s 1 -e 250 -a`, ou `-f 1..250` | exact |
+| La sortie du rendu redirigée vers un fichier journal (`blender -b … > render.log`) | exact, lu dans les lignes que Blender écrit lui-même dans ce fichier |
+| La plage d'images enregistrée dans le `.blend`, quand rien d'autre ne l'indique | exact ; `≈` si un script est aussi passé sur la ligne de commande, car il peut modifier la plage. Pas pour les fichiers enregistrés compressés |
 | Lancé avec `renderdock run --`, ou avec le hook Blender chargé | exact, même quand rien ne figure sur la ligne de commande. Distingue aussi une tâche terminée d'une tâche qui a échoué |
 | Un ancien clip du même nom à côté du dossier de sortie | estimation, signalée par `≈`. Abandonnée dès que le nombre d'images la dépasse |
 | Rien de tout cela | nombre d'images et secondes par image uniquement, avec une barre indéterminée |
@@ -126,7 +130,7 @@ blender -b shot_010.blend -o //render/frame_#### -s 1 -e 250 -a
 
 ### `render-progress.json` : une progression exacte pour n'importe quel pipeline
 
-Si votre plage d'images est définie dans le `.blend`, ou si votre script rend lui-même les images, écrivez un petit fichier dans le dossier de sortie après chaque image :
+Si votre script rend lui-même les images, ou si le `.blend` est enregistré compressé et que la plage n'est indiquée nulle part ailleurs, écrivez un petit fichier dans le dossier de sortie après chaque image :
 
 ```json
 {"done": 12, "total": 720}

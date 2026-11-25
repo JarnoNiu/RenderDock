@@ -128,6 +128,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             }
             add(deviceMenu, L("可以在设备上答复 agent 的请求", "Agents' Requests May Be Answered on the Device"), #selector(toggleDeviceAnswers), on: store.deviceAnswers)
             add(deviceMenu, L("设备能显示中文", "The Device Can Show Chinese"), #selector(toggleDeviceUnicode), on: store.deviceUnicode)
+            add(deviceMenu, L("在设备上显示会话标题", "Show Sessions' Titles on the Device"), #selector(toggleDeviceTitles), on: store.deviceTitles)
             // Wi-Fi for where Bluetooth does not reach: only for a display that keeps pages (it reads the same stream),
             // and only settable while it is on the encrypted link.
             if case .connected(_, true, _) = store.deviceStatus, store.device.pages {
@@ -322,6 +323,34 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc private func toggleDevice() { store.deviceEnabled.toggle() }
     @objc private func toggleDeviceUnicode() { store.deviceUnicode.toggle() }
     @objc private func toggleDeviceAnswers() { store.deviceAnswers.toggle() }
+    /// Off without a word; on only after saying what it means for a screen that others can see.
+    @objc private func toggleDeviceTitles() {
+        if store.deviceTitles {
+            store.deviceTitles = false
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = L("在桌面小屏上显示会话标题？", "Show sessions' titles on the desk display?")
+        alert.informativeText = L("""
+            打开后，小屏上每个 agent 会话显示它的标题，而不是项目名。没有标题的会话照旧显示项目名。
+
+            · 标题说的是你正在做什么。小屏摆在桌上，旁边的人看得到。
+            · 标题只经加密的蓝牙连接发给小屏。小屏走 Wi-Fi 的时候（那条路不加密）仍然只显示项目名。
+            · 标题不会因此出现在接口、通知或别的地方。
+            · 随时可以关，关掉后小屏立即改回项目名。
+            """, """
+            Each agent session on the display is then shown by its title in place of its project. A session without a title goes on showing its project.
+
+            · A title says what you are working on. The display stands on a desk, where others can read it.
+            · Titles go to the display over the encrypted Bluetooth link only. While it reads over Wi-Fi (which is not encrypted) it goes on showing projects.
+            · Titles do not appear in the API, in notifications or anywhere else because of this.
+            · It can be switched off at any time, and the display goes back to projects at once.
+            """)
+        alert.addButton(withTitle: L("打开", "Turn On"))
+        alert.addButton(withTitle: L("取消", "Cancel"))
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn { store.deviceTitles = true }
+    }
     @objc private func forgetDevice() { store.device.forget() }
 
     /// Debug only: the sheet below drawn into a picture, without showing it, with made-up networks in its list.

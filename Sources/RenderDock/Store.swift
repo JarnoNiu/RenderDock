@@ -358,6 +358,16 @@ final class Store {
             sendToDevice()
         }
     }
+    /// Whether a session's title may be shown on the device in place of its project. Off by default: a title
+    /// says what you are working on, and the device stands where others can read it. Only ever sent over the
+    /// encrypted Bluetooth link; a display reading over Wi-Fi goes on showing projects.
+    var deviceTitles = UserDefaults.standard.bool(forKey: "deviceTitles") {
+        didSet {
+            UserDefaults.standard.set(deviceTitles, forKey: "deviceTitles")
+            sendToDevice()
+            onChange?()
+        }
+    }
     /// Whether an agent's permission request may be answered on the device. Off by default, and separate from
     /// the link itself: a device can show what is going on without being a place where things are approved.
     /// (Questions from other programs are not approvals and do not depend on this.)
@@ -494,10 +504,14 @@ final class Store {
     /// Hands the device the current snapshot. What it gets depends on whether the link is encrypted.
     private func sendToDevice() {
         guard deviceEnabled, !demo, device.isConnected else { return }
+        // Titles go along only if the user said so, and then only for what has one. (The link being encrypted is
+        // seen to where the snapshot is built.)
+        var titles: [String: String] = [:]
+        if deviceTitles { for s in agents { if let title = s.title, !title.isEmpty { titles[s.id] = title } } }
         device.send(BuddyProtocol.heartbeat(state: snapshot(now: Date()), requests: requests, inbox: inbox,
                                             options: BuddyProtocol.Options(secure: device.secure, unicode: deviceUnicode || device.unicode,
                                                                            extended: device.extended, inbox: device.inbox,
-                                                                           offerRequests: deviceAnswers, pages: device.pages)))
+                                                                           offerRequests: deviceAnswers, pages: device.pages, titles: titles)))
     }
 
     /// This Mac's own numbers, for a device with a page for them. They are measured every two seconds; the device

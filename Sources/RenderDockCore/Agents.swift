@@ -37,13 +37,17 @@ package enum AgentTool {
     package static let claudeCode = "claude-code"
     package static let codex = "codex"
     package static let hermes = "hermes"
-    package static let all = [claudeCode, codex, hermes]
+    /// Google's agent: the Gemini desktop app, its `agy` command line and Antigravity, which keep their
+    /// conversations in one place.
+    package static let gemini = "gemini"
+    package static let all = [claudeCode, codex, hermes, gemini]
 
     package static func displayName(_ tool: String) -> String {
         switch tool {
         case claudeCode: return "Claude Code"
         case codex: return "Codex"
         case hermes: return "Hermes"
+        case gemini: return "Gemini"
         default: return tool
         }
     }
@@ -399,7 +403,11 @@ package final class CodexSource {
         var sessions: [AgentSession] = []
         var running: Bool?
         var seen = Set<String>()
-        for url in known {
+        for listed in known {
+            // A listed file comes with its size and date as they were when it was listed, and would go on
+            // answering with those until the next listing: a turn's start or end was noticed up to 20 s late.
+            var url = listed
+            url.removeAllCachedResourceValues()
             guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
                   let modified = values.contentModificationDate, now.timeIntervalSince(modified) < 86_400 else { continue }
             let size = values.fileSize ?? 0
@@ -408,7 +416,7 @@ package final class CodexSource {
             if parsed == nil || parsed?.modified != modified || parsed?.size != size {
                 let meta = parsed?.meta ?? Self.meta(head: Self.read(url, fromStart: true, bytes: 262_144))
                 parsed = Parsed(modified: modified, size: size, meta: meta,
-                                last: Self.lastTaskEvent(tail: Self.read(url, fromStart: false, bytes: 524_288)))
+                                last: Self.lastEvent(in: url, size: size, known: parsed.map { ($0.size, $0.last) }))
                 cache[url.path] = parsed
             }
             guard let p = parsed, let meta = p.meta, !meta.subagent, let last = p.last else { continue }
@@ -427,11 +435,38 @@ package final class CodexSource {
             }
             sessions.append(AgentSession(
                 id: "\(AgentTool.codex):\(AgentSupport.shortID(meta.id))", tool: AgentTool.codex,
-                project: AgentSupport.project(meta.cwd), title: title(for: meta.id), state: state,
+                project: Self.project(for: meta.cwd), title: title(for: meta.id), state: state,
                 since: last.at ?? modified, source: "files"))
         }
         cache = cache.filter { seen.contains($0.key) }
         return sessions
+    }
+
+    // MARK: naming
+
+    /// The name a thread goes by: its project. A chat started in Codex's own app without a project works in a
+    /// folder Codex makes up for it, `~/Documents/Codex/<date>/<a few letters>`. Those letters are cut from the
+    /// chat's title: they are nobody's project (a chat with a Chinese title came out as three letters), and a piece
+    /// of a title is not to leave this Mac either. Such a thread is called a chat.
+    package static func project(for cwd: String) -> String {
+        ownChatFolder(cwd) ? L("对话", "chat") : AgentSupport.project(cwd)
+    }
+
+    /// `…/Documents/Codex/<yyyy-mm-dd>/<name>` or something inside it, with no repository made there since.
+    package static func ownChatFolder(_ cwd: String) -> Bool {
+        let parts = (cwd as NSString).pathComponents
+        guard let i = parts.lastIndex(of: "Codex"), i >= 1, parts[i - 1] == "Documents", parts.count > i + 2 else { return false }
+        let numbers = parts[i + 1].split(separator: "-", omittingEmptySubsequences: false)
+        guard numbers.map(\.count) == [4, 2, 2], numbers.allSatisfy({ $0.allSatisfy { ("0"..."9").contains($0) } }) else { return false }
+        // Somebody who ran `git init` in there has a project after all, named as any other.
+        let folder = NSString.path(withComponents: Array(parts[0...(i + 2)]))
+        var dir = NSString.path(withComponents: parts)
+        while dir.count >= folder.count {
+            if FileManager.default.fileExists(atPath: dir + "/.git") { return false }
+            if dir == folder { break }
+            dir = (dir as NSString).deletingLastPathComponent
+        }
+        return true
     }
 
     // MARK: parsing
@@ -464,6 +499,48 @@ package final class CodexSource {
             return TaskEvent(type: type, at: AgentSupport.date(object["timestamp"]))
         }
         return nil
+    }
+
+    /// How much of a record's end is read for its last task event before looking any further.
+    static let tailBytes = 524_288
+    /// A record is looked through backwards for its last task event in pieces of this size, and no further back
+    /// than this much in all: what a turn writes can be large, but a record with nothing in its last 64 MB is
+    /// not followed.
+    static let stepBytes = 4 * 1_048_576
+    static let deepestBytes = 64 * 1_048_576
+
+    /// The last task event in a record of `size` bytes. `known` is what was found the last time, and how long
+    /// the record was then.
+    ///
+    /// A turn that started long ago may have written megabytes since (one command's output can be that much):
+    /// its `task_started` is then far from the end. Looking only at the end made every such turn vanish while
+    /// it was at work. So: when the record has only grown, everything written since the last look is read,
+    /// however much it is, and what was known stands if nothing new is in it; on a first look, the record is
+    /// read backwards until an event turns up.
+    static func lastEvent(in url: URL, size: Int, known: (size: Int, last: TaskEvent?)?) -> TaskEvent? {
+        if let known, size >= known.size {
+            // Whatever was found before (nothing, too) still holds for the part that was there before.
+            let from = max(0, min(known.size, size - tailBytes))
+            return lastTaskEvent(tail: read(url, from: from, to: size)) ?? known.last
+        }
+        var end = size
+        var from = max(0, size - tailBytes)
+        while end > 0, size - from <= deepestBytes + tailBytes {
+            let piece = read(url, from: from, to: end)
+            if let event = lastTaskEvent(tail: piece) { return event }
+            guard from > 0 else { return nil }
+            // The first line of the piece may have begun before it: it is read again with the piece before.
+            end = from + ((piece.firstIndex(of: 0x0A).map { piece.distance(from: piece.startIndex, to: $0) + 1 }) ?? piece.count)
+            from = max(0, from - stepBytes)
+        }
+        return nil
+    }
+
+    private static func read(_ url: URL, from: Int, to: Int) -> Data {
+        guard to > from, let handle = try? FileHandle(forReadingFrom: url) else { return Data() }
+        defer { try? handle.close() }
+        try? handle.seek(toOffset: UInt64(from))
+        return (try? handle.read(upToCount: to - from)) ?? Data()
     }
 
     private static func read(_ url: URL, fromStart: Bool, bytes: Int) -> Data {
@@ -601,6 +678,179 @@ package final class HermesSource {
     }
 }
 
+// MARK: Gemini and Antigravity
+
+/// Conversations of Google's agent. The Gemini desktop app, its `agy` command line and Antigravity share one
+/// folder, `~/.gemini/antigravity`, with a small database that lists the conversations: for each, whether it is
+/// running, when it last changed, and where it works. A conversation's own steps are in a database of its own.
+///
+/// Read-only. From the list, the bookkeeping columns; from a running conversation, only whether one of its
+/// steps is marked as waiting. Nothing that was said is read.
+///
+/// The words and numbers come from the program's own descriptors (Gemini 1.147): a conversation is
+/// `CASCADE_RUN_STATUS_IDLE`, `_RUNNING`, `_CANCELING` or `_BUSY`; a step's status 9 is `WAITING`.
+package final class GeminiSource {
+    /// A conversation that went idle is shown as done for this long.
+    package static let doneWindow: TimeInterval = 600
+    /// One said to be running with nothing changed for this long is shown as gone quiet rather than working.
+    package static let quietAfter: TimeInterval = 900
+    /// The number the program gives a step that waits for the user.
+    static let stepWaiting = 9
+
+    private let home: URL
+    private let alive: () -> Bool
+
+    /// - Parameters:
+    ///   - home: the agent's folder; `~/.gemini/antigravity`, or `RENDERDOCK_GEMINI_HOME`.
+    ///   - alive: whether one of its programs is running. Without one, "running" in the list is left over.
+    package init(home: URL? = nil, alive: (() -> Bool)? = nil) {
+        let folder = home ?? ProcessInfo.processInfo.environment["RENDERDOCK_GEMINI_HOME"].map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".gemini/antigravity")
+        self.home = folder
+        self.alive = alive ?? { GeminiSource.running(home: folder) }
+    }
+
+    package func scan(now: Date = Date()) -> [AgentSession] {
+        let index = home.appendingPathComponent("conversation_summaries.db")
+        guard FileManager.default.fileExists(atPath: index.path) else { return [] }
+        let sql = """
+            SELECT conversation_id, title, status, last_modified_time, last_user_input_time, workspace_uris, step_count
+            FROM conversation_summaries
+            WHERE nesting_depth = 0 AND parent_conversation_id = '' AND killed = 0
+            ORDER BY last_modified_time DESC LIMIT 60
+            """
+        var sessions: [AgentSession] = []
+        var running: Bool?
+        for row in ReadOnlyDatabase.rows(index, sql) {
+            guard row.count == 7, let id = row[0], !id.isEmpty, let modified = Self.date(row[3]),
+                  now.timeIntervalSince(modified) < 86_400 else { continue }
+            let state: AgentState
+            var since = modified
+            switch row[2] ?? "" {
+            case "CASCADE_RUN_STATUS_RUNNING", "CASCADE_RUN_STATUS_BUSY":
+                if running == nil { running = alive() }
+                guard running == true else { continue }   // none of its programs is there: the turn is not either
+                if Self.hasWaitingStep(home.appendingPathComponent("conversations/\(id).db")) {
+                    state = .waiting
+                } else {
+                    state = now.timeIntervalSince(modified) < Self.quietAfter ? .working : .stale
+                    since = Self.date(row[4]).flatMap { $0 <= modified ? $0 : nil } ?? modified   // at work since you last spoke
+                }
+            case "CASCADE_RUN_STATUS_IDLE":
+                // A conversation that was opened and never spoken in has done nothing.
+                guard now.timeIntervalSince(modified) < Self.doneWindow, (Int(row[6] ?? "") ?? 0) > 0 else { continue }
+                state = .done
+            default:
+                continue   // being cancelled, or something this does not know
+            }
+            sessions.append(AgentSession(
+                id: "\(AgentTool.gemini):\(AgentSupport.shortID(id))", tool: AgentTool.gemini,
+                project: Self.project(for: row[5] ?? ""), title: row[1].flatMap { $0.isEmpty ? nil : $0 }, state: state,
+                since: since, source: "files"))
+        }
+        return sessions
+    }
+
+    /// Whether a running conversation has a step waiting for the user (to approve a command, say).
+    static func hasWaitingStep(_ conversation: URL) -> Bool {
+        guard FileManager.default.fileExists(atPath: conversation.path) else { return false }
+        return !ReadOnlyDatabase.rows(conversation, "SELECT 1 FROM steps WHERE status = \(stepWaiting) LIMIT 1").isEmpty
+    }
+
+    /// The project of a conversation, from the folders it works in (written as `file://` addresses, or as
+    /// paths). One that works in no folder is a chat, as with Codex.
+    package static func project(for workspaces: String) -> String {
+        var path: String?
+        if let range = workspaces.range(of: "file://") {
+            let rest = workspaces[range.upperBound...]
+            let end = rest.firstIndex { "\",]} \n".contains($0) } ?? rest.endIndex
+            path = String(rest[..<end]).removingPercentEncoding
+        } else if let start = workspaces.firstIndex(of: "/") {
+            let rest = workspaces[start...]
+            let end = rest.firstIndex { "\",]}\n".contains($0) } ?? rest.endIndex
+            path = String(rest[..<end])
+        }
+        guard let path, path.count > 1 else { return L("对话", "chat") }
+        let name = AgentSupport.project(path)
+        return name.isEmpty ? L("对话", "chat") : name
+    }
+
+    /// "2027-01-15 08:30:05.596801+00:00", as the list writes its times: any number of digits after the
+    /// seconds, or none.
+    package static func date(_ text: String?) -> Date? {
+        guard var s = text, s.count >= 19 else { return nil }
+        if let space = s.firstIndex(of: " "), s.distance(from: s.startIndex, to: space) == 10 { s.replaceSubrange(space...space, with: "T") }
+        if let dot = s.firstIndex(of: ".") {
+            let after = s[s.index(after: dot)...]
+            let digits = after.prefix { $0.isNumber }
+            let rest = after.dropFirst(digits.count)
+            s = String(s[..<dot]) + "." + String((digits + "000").prefix(3)) + rest
+        }
+        if !s.hasSuffix("Z"), !s.dropFirst(19).contains(where: { $0 == "+" || $0 == "-" }) { s += "Z" }
+        return AgentSupport.date(s)
+    }
+
+    /// One of the agent's programs is running: the one its own note in `daemon` names, or one by a known name.
+    static func running(home: URL) -> Bool {
+        let daemon = home.appendingPathComponent("daemon")
+        for file in (try? FileManager.default.contentsOfDirectory(at: daemon, includingPropertiesForKeys: nil)) ?? [] where file.pathExtension == "json" {
+            if let data = try? Data(contentsOf: file), let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+               let pid = o["pid"] as? Int, AgentSupport.alive(Int32(truncatingIfNeeded: pid)) { return true }
+        }
+        return ProcTable.allPids().contains { pid in
+            guard let name = ProcTable.proc(pid)?.name.lowercased() else { return false }
+            return name == "agy" || name == "gemini" || name.hasPrefix("antigravity")
+        }
+    }
+}
+
+/// Reading a database that belongs to another program: read-only, and never more than reading.
+enum ReadOnlyDatabase {
+    /// The rows a query gives, every value as text (nil for NULL). Empty if the database cannot be read.
+    ///
+    /// A database in write-ahead mode is opened read-only the plain way only while its owner has it open (its
+    /// log and the index to it are there). Once the owner has closed it and tidied those away, opening it would
+    /// make SQLite create them again, in a folder that is not ours: the main file is then complete by itself,
+    /// and is read as it is, which creates nothing.
+    static func rows(_ database: URL, _ sql: String) -> [[String?]] {
+        var db: OpaquePointer?
+        var statement: OpaquePointer?
+        let fm = FileManager.default
+        let logged = fm.fileExists(atPath: database.path + "-wal") && fm.fileExists(atPath: database.path + "-shm")
+        let plain = (logged || !writeAhead(database)) && sqlite3_open_v2(database.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK
+        if plain { sqlite3_busy_timeout(db, 250) }
+        if !plain || sqlite3_prepare_v2(db, sql, -1, &statement, nil) != SQLITE_OK {
+            sqlite3_close(db)
+            db = nil
+            let uri = "file:\(database.path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? database.path)?immutable=1"
+            guard sqlite3_open_v2(uri, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, nil) == SQLITE_OK,
+                  sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+                sqlite3_close(db)
+                return []
+            }
+        }
+        defer {
+            sqlite3_finalize(statement)
+            sqlite3_close(db)
+        }
+        var out: [[String?]] = []
+        let columns = sqlite3_column_count(statement)
+        while sqlite3_step(statement) == SQLITE_ROW, out.count < 500 {
+            out.append((0..<columns).map { i in sqlite3_column_text(statement, i).map { String(cString: $0) } })
+        }
+        return out
+    }
+
+    /// Whether a database file says of itself that it is kept in write-ahead mode (the two version bytes in
+    /// its header are 2).
+    static func writeAhead(_ database: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: database) else { return false }
+        defer { try? handle.close() }
+        guard let head = try? handle.read(upToCount: 20), head.count == 20 else { return false }
+        return head[head.startIndex + 18] == 2 && head[head.startIndex + 19] == 2
+    }
+}
+
 // MARK: All of them
 
 /// Collects the sessions of every agent that is switched on.
@@ -608,11 +858,14 @@ package final class AgentScanner {
     private let claude: ClaudeCodeSource
     private let codex: CodexSource
     private let hermes: HermesSource
+    private let gemini: GeminiSource
 
-    package init(claude: ClaudeCodeSource = ClaudeCodeSource(), codex: CodexSource = CodexSource(), hermes: HermesSource = HermesSource()) {
+    package init(claude: ClaudeCodeSource = ClaudeCodeSource(), codex: CodexSource = CodexSource(), hermes: HermesSource = HermesSource(),
+                 gemini: GeminiSource = GeminiSource()) {
         self.claude = claude
         self.codex = codex
         self.hermes = hermes
+        self.gemini = gemini
     }
 
     /// - Parameter tools: which agents to look at. A tool that is not installed costs one directory check.
@@ -621,6 +874,7 @@ package final class AgentScanner {
         if tools.contains(AgentTool.claudeCode) { all += claude.scan(now: now) }
         if tools.contains(AgentTool.codex) { all += codex.scan(now: now) }
         if tools.contains(AgentTool.hermes) { all += hermes.scan(now: now) }
+        if tools.contains(AgentTool.gemini) { all += gemini.scan(now: now) }
         return all.byUrgency
     }
 }

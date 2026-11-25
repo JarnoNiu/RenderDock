@@ -272,9 +272,14 @@ package enum BuddyProtocol {
         /// Nothing the device says comes back (it reads the stream over Wi-Fi): nothing is offered to be answered
         /// there, neither a request nor a question.
         package var readOnly: Bool
+        /// What a session may be called on the device in place of its project: its title, by the session's id.
+        /// Empty unless the user said titles may be shown there. A title says what somebody is working on, so it
+        /// only ever goes over an encrypted link, and never to a display that reads over Wi-Fi (that stream is
+        /// plain HTTP): whatever is passed in, both are seen to here.
+        package var titles: [String: String]
 
         package init(secure: Bool, unicode: Bool = false, extended: Bool = false, inbox: Bool = false, offerRequests: Bool = true, pages: Bool = false,
-                     readOnly: Bool = false) {
+                     readOnly: Bool = false, titles: [String: String] = [:]) {
             self.secure = secure
             self.unicode = unicode
             self.extended = extended
@@ -282,6 +287,7 @@ package enum BuddyProtocol {
             self.offerRequests = offerRequests && !readOnly
             self.pages = pages
             self.readOnly = readOnly
+            self.titles = secure && !readOnly ? titles : [:]
         }
 
         /// For a display that reads over Wi-Fi: all it can show, and nothing it could answer.
@@ -342,10 +348,18 @@ package enum BuddyProtocol {
     private static func extended(state: StateSnapshot, offered: ControlRequest?, inbox: InboxView, options: Options, now: Date) -> Extended {
         let s = state.summary
         func name(_ text: String) -> String { fit(text, Limit.name, unicode: options.unicode) }
+        // What a session is called here: its project, or its title where the user allowed titles on the device.
+        func called(_ id: String, _ project: String) -> String {
+            name(options.titles[id].flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 } ?? project)
+        }
+        // The session a "top" stands for. The sessions are listed most urgent first, as the top was chosen.
+        func topCalled(state topState: String, project: String) -> String {
+            state.agents.first { $0.state == topState && $0.project == project }.map { called($0.id, $0.project) } ?? name(project)
+        }
         var e = Extended(state: s.state, agents: s.agents, rows: [])
         if let top = s.top {
             e.topKind = top.kind
-            e.topName = name(top.name)
+            e.topName = top.kind == "agent" ? topCalled(state: top.state, project: top.name) : name(top.name)
             e.topTool = top.tool.map(AgentTool.displayName)
             e.topWait = top.waitingFor.map { fit($0, Limit.name, unicode: options.unicode) }
             e.topPercent = top.fraction.map { Int(($0 * 100).rounded(.down)) }
@@ -360,7 +374,7 @@ package enum BuddyProtocol {
         // The list: what needs you first, then what is rendering, then what is working, then what just finished.
         func agentRows(_ states: Set<String>) -> [Row] {
             state.agents.filter { states.contains($0.state) }.map {
-                Row(name: name($0.project), tool: AgentTool.displayName($0.tool), state: $0.state, ageSec: $0.sinceSec, percent: nil)
+                Row(name: called($0.id, $0.project), tool: AgentTool.displayName($0.tool), state: $0.state, ageSec: $0.sinceSec, percent: nil)
             }
         }
         var shots: [Row] = []
@@ -402,7 +416,7 @@ package enum BuddyProtocol {
                              + agentRows(["done"]) + taskRows("done")).prefix(Limit.rows)))
             if let top = s.agentSide?.top {
                 a.topKind = "agent"
-                a.topName = name(top.name)
+                a.topName = topCalled(state: top.state, project: top.name)
                 a.topTool = top.tool.map(AgentTool.displayName)
                 a.topWait = top.waitingFor.map { fit($0, Limit.name, unicode: options.unicode) }
                 a.topAgeSec = state.agents.first { $0.project == top.name && $0.state == top.state }?.sinceSec

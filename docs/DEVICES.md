@@ -19,7 +19,7 @@ One snapshot whenever something changes, and every ten seconds:
 | `entries` | Up to eight lines: requests that wait on the Mac, sessions that are doing something, shots in progress with their percentage |
 | `prompt` | A request that may be answered on the device (see below) |
 
-It is also sent the time, once, on connecting. It is **not** sent an owner name, which the protocol has a message for, and it is never sent a session's title.
+It is also sent the time, once, on connecting. It is **not** sent an owner name, which the protocol has a message for, and it is not sent a session's title unless you switch that on (below).
 
 ### Extra fields for a device that asks for them
 
@@ -137,6 +137,19 @@ A device whose whole flash was written again, or whose memory was cleared, no lo
 - it tries again every fifteen seconds instead of every three. Each try is refused within a second anyway, and macOS takes about half a minute to let go of a pairing once the device is forgotten, which goes better when nothing is asking it to connect all the while.
 
 The first connection after that pairs afresh. **Forget This Device** in RenderDock's own menu is another matter (which device RenderDock goes back to); it should not be needed here, since the device keeps the identifier macOS knows it by, though that has not been run both ways. If a minute after forgetting the device is still listed under My Devices, forget it again. A connection that hangs although the device is plainly there is cleared by turning the Mac's Bluetooth off and on.
+
+## Sessions' titles on the device (0.4, off by default)
+
+A session is shown on the device by its project. Two sessions in one project read the same, and a chat that has no project reads only "chat". What tells them apart is the title, and a title says what you are working on: so it is not sent unless you say so.
+
+Menu-bar icon → **Desk Device** → **Show Sessions' Titles on the Device**. It asks first, and says what follows:
+
+- Each session with a title is then shown by it, in the list and on the line on top. One without a title keeps its project. Nothing else changes: the same field of the same lines carries the title where it carried the project.
+- **Over the encrypted Bluetooth link only.** A link that is not encrypted gets no title, and neither does a display reading over Wi-Fi, whose stream is plain HTTP: there it goes on showing projects. This is seen to where the lines are built, whatever the switch says.
+- Titles do not appear in the API, in events or in notifications because of it.
+- The device has room for about a dozen Chinese characters on the top line and about seven in a list row; a longer title is cut in the middle, so its beginning and its end stay.
+
+Switched off, the device is back to projects with the next line it is sent.
 
 ## Over Wi-Fi, where Bluetooth does not reach (0.4)
 

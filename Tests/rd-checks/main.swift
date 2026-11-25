@@ -19,6 +19,14 @@ func check(_ name: String, _ condition: @autoclosure () -> Bool, line: UInt = #l
 
 func section(_ name: String) { print("· \(name)") }
 
+enum ReadOnlyDatabaseShape {
+    /// Whether a database file says of itself that it is kept in write-ahead mode.
+    static func writeAhead(_ path: String) -> Bool {
+        guard let head = FileHandle(forReadingAtPath: path)?.readData(ofLength: 20), head.count == 20 else { return false }
+        return head[18] == 2 && head[19] == 2
+    }
+}
+
 // MARK: Frame numbers in file names
 
 section("frame numbers")
@@ -1197,6 +1205,166 @@ do {
     check("with Codex not running, an unfinished turn is not shown; a finished one still is",
           state("aaaaaaaa", in: stopped) == nil && state("ffffffff", in: stopped) == nil && state("bbbbbbbb", in: stopped) == .done)
     check("no Codex directory: nothing", CodexSource(home: home.appendingPathComponent("nope"), alive: { true }).scan().isEmpty)
+    // A turn that writes a lot. What a turn writes between its start and its end can be megabytes (one command's
+    // output is enough), and its start is then far from the record's end. (A real turn, five minutes in and
+    // 1.3 MB on, was shown nowhere: only the end of the record was read.)
+    func output(_ kilobytes: Int) -> String {
+        "{\"timestamp\":\"\(stamp(1))\",\"type\":\"response_item\",\"payload\":{\"type\":\"custom_tool_call_output\",\"output\":\"\(String(repeating: "y", count: kilobytes * 1024))\"}}"
+    }
+    let plenty = (0..<14).map { _ in output(50) }   // 700 KB, more than is read from the end
+    let long = [meta("11111111-0000-0000-0000-000000000011"), event("task_started", ago: 500), event("task_complete", ago: 400), event("task_started", ago: 300)]
+    write("long", long + plenty)
+    check("a turn that has written more than the end of its record holds is still found at work, on a first look",
+          state("11111111", in: CodexSource(home: home, alive: { true }).scan(now: now)) == .working)
+    write("oneline", [meta("22222222-0000-0000-0000-000000000022"), event("task_started", ago: 200), output(2048)])
+    check("and when all of that is one line of two megabytes",
+          state("22222222", in: CodexSource(home: home, alive: { true }).scan(now: now)) == .working)
+    write("never", [meta("33333333-0000-0000-0000-000000000033")] + plenty)
+    check("a record with no turn in it at all is not listed, however long", state("33333333", in: CodexSource(home: home, alive: { true }).scan(now: now)) == nil)
+    let follower = CodexSource(home: home, alive: { true })
+    write("grow", [meta("44444444-0000-0000-0000-000000000044"), event("task_started", ago: 300)])
+    write("burst", [meta("55555555-0000-0000-0000-000000000055"), event("task_started", ago: 900), event("task_complete", ago: 100)])
+    let firstLook = follower.scan(now: now)
+    let early = state("44444444", in: firstLook)
+    let before = state("55555555", in: firstLook)
+    write("grow", [meta("44444444-0000-0000-0000-000000000044"), event("task_started", ago: 300)] + plenty)
+    let grown = state("44444444", in: follower.scan(now: now))
+    write("grow", [meta("44444444-0000-0000-0000-000000000044"), event("task_started", ago: 300)] + plenty + plenty)
+    let grownMore = state("44444444", in: follower.scan(now: now))
+    write("grow", [meta("44444444-0000-0000-0000-000000000044"), event("task_started", ago: 300)] + plenty + plenty + [event("task_complete", ago: 5)])
+    let ended = state("44444444", in: follower.scan(now: now))
+    check("followed while it grows: at work at first, still at work 700 KB and 1.4 MB later, done when its end is written",
+          early == .working && grown == .working && grownMore == .working && ended == .done)
+    write("burst", [meta("55555555-0000-0000-0000-000000000055"), event("task_started", ago: 900), event("task_complete", ago: 100), event("task_started", ago: 4)] + plenty)
+    check("a new turn whose start is already buried by the next look is not missed: everything written since is read",
+          before == .done && state("55555555", in: follower.scan(now: now)) == .working)
+    // A chat started without a project: Codex's own app gives it a folder named with a few letters cut from
+    // its title. (A real one, with a Chinese title, was shown everywhere as a project of three letters.)
+    let chat = home.appendingPathComponent("Documents/Codex/2027-01-15/abc")
+    try? fm.createDirectory(at: chat.appendingPathComponent("notes"), withIntermediateDirectories: true)
+    let calledChat = L("对话", "chat")
+    check("a chat without a project is called a chat, not by the folder Codex made up for it",
+          CodexSource.project(for: chat.path) == calledChat && CodexSource.project(for: chat.appendingPathComponent("notes").path) == calledChat)
+    try? (meta("99999999-0000-0000-0000-000000000009").replacingOccurrences(of: cwd.path, with: chat.path) + "\n" + event("task_started", ago: 20) + "\n")
+        .write(to: day.appendingPathComponent("rollout-chat.jsonl"), atomically: true, encoding: .utf8)
+    let withChat = CodexSource(home: home, alive: { true }).scan(now: now)
+    check("and that is what its session says everywhere", withChat.first { $0.id == "codex:99999999" }?.project == calledChat
+          && withChat.first { $0.id == "codex:aaaaaaaa" }?.project == "billing-api")
+    check("folders that only look alike are ordinary projects",
+          !CodexSource.ownChatFolder(home.appendingPathComponent("Documents/Codex/notes/abc").path)
+          && !CodexSource.ownChatFolder(home.appendingPathComponent("Codex/2027-01-15/abc").path)
+          && !CodexSource.ownChatFolder(home.appendingPathComponent("Documents/Codex/2027-01-15").path)
+          && !CodexSource.ownChatFolder(home.appendingPathComponent("Documents/Codex/2027-1-15/abc").path)
+          && !CodexSource.ownChatFolder(cwd.path) && !CodexSource.ownChatFolder(""))
+    try? fm.createDirectory(at: chat.appendingPathComponent(".git"), withIntermediateDirectories: true)
+    check("a chat folder that was made a repository is a project after all, by its own name",
+          CodexSource.project(for: chat.path) == "abc" && CodexSource.project(for: chat.appendingPathComponent("notes").path) == "abc")
+    try? fm.removeItem(at: home)
+}
+
+section("Gemini and Antigravity")
+do {
+    let fm = FileManager.default
+    let home = fm.temporaryDirectory.appendingPathComponent("rd-gemini-\(UUID().uuidString)")
+    try? fm.createDirectory(at: home.appendingPathComponent("conversations"), withIntermediateDirectories: true)
+    let project = home.appendingPathComponent("work/billing-api")
+    try? fm.createDirectory(at: project, withIntermediateDirectories: true)
+    let now = Date()
+    func stamp(_ ago: TimeInterval) -> String {
+        // As the program writes its times: a space, six digits after the seconds, an offset.
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "UTC")
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+        return f.string(from: now.addingTimeInterval(-ago)) + "456+00:00"
+    }
+    func run(_ path: String, _ sql: String) {
+        var db: OpaquePointer?
+        if sqlite3_open(path, &db) == SQLITE_OK { sqlite3_exec(db, sql, nil, nil, nil) }
+        sqlite3_close(db)
+    }
+    let index = home.appendingPathComponent("conversation_summaries.db").path
+    // The program keeps its list in write-ahead mode. Closed cleanly, such a file has no log beside it, and
+    // cannot be opened read-only the plain way: the source has to cope with exactly this.
+    run(index, """
+        PRAGMA journal_mode=WAL;
+        CREATE TABLE conversation_summaries (conversation_id text, title text NOT NULL DEFAULT "", preview text NOT NULL DEFAULT "",
+            step_count integer NOT NULL DEFAULT 0, last_modified_time datetime NOT NULL, workspace_uris text NOT NULL, status text NOT NULL DEFAULT "",
+            parent_conversation_id text NOT NULL DEFAULT "", nesting_depth integer NOT NULL DEFAULT 0, killed numeric NOT NULL DEFAULT 0,
+            last_user_input_time datetime, PRIMARY KEY (conversation_id));
+        """)
+    func add(_ id: String, _ status: String, modifiedAgo: TimeInterval, inputAgo: TimeInterval? = nil, steps: Int = 12, workspace: String = "[]",
+             parent: String = "", depth: Int = 0, killed: Int = 0, title: String = "A private title") {
+        run(index, "INSERT INTO conversation_summaries (conversation_id, title, preview, step_count, last_modified_time, workspace_uris, status, parent_conversation_id, nesting_depth, killed, last_user_input_time) VALUES ('\(id)', '\(title)', 'what was said', \(steps), '\(stamp(modifiedAgo))', '\(workspace)', '\(status)', '\(parent)', \(depth), \(killed), \(inputAgo.map { "'\(stamp($0))'" } ?? "NULL"));")
+    }
+    func steps(_ id: String, _ statuses: [Int]) {
+        let path = home.appendingPathComponent("conversations/\(id).db").path
+        run(path, "CREATE TABLE steps (idx integer, step_type integer NOT NULL DEFAULT 0, status integer NOT NULL DEFAULT 0, PRIMARY KEY (idx));"
+            + statuses.enumerated().map { "INSERT INTO steps VALUES (\($0.offset), 15, \($0.element));" }.joined())
+    }
+    add("aaaaaaaa-1111-0000-0000-000000000001", "CASCADE_RUN_STATUS_RUNNING", modifiedAgo: 4, inputAgo: 180, workspace: "[\"file://\(project.path)\"]")
+    steps("aaaaaaaa-1111-0000-0000-000000000001", [3, 3, 2, 1])
+    add("bbbbbbbb-1111-0000-0000-000000000002", "CASCADE_RUN_STATUS_RUNNING", modifiedAgo: 30, inputAgo: 90)
+    steps("bbbbbbbb-1111-0000-0000-000000000002", [3, 3, 9])
+    add("cccccccc-1111-0000-0000-000000000003", "CASCADE_RUN_STATUS_IDLE", modifiedAgo: 60, inputAgo: 400)
+    add("dddddddd-1111-0000-0000-000000000004", "CASCADE_RUN_STATUS_IDLE", modifiedAgo: 4000, inputAgo: 5000)
+    add("eeeeeeee-1111-0000-0000-000000000005", "CASCADE_RUN_STATUS_IDLE", modifiedAgo: 20, steps: 0)
+    add("ffffffff-1111-0000-0000-000000000006", "CASCADE_RUN_STATUS_RUNNING", modifiedAgo: 5, parent: "aaaaaaaa-1111-0000-0000-000000000001", depth: 1)
+    add("99999999-1111-0000-0000-000000000007", "CASCADE_RUN_STATUS_RUNNING", modifiedAgo: 5, killed: 1)
+    add("88888888-1111-0000-0000-000000000008", "CASCADE_RUN_STATUS_CANCELING", modifiedAgo: 5)
+    add("77777777-1111-0000-0000-000000000009", "CASCADE_RUN_STATUS_BUSY", modifiedAgo: 1500, inputAgo: 3000)
+    // The program's own SQLite removes the log and its index when it closes the list; the system's keeps them.
+    // So they are folded in and removed here, to leave the list as the program leaves it.
+    run(index, "PRAGMA wal_checkpoint(TRUNCATE);")
+    try? fm.removeItem(atPath: index + "-wal")
+    try? fm.removeItem(atPath: index + "-shm")
+    let tidy = !fm.fileExists(atPath: index + "-wal") && !fm.fileExists(atPath: index + "-shm") && ReadOnlyDatabaseShape.writeAhead(index)
+
+    let live = GeminiSource(home: home, alive: { true }).scan(now: now)
+    check("reading a list its owner has closed leaves nothing beside it (opening it the plain way would create two files there)",
+          tidy && !live.isEmpty && !fm.fileExists(atPath: index + "-wal") && !fm.fileExists(atPath: index + "-shm")
+          && !fm.fileExists(atPath: home.appendingPathComponent("conversations/bbbbbbbb-1111-0000-0000-000000000002.db-shm").path))
+    func state(_ short: String, in list: [AgentSession]) -> AgentState? { list.first { $0.id == "gemini:\(short)" }?.state }
+    check("a conversation the program says is running is at work", state("aaaaaaaa", in: live) == .working)
+    check("at work since you last spoke, not since its last step", {
+        guard let since = live.first(where: { $0.id == "gemini:aaaaaaaa" })?.since else { return false }
+        return abs(now.timeIntervalSince(since) - 180) < 2
+    }())
+    check("a running one with a step that waits for you is waiting", state("bbbbbbbb", in: live) == .waiting)
+    check("one that went idle a minute ago is done; one idle for an hour is not listed", state("cccccccc", in: live) == .done && state("dddddddd", in: live) == nil)
+    check("one that was opened and never spoken in is not listed", state("eeeeeeee", in: live) == nil)
+    check("a conversation inside another, a killed one and one being cancelled are not listed",
+          state("ffffffff", in: live) == nil && state("99999999", in: live) == nil && state("88888888", in: live) == nil)
+    check("said to be busy, with nothing changed for long: gone quiet", state("77777777", in: live) == .stale)
+    check("the project is the folder's name; a conversation that works in no folder is a chat",
+          live.first { $0.id == "gemini:aaaaaaaa" }?.project == "billing-api" && live.first { $0.id == "gemini:cccccccc" }?.project == L("对话", "chat"))
+    check("the tool is Gemini, the source says files, the title is kept for this Mac's panel",
+          !live.isEmpty && live.allSatisfy { $0.tool == AgentTool.gemini && $0.source == "files" && $0.title == "A private title" } && AgentTool.displayName("gemini") == "Gemini")
+    check("nothing of it reaches the API but tool, project and state", {
+        let api = String(decoding: StateSnapshot.make(groups: [], metrics: Metrics(), agents: live, now: now, host: "Test Mac").json(), as: UTF8.self)
+        return !api.contains("A private title") && !api.contains("what was said") && api.contains("\"tool\":\"gemini\"")
+    }())
+    let gone = GeminiSource(home: home, alive: { false }).scan(now: now)
+    check("with none of its programs running, a conversation left as running is not shown; a finished one still is",
+          state("aaaaaaaa", in: gone) == nil && state("bbbbbbbb", in: gone) == nil && state("77777777", in: gone) == nil && state("cccccccc", in: gone) == .done)
+    check("its times are read whatever their fraction", {
+        let a = GeminiSource.date("2027-01-15 08:30:05.596801+00:00"), b = GeminiSource.date("2027-01-15 08:30:05+00:00")
+        let c = GeminiSource.date("2027-01-15T08:30:05.5Z"), d = GeminiSource.date("2027-01-15 08:30:05.596801234")
+        guard let a, let b, let c, let d else { return false }
+        return abs(a.timeIntervalSince(b) - 0.596) < 0.002 && abs(c.timeIntervalSince(b) - 0.5) < 0.002 && abs(d.timeIntervalSince(a)) < 0.002
+            && GeminiSource.date("yesterday") == nil && GeminiSource.date(nil) == nil
+    }())
+    check("where it works is read from addresses or paths, however they are listed",
+          GeminiSource.project(for: "[\"file://\(project.path)\"]") == "billing-api" && GeminiSource.project(for: "file://\(project.path)") == "billing-api"
+          && GeminiSource.project(for: project.path) == "billing-api" && GeminiSource.project(for: "file:///tmp/My%20Project") == "My Project"
+          && GeminiSource.project(for: "") == L("对话", "chat") && GeminiSource.project(for: "[]") == L("对话", "chat"))
+    check("no such folder: nothing", GeminiSource(home: home.appendingPathComponent("nope"), alive: { true }).scan().isEmpty)
+    check("a list that is not what it should be: nothing, not a crash", {
+        let odd = home.appendingPathComponent("odd")
+        try? fm.createDirectory(at: odd, withIntermediateDirectories: true)
+        try? Data("not a database".utf8).write(to: odd.appendingPathComponent("conversation_summaries.db"))
+        return GeminiSource(home: odd, alive: { true }).scan().isEmpty
+    }())
     try? fm.removeItem(at: home)
 }
 
@@ -1929,6 +2097,48 @@ do {
           quietPaged.extended?.renders?.state == "idle" && quietPaged.extended?.renders?.topName == nil && quietPaged.extended?.renders?.rows.isEmpty == true
           && quietPaged.extended?.sessions?.state == "idle" && quietPaged.extended?.sessions?.rows.isEmpty == true)
     check("a link that is not encrypted gets neither side", BuddyProtocol.heartbeat(state: state, requests: [], options: BuddyProtocol.Options(secure: false, extended: true, pages: true)).extended == nil)
+
+    // Titles on the device: only where the user allowed them, only on an encrypted link, never over Wi-Fi.
+    do {
+        let chats = [
+            AgentSession(id: "codex:1", tool: "codex", project: "chat", title: "分镜脚本改第三版", state: .working, since: agentNow.addingTimeInterval(-40), source: "files"),
+            AgentSession(id: "codex:2", tool: "codex", project: "chat", title: "Quarterly numbers", state: .working, since: agentNow.addingTimeInterval(-90), source: "files"),
+            AgentSession(id: "claude-code:3", tool: "claude-code", project: "billing-api", state: .done, since: agentNow.addingTimeInterval(-30), source: "files"),
+            AgentSession(id: "claude-code:4", tool: "claude-code", project: "docs", title: "   ", state: .done, since: agentNow.addingTimeInterval(-60), source: "files"),
+        ]
+        let two = StateSnapshot.make(groups: [], metrics: Metrics(), agents: chats, now: agentNow, host: "Test Mac")
+        let titles = ["codex:1": "分镜脚本改第三版", "codex:2": "Quarterly numbers", "claude-code:4": "   "]
+        func names(_ options: BuddyProtocol.Options) -> (top: String?, rows: [String]) {
+            let side = BuddyProtocol.heartbeat(state: two, requests: [], options: options).extended?.sessions
+            return (side?.topName, side?.rows.map(\.name) ?? [])
+        }
+        let plain = names(BuddyProtocol.Options(secure: true, unicode: true, extended: true, pages: true))
+        check("without the switch two chats with no project cannot be told apart, as before",
+              plain.top == "chat" && plain.rows == ["chat", "chat", "billing-api", "docs"])
+        let titled = names(BuddyProtocol.Options(secure: true, unicode: true, extended: true, pages: true, titles: titles))
+        check("with it each session goes by its title; one without a title, or with an empty one, keeps its project",
+              titled.rows == ["分镜脚本改第三版", "Quarterly numbers", "billing-api", "docs"])
+        check("the line on top is the same session's title", titled.top == "分镜脚本改第三版")
+        let mixed = BuddyProtocol.heartbeat(state: two, requests: [], options: BuddyProtocol.Options(secure: true, unicode: true, extended: true, titles: titles)).extended
+        check("the same for a device with one list", mixed?.topName == "分镜脚本改第三版" && mixed?.rows.first?.name == "分镜脚本改第三版")
+        check("a link that is not encrypted is given no title, whatever is passed in",
+              BuddyProtocol.Options(secure: false, extended: true, pages: true, titles: titles).titles.isEmpty
+              && !String(decoding: BuddyProtocol.heartbeat(state: two, requests: [], options: BuddyProtocol.Options(secure: false, extended: true, pages: true, titles: titles)).line(), as: UTF8.self).contains("Quarterly"))
+        check("nor is a display that reads over Wi-Fi: that stream is not encrypted", {
+            let wifi = BuddyProtocol.Options(secure: true, unicode: true, extended: true, inbox: true, offerRequests: false, pages: true, readOnly: true, titles: titles)
+            let line = String(decoding: BuddyProtocol.heartbeat(state: two, requests: [], options: wifi).line(), as: UTF8.self)
+            return wifi.titles.isEmpty && BuddyProtocol.Options.overWiFi.titles.isEmpty && !line.contains("Quarterly") && !line.contains("分镜") && names(wifi).rows.first == "chat"
+        }())
+        check("a title too long for the device is cut like any name, and one it cannot draw falls back to what it can", {
+            let long = names(BuddyProtocol.Options(secure: true, unicode: true, extended: true, pages: true, titles: ["codex:1": String(repeating: "长", count: 80)]))
+            let ascii = names(BuddyProtocol.Options(secure: true, unicode: false, extended: true, pages: true, titles: ["codex:2": "Quarterly numbers"]))
+            return (long.rows.first?.count ?? 99) <= BuddyProtocol.Limit.name && ascii.rows[1] == "Quarterly numbers"
+        }())
+        check("the titles are nowhere in what the API says", {
+            let api = String(decoding: two.json(), as: UTF8.self)
+            return !api.contains("Quarterly") && !api.contains("分镜")
+        }())
+    }
 
     // The computer about itself.
     var machine = Metrics()

@@ -7,9 +7,11 @@
 # There is no download of the app itself: it is not notarised. This builds it on your Mac instead, which needs
 # nothing beyond the Command Line Tools.
 #
-# Not yet run under Homebrew itself. The steps in `install` were followed by hand on the 0.3.0 source archive
-# (it builds, the signature verifies, `renderdock version` answers); Homebrew's own sandbox and prefix were not
-# covered. Until that is done the READMEs do not mention this way of installing.
+# Run under Homebrew 7.0.11 on macOS (Apple silicon) on 2026-11-25, from a local tap holding this repository:
+# refused until the tap was trusted, then fetched, built in Homebrew's sandbox, installed and linked; `brew test`
+# and `brew audit --strict` passed; `brew uninstall` took everything away again. Not covered: the tap taken from
+# GitHub (the formula has to be on the default branch first), `brew upgrade`, `--HEAD`, and opening the app from
+# the prefix.
 class Renderdock < Formula
   desc "Dock for render progress and coding agents' sessions"
   homepage "https://github.com/JarnoNiu/RenderDock"

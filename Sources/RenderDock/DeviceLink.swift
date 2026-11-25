@@ -79,6 +79,7 @@ final class DeviceLink: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     private var deviceInbox = false
     private var devicePages = false
     private var deviceWiFi: Int?
+    private var deviceWiFiWas: Int?
     private var lastMac: Data?
     /// Connections in a row that ended before the link was encrypted. Each one waits longer before the next try,
     /// so a pairing the user dismissed does not come back every two seconds.
@@ -124,6 +125,8 @@ final class DeviceLink: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     var pages: Bool { queue.sync { devicePages } }
     /// How the device says its Wi-Fi is doing (see `BuddyProtocol.DeviceStatus.wifi`); nil if it has none.
     var wifi: Int? { queue.sync { deviceWiFi } }
+    /// …and how its last use of Wi-Fi went (see `BuddyProtocol.DeviceStatus.wifiWas`); nil if it has not said.
+    var wifiWas: Int? { queue.sync { deviceWiFiWas } }
     /// The device RenderDock goes back to, as macOS knows it on this Mac. Nil when none is remembered.
     var identifier: String? { UserDefaults.standard.string(forKey: Self.rememberedKey) }
 
@@ -489,8 +492,9 @@ final class DeviceLink: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
                 deviceUnicode = device.unicode
                 deviceInbox = device.inbox
                 devicePages = device.pages
-                if device.wifi != deviceWiFi {
+                if device.wifi != deviceWiFi || device.wifiWas != deviceWiFiWas {
                     deviceWiFi = device.wifi
+                    deviceWiFiWas = device.wifiWas
                     DispatchQueue.main.async { self.onStatus?() }
                 }
                 set(.connected(name: device.name ?? name, secure: device.secure, battery: device.batteryPercent))

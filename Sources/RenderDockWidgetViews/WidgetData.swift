@@ -80,10 +80,23 @@ package struct WidgetData: Codable, Equatable {
     }
 
     package static func read(from url: URL = sharedURL) -> WidgetData? {
-        guard let data = try? Data(contentsOf: url) else { return nil }
+        guard let data = try? Data(contentsOf: url), data.count < 65_536 else { return nil }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .secondsSince1970
-        return try? decoder.decode(WidgetData.self, from: data)
+        guard var read = try? decoder.decode(WidgetData.self, from: data) else { return nil }
+        // Counts are counts: what is drawn from them (a row of marks, a number) expects them small and not negative.
+        func count(_ n: Int) -> Int { min(max(n, 0), 9_999) }
+        read.active = count(read.active)
+        read.paused = count(read.paused)
+        read.stalled = count(read.stalled)
+        read.queued = count(read.queued)
+        read.agentsWaiting = count(read.agentsWaiting)
+        read.agentsWorking = count(read.agentsWorking)
+        read.agentsFailed = count(read.agentsFailed)
+        read.shotsDone = read.shotsDone.map(count)
+        read.shotsTotal = read.shotsTotal.map(count)
+        if let frames = read.focus?.framesDone { read.focus?.framesDone = min(max(frames, 0), 99_999_999) }
+        return read
     }
 
     @discardableResult

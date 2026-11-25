@@ -134,7 +134,7 @@ For a client configured with a file, the entry is a command with one argument:
 - **A question nobody answered comes back as "no answer", in words, and is not an error.** It is none of the answers, and the tool's description tells the agent so.
 - `ask` is a choice, not a permission: nothing is approved by answering it, here as with the command.
 - What RenderDock shows as the sender is the client's own name from its first message (`claude-code`, say). `renderdock mcp --from NAME`, or `RENDERDOCK_FROM`, says otherwise. Nothing checks it, here as with the commands.
-- When RenderDock is not running, or **Take Notices, Progress and Questions from Other Programs** is off, each tool answers with an error that says so; the server itself starts regardless.
+- When RenderDock is not running, or **Take Notices, Progress and Questions from Other Programs** is off, `notify`, `progress` and `ask` answer with an error that says so; the server itself starts regardless. `status` answers either way: it looks at the Mac itself, as `renderdock status` does.
 - Messages are answered one after another. While a question waits for you, whatever the client sends next waits too.
 - It speaks the protocol's revisions `2025-06-18`, `2025-03-26` and `2024-11-05`, and offers tools only: no resources, no prompts.
 

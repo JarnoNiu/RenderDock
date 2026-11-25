@@ -51,7 +51,7 @@ curl -H "Authorization: Bearer $TOKEN" http://192.168.1.20:47600/v1/state
 
 - **Every request that does not come from this Mac itself needs the token**, in an `Authorization: Bearer` header. Without it, or with a wrong one, the answer is `401` and nothing else: no state, no list of endpoints. A request from this Mac to one of its own network addresses counts as coming from the network.
 - From `127.0.0.1` everything is as before, token or no token.
-- The token is 32 characters, made by the system's random generator the first time access is switched on, and kept in `~/Library/Application Support/RenderDock/api-token`, readable by your user only. `renderdock api token` prints it; `renderdock api` says where the API is and whether the network may reach it. **New Token** in the menu replaces it, and whatever was using the old one is shut out from that moment.
+- The token is 32 characters, made by the system's random generator the first time access is switched on, and kept in `~/Library/Application Support/RenderDock/api-token`, readable by your user only. `renderdock api token` prints it; `renderdock api` says where the API is and whether the network may reach it. **New Token** in the menu replaces it, and whatever was using the old one is shut out from that moment: a stream it had open from the network is closed, not just refused the next time. (Readers on this Mac itself need no token and are left alone.)
 - A token in the address (`?token=…`) is not read, on purpose: addresses end up in logs and browser histories.
 - It is still `GET` only, still sends no CORS headers, and listens on IPv4 only.
 - The discovery file gains `"lan": true` or `false`. It never holds the token.
@@ -176,7 +176,7 @@ event: shot.done
 data: {"at":"2026-11-24T04:31:47Z","jobId":"g41872-1795400000","jobTitle":"Product film · hero shots","project":"studio-reel","shot":"s040_explode","type":"shot.done"}
 ```
 
-Up to 16 streams can be open at once. While at least one is, RenderDock scans every 3 seconds instead of every 6.
+Up to 16 streams can be open at once, of this kind and the display's kind below taken together. While at least one is, RenderDock scans every 3 seconds instead of every 6. A reader that stops taking what it is sent is dropped once thirty pieces are waiting for it. No more than 64 connections of any kind are held at once: past that a new one is turned away at the door, so that something on the network without the token cannot use up the app's file handles.
 
 ## `GET /v1/device` (0.4)
 
@@ -268,4 +268,4 @@ with urllib.request.urlopen("http://127.0.0.1:47600/v1/events") as stream:
 
 `version` is 1. Within version 1, fields are added and never renamed or removed. Ignore fields you do not know.
 
-Not in the API yet: access from other devices, thumbnails of the latest frame, and anything that changes a job or answers an agent.
+Not in the API: thumbnails of the latest frame, and anything that changes a job or answers an agent. (Access from other devices is there from 0.4, behind its own switch: see above.)

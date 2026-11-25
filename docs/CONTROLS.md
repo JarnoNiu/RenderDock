@@ -11,8 +11,8 @@ Menu-bar icon → **Hands On the Renders**. Five switches, each its own. Turning
 | Switch | What it does |
 |---|---|
 | **Pause and Resume from the Dock** | Each job in the dock gets a pause button, or a resume button once it is stopped. Pausing stops the render process where it is; resumed, it goes on from there and loses nothing |
-| **Move a Render Out of the Way from the Dock** | Each job gets a button that puts it in the system's background band: it renders on what the Mac has to spare, slower, while you use the Mac. The same button puts it back |
-| **One Job at a Time** | Of the jobs running at once, only the one that began first goes on; the others are paused, and each goes on when the one before it has ended |
+| **Move a Render Out of the Way from the Dock** | Each job gets a button that puts it in the system's background band: it renders on what the Mac has to spare, slower, while you use the Mac. The same button puts it back. It is said of the job: when a queue goes on to its next shot, that process is moved too |
+| **One Job at a Time** | Of the jobs running at once, only the one that began first goes on; the others are paused, and each goes on when the one before it has ended. A queue that is between two shots (one written, the next not started) has not ended: it keeps its turn through the gap |
 | **Pause Renders While on Battery** | When the power adapter is unplugged, every job that is rendering is paused; plugged in again, they go on |
 | **Pause Renders While Slowed Down for Heat** | When the system starts slowing the Mac down for heat (its own "serious" or "critical"), every job that is rendering is paused; they go on once it has been cool for a full minute |
 

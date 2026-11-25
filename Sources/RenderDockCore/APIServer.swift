@@ -27,6 +27,11 @@ import Network
 package final class LocalAPIServer {
     package static let defaultPort: UInt16 = 47600
     private static let maxStreams = 16
+    /// Connections open at once, of every kind. Past this a new one is dropped at once: a device without the
+    /// token could otherwise open them faster than they time out, until the app has no file handles left.
+    private static let maxConnections = 64
+    /// What a stream's reader may have waiting, unread. One that stops reading is dropped rather than fed for ever.
+    private static let maxUnsent = 30
 
     package struct Request: Equatable {
         package var method: String
@@ -72,6 +77,16 @@ package final class LocalAPIServer {
     /// Access from the local network: off unless switched on, and then only with this token.
     private var lan = false
     private var token: String?
+    /// What the listener that exists now was made for, and whether it is up. Which addresses are listened on is
+    /// fixed when a listener is made, so "the network may reach it" is true of a listener, not of a wish.
+    private var listenerLAN = false
+    private var listenerReady = false
+    private var listenPort = LocalAPIServer.defaultPort
+    /// Every connection that is open, the streams that were let in from the network (by the token), and how
+    /// much each stream has been sent that its reader has not taken yet.
+    private var live = Set<ObjectIdentifier>()
+    private var fromNetwork = Set<ObjectIdentifier>()
+    private var unsent: [ObjectIdentifier: Int] = [:]
     /// Called on the main queue whenever the bound port changes (nil when stopped).
     package var onPortChange: ((UInt16?) -> Void)?
 
@@ -107,22 +122,52 @@ package final class LocalAPIServer {
     package func setLAN(_ on: Bool, token: String?) {
         queue.async {
             let want = on && !(token ?? "").isEmpty
-            let reopen = want != self.lan
+            let newToken = token != self.token
             self.lan = want
             self.token = token
-            guard self.wantRunning, reopen, let port = self.boundPort else { return }
-            // Which addresses are listened on is fixed when a listener is made: make another, on the same port.
-            self.listener?.cancel()
-            self.listener = nil
-            self.streams.values.forEach { $0.cancel() }
-            self.streams.removeAll()
-            self.deviceStreams.values.forEach { $0.cancel() }
-            self.deviceStreams.removeAll()
-            self.listen(on: port, attemptsLeft: 10)
+            guard self.wantRunning else { return }
+            if want != self.listenerLAN {
+                // Which addresses are listened on is fixed when a listener is made: make another, on the same
+                // port. This goes by what the listener was made for, not by what was last asked: asked twice in
+                // a row while the first listener was still coming up, the second asking used to be lost, and
+                // everything said the network could reach an API that listened on the loopback alone.
+                let port = self.boundPort ?? self.listenPort
+                self.listener?.cancel()
+                self.listener = nil
+                self.listenerReady = false
+                self.dropStreams { _ in true }
+                self.listen(on: port, attemptsLeft: 10)
+            } else if newToken {
+                // A new token shuts the old one out, and that has to include whoever is reading a stream that
+                // the old one opened. (It used not to: a stream stayed open for as long as its reader held it.)
+                self.dropStreams { self.fromNetwork.contains($0) }
+            }
         }
     }
 
-    package var lanOpen: Bool { queue.sync { lan && boundPort != nil } }
+    /// Closes the streams that match, of both kinds.
+    private func dropStreams(_ which: (ObjectIdentifier) -> Bool) {
+        for (id, c) in streams where which(id) { c.cancel(); streams[id] = nil }
+        for (id, c) in deviceStreams where which(id) { c.cancel(); deviceStreams[id] = nil }
+        fromNetwork = fromNetwork.filter { streams[$0] != nil || deviceStreams[$0] != nil }
+        unsent = unsent.filter { streams[$0.key] != nil || deviceStreams[$0.key] != nil }
+    }
+
+    /// Sends a stream's reader something more, unless it has stopped taking what it was sent: then it is dropped.
+    private func push(_ c: NWConnection, _ data: Data) {
+        let id = ObjectIdentifier(c)
+        let waiting = (unsent[id] ?? 0) + 1
+        guard waiting <= Self.maxUnsent else { return dropStreams { $0 == id } }
+        unsent[id] = waiting
+        c.send(content: data, completion: .contentProcessed { [weak self] _ in
+            guard let self, let n = self.unsent[id] else { return }
+            self.unsent[id] = max(0, n - 1)
+        })
+    }
+
+    package var lanOpen: Bool { queue.sync { listenerLAN && listenerReady } }
+    /// How many connections are open now, of every kind.
+    package var connectionCount: Int { queue.sync { live.count } }
 
     /// Stops and waits until the port and the discovery file are released.
     package func stop() {
@@ -136,6 +181,10 @@ package final class LocalAPIServer {
             deviceStreams.removeAll()
             deviceBeat?.cancel()
             deviceBeat = nil
+            fromNetwork.removeAll()
+            unsent.removeAll()
+            listenerReady = false
+            listenerLAN = false
             if boundPort != nil, let url = discoveryURL { try? FileManager.default.removeItem(at: url) }
             boundPort = nil
         }
@@ -156,7 +205,7 @@ package final class LocalAPIServer {
                 self.lastStateSent = now
             }
             guard !chunk.isEmpty else { return }
-            for c in self.streams.values { c.send(content: chunk, completion: .contentProcessed { _ in }) }
+            for c in Array(self.streams.values) { self.push(c, chunk) }
         }
     }
 
@@ -175,7 +224,7 @@ package final class LocalAPIServer {
                 chunk.append(Self.deviceEvent(mac))
             }
             guard !chunk.isEmpty, !self.deviceStreams.isEmpty else { return }
-            for c in self.deviceStreams.values { c.send(content: chunk, completion: .contentProcessed { _ in }) }
+            for c in Array(self.deviceStreams.values) { self.push(c, chunk) }
         }
     }
 
@@ -197,6 +246,9 @@ package final class LocalAPIServer {
         // Off the loopback only when asked to, and then IPv4 only: one kind of address to reason about.
         params.acceptLocalOnly = !lan
         params.requiredLocalEndpoint = .hostPort(host: .ipv4(lan ? .any : .loopback), port: nwPort)
+        listenerLAN = lan
+        listenerReady = false
+        listenPort = port
         guard let l = try? NWListener(using: params) else {
             if attemptsLeft > 0 { listen(on: port &+ 1, attemptsLeft: attemptsLeft - 1) }
             return
@@ -205,6 +257,7 @@ package final class LocalAPIServer {
             guard let self, let l, self.listener === l else { return }
             switch st {
             case .ready:
+                self.listenerReady = true
                 self.boundPort = port
                 self.writeDiscovery(port)
                 self.notifyPort(port)
@@ -237,6 +290,20 @@ package final class LocalAPIServer {
     // MARK: Connections
 
     private func accept(_ c: NWConnection) {
+        let id = ObjectIdentifier(c)
+        guard live.count < Self.maxConnections else { return c.cancel() }
+        live.insert(id)
+        c.stateUpdateHandler = { [weak self] state in
+            switch state {
+            case .cancelled:
+                self?.live.remove(id)
+            case .failed:
+                self?.live.remove(id)
+                c.cancel()
+            default:
+                break
+            }
+        }
         c.start(queue: queue)
         read(c, buffer: Data())
         // A client that connects and never sends a request does not get to hold a connection open. A stream that
@@ -295,9 +362,9 @@ package final class LocalAPIServer {
         case "/v1/history":
             send(c, status: "200 OK", body: history)
         case "/v1/events":
-            openStream(c)
+            openStream(c, fromHere: fromHere)
         case "/v1/device":
-            openDeviceStream(c)
+            openDeviceStream(c, fromHere: fromHere)
         case "/", "/v1":
             let index: [String: Any] = [
                 "name": "RenderDock", "version": StateSnapshot.appVersion,
@@ -316,20 +383,21 @@ package final class LocalAPIServer {
         c.send(content: out, completion: .contentProcessed { _ in c.cancel() })
     }
 
-    private func openStream(_ c: NWConnection) {
-        guard streams.count < Self.maxStreams else {
+    private func openStream(_ c: NWConnection, fromHere: Bool) {
+        guard streams.count + deviceStreams.count < Self.maxStreams else {
             return send(c, status: "503 Service Unavailable", body: Self.message("too many event streams"))
         }
         let id = ObjectIdentifier(c)
         streams[id] = c
+        if !fromHere { fromNetwork.insert(id) }
         var out = Data("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: keep-alive\r\n\r\nretry: 3000\n\n".utf8)
         out.append(Self.sse(event: "state", data: state))
-        c.send(content: out, completion: .contentProcessed { _ in })
+        push(c, out)
         watchForClose(c, id)
     }
 
     /// A display that reads over Wi-Fi: greeted with the time and the latest lines, then sent each new one.
-    private func openDeviceStream(_ c: NWConnection) {
+    private func openDeviceStream(_ c: NWConnection, fromHere: Bool) {
         guard streams.count + deviceStreams.count < Self.maxStreams else {
             return send(c, status: "503 Service Unavailable", body: Self.message("too many streams"))
         }
@@ -341,11 +409,12 @@ package final class LocalAPIServer {
             deviceMac = nil
         }
         deviceStreams[id] = c
+        if !fromHere { fromNetwork.insert(id) }
         var out = Data("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: keep-alive\r\n\r\n".utf8)
         out.append(Self.deviceEvent(BuddyProtocol.timeSync()))
         if let deviceSnapshot { out.append(Self.deviceEvent(deviceSnapshot)) }
         if let deviceMac { out.append(Self.deviceEvent(deviceMac)) }
-        c.send(content: out, completion: .contentProcessed { _ in })
+        push(c, out)
         watchForClose(c, id)
         if deviceBeat == nil {
             // A display takes half a minute of silence for a dead link: say it all again every ten seconds, and
@@ -357,7 +426,7 @@ package final class LocalAPIServer {
                 var again = Self.deviceEvent(BuddyProtocol.timeSync())
                 if let line = self.deviceSnapshot { again.append(Self.deviceEvent(line)) }
                 if let line = self.deviceMac { again.append(Self.deviceEvent(line)) }
-                for c in self.deviceStreams.values { c.send(content: again, completion: .contentProcessed { _ in }) }
+                for c in Array(self.deviceStreams.values) { self.push(c, again) }
             }
             timer.resume()
             deviceBeat = timer
@@ -371,6 +440,8 @@ package final class LocalAPIServer {
             if complete || error != nil {
                 self.streams[id] = nil
                 self.deviceStreams[id] = nil
+                self.fromNetwork.remove(id)
+                self.unsent[id] = nil
                 c.cancel()
             } else {
                 self.watchForClose(c, id)

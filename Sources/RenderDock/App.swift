@@ -134,7 +134,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             if case .connected(_, true, _) = store.deviceStatus, store.device.pages {
                 deviceMenu.addItem(.separator())
                 let state = store.device.wifi
-                let words: String
+                var words: String
                 switch state {
                 case 1: words = L("Wi-Fi：已设好，蓝牙不在时会用", "Wi-Fi: set, used when Bluetooth is away")
                 case 2: words = L("Wi-Fi：正在连", "Wi-Fi: joining")
@@ -143,6 +143,17 @@ final class StatusItemController: NSObject, NSMenuDelegate {
                 case 5: words = L("Wi-Fi：口令被拒（会自动更新；没恢复就重新设一次）", "Wi-Fi: the token was refused (it is told the new one; set it up again if that does not help)")
                 case 6: words = L("Wi-Fi：连上了，这台电脑没有应答", "Wi-Fi: joined, this Mac did not answer")
                 default: words = L("Wi-Fi：没有设置", "Wi-Fi: not set")
+                }
+                // Asked over Bluetooth, the display is by definition not using Wi-Fi at that moment. How it went
+                // the last time it did is what tells a display that stood dark in the next room from one that read.
+                if state == 1 {
+                    switch store.device.wifiWas {
+                    case 3: words += L("；上次用的时候读到了", "; the last time it was used, it read")
+                    case 4: words += L("；上次用的时候没连上网络", "; the last time, it could not join the network")
+                    case 5: words += L("；上次用的时候口令被拒", "; the last time, the token was refused")
+                    case 6: words += L("；上次用的时候电脑没有应答", "; the last time, this Mac did not answer")
+                    default: break
+                    }
                 }
                 let wifiLine = NSMenuItem(title: words, action: nil, keyEquivalent: "")
                 wifiLine.isEnabled = false
@@ -685,7 +696,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case "preview-shot": preview.debugShot(arg)
         case "wifi-sheet": status.debugWiFiSheet(arg)   // "wifi-sheet <path>": the sheet that asks for a network, as a picture, not shown
         case "hands":          // "hands pause|yield|turns|battery|heat on|off": a switch, without the question a click would be asked
-            let words = arg.split(separator: " ").map(String.init)
+            // Only in a demo: there a hold is drawn and nothing is stopped. An installed copy started with --debug
+            // would otherwise take a switch from anything that can post a notification, with no question asked.
+            let words = store.demo ? arg.split(separator: " ").map(String.init) : []
             if words.count == 2 {
                 let on = words[1] == "on"
                 switch words[0] {
@@ -707,8 +720,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             store.tickHands()
             store.onChange?()
-        case "hands-job":      // "hands-job pause|resume|yield <n>": what the button on the n-th job's card does
-            let words = arg.split(separator: " ").map(String.init)
+        case "hands-job":      // "hands-job pause|resume|yield <n>": what the button on the n-th job's card does (demo only)
+            let words = store.demo ? arg.split(separator: " ").map(String.init) : []
             if words.count == 2, let n = Int(words[1]), store.groups.indices.contains(n) {
                 let id = store.groups[n].id
                 switch words[0] {

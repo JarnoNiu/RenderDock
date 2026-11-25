@@ -44,8 +44,10 @@ package final class SMCReader {
     package func fans() -> [Fan] {
         guard let count = value("FNum"), count >= 1, count <= 8 else { return [] }
         return (0..<Int(count)).compactMap { n in
-            guard let rpm = value("F\(n)Ac"), rpm >= 0 else { return nil }
-            return Fan(rpm: rpm, min: value("F\(n)Mn"), max: value("F\(n)Mx"))
+            // No fan turns a hundred thousand times a minute: a reading beyond that is not a speed.
+            func speed(_ key: String) -> Double? { value(key).flatMap { $0 >= 0 && $0 < 100_000 ? $0 : nil } }
+            guard let rpm = speed("F\(n)Ac") else { return nil }
+            return Fan(rpm: rpm, min: speed("F\(n)Mn"), max: speed("F\(n)Mx"))
         }
     }
 

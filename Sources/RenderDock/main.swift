@@ -53,6 +53,7 @@ if let i = cli.firstIndex(of: "--snapshot"), i + 1 < cli.count {
     let dir = cli[i + 1]
     try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
     let store = Store()
+    store.passive = true   // it draws a picture and does nothing else
     // `--at <seconds>` picks the moment of the demo to draw (the demo cycles: at 15 s a session is asking for permission).
     let at = cli.firstIndex(of: "--at").flatMap { $0 + 1 < cli.count ? Double(cli[$0 + 1]) : nil } ?? 7
     if cli.contains("--demo") { store.loadDemo(at) } else { store.loadOnce() }

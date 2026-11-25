@@ -108,6 +108,8 @@ macOS does not tell an app whether a Bluetooth link is encrypted. RenderDock goe
 - RenderDock goes back to the one device it first connected to and passes over every other, whatever it calls itself, until you choose **Forget This Device**.
 - Answering requests on a device is a separate switch, and off unless you turn it on.
 
+The Wi-Fi settings below (a network's password, the API's token) are handed over on the same word: an "encrypted link" is what the device says it has.
+
 Pair only a device whose firmware you know.
 
 ## What is held back on an unencrypted link
@@ -168,16 +170,17 @@ On confirming, RenderDock hands the display four things over the encrypted link:
 | The API's port | |
 | The API's token | The one **The API from the Local Network** uses ([API.md](API.md#from-the-local-network-04-off-by-default)) |
 
-As a line: `{"cmd":"wifi","ssid":…,"pass":…,"host":…,"ip":…,"port":…,"token":…}`. `{"cmd":"wifi","off":true}` (**Have It Forget Wi-Fi** in the menu) makes the display drop all of it. The same command with no `ssid` only says where the Mac is now; see below.
+As a line: `{"cmd":"wifi","ssid":…,"pass":…,"host":…,"ip":…,"port":…,"token":…}`. `{"cmd":"wifi","off":true}` (**Have It Forget Wi-Fi** in the menu) makes the display stop using all of it and mark it erased, its radio's own copy of the network included. Erased is not overwritten: flash keeps old bytes until that part of it is reused, so somebody with the board and the tools could still find them for a while. To be sure, erase the board's flash (`esptool erase-flash`), which also empties its pairing. The same command with no `ssid` only says where the Mac is now; see below.
 
 What that means, and the sheet says so before anything is sent:
 
 - **It switches on the Local API and access to it from the local network**, if they were off: that is what the display reads. Access from the network has a token and no encryption, so it is for a network you trust. Switching either off again later is up to you; the display then says the computer is not answering.
-- **The display keeps the password and the token on itself, unencrypted.** Whoever has the board and connects it to a computer can read them out of its flash. Give it a network you would give a guest's device, and renew the token (**New Token**) if the board leaves your hands.
-- **Over Wi-Fi the display only shows.** RenderDock builds what it sends that way without anything that could be answered (no request for permission, no question from another program), and the display obeys no command and sends no answer over Wi-Fi. Answering stays on the encrypted Bluetooth link.
+- **The display keeps the password and the token on itself, unencrypted.** Whoever has the board and connects it to a computer can read them out of its flash. Renew the token (**New Token**) if the board leaves your hands, and think of the network's password as known to whoever has it.
+- **It is for a network you trust.** The display finds this Mac by its name on the network and sends the token there in the clear. On a network where somebody else can answer to that name, the token goes to them, and with it everything the API shows.
+- **Over Wi-Fi the display only shows.** RenderDock builds what it sends that way without anything that could be answered (no request for permission, no question from another program), and the display obeys no command and sends no answer over Wi-Fi. Answering stays on the encrypted Bluetooth link. It makes no sound for what arrives that way, and takes the time from there only if it has none yet.
 - **Bluetooth comes first.** The display turns Wi-Fi on only when no paired computer has been on Bluetooth for a quarter of a minute, and off again once one is back. Wi-Fi draws several times what Bluetooth does, which matters on a battery.
 
-The menu then says how the display's Wi-Fi is doing, as the display reports it over Bluetooth (`"wifi"` in its answer to a status request):
+The menu then says how the display's Wi-Fi is doing, as the display reports it over Bluetooth (`"wifi"` in its answer to a status request). Asked over Bluetooth, a display is by then not using Wi-Fi, so what the menu mostly has to go on is `"wifiWas"`: how its last use went (3, 4, 5 or 6 below; absent if it has not been used since it was set up). While it is away, the display's own screen says the same in words.
 
 | `wifi` | Meaning |
 |---|---|

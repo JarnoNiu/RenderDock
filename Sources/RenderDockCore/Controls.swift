@@ -152,21 +152,35 @@ package struct ControlJob: Equatable {
     package var active: Bool
     /// Its render processes: the ones doing the work, running or stopped.
     package var processes: [ProcessRef]
+    /// The job is going by the scanner's account, whether or not one of its shots has a process at this moment.
+    /// Between two shots of a queue (one finished, the next not started) there is none for a few seconds, and the
+    /// job has not ended for that.
+    package var going: Bool
 
-    package init(id: String, title: String, startedAt: Double, active: Bool, processes: [ProcessRef]) {
+    package init(id: String, title: String, startedAt: Double, active: Bool, processes: [ProcessRef], going: Bool? = nil) {
         self.id = id
         self.title = title
         self.startedAt = startedAt
         self.active = active
         self.processes = processes
+        self.going = going ?? active
     }
 
     /// A job as the scanner found it. Only shots with a process of their own count.
     package static func from(_ group: RenderGroup) -> ControlJob {
         let working = group.items.filter { $0.pid != nil && ($0.state.isActive || $0.state == .paused || $0.state == .stalled) }
+        // A process is named by its number and by when it started, and the start is the one the scanner read
+        // together with the number. Reading it again here would compare a process with itself: if the number had
+        // gone to another process in between, that one would pass.
+        let processes = working.compactMap { item -> ProcessRef? in
+            guard let pid = item.pid else { return nil }
+            if let started = item.startedAt { return ProcessRef(pid: pid, startedAt: started.timeIntervalSince1970) }
+            return ProcessControl.ref(for: pid)
+        }
         return ControlJob(id: group.id, title: group.title, startedAt: group.startedAt.timeIntervalSince1970,
                           active: working.contains { $0.state.isActive || $0.state == .stalled },
-                          processes: working.compactMap { $0.pid.flatMap(ProcessControl.ref(for:)) })
+                          processes: processes,
+                          going: group.state != .waiting && group.items.contains { $0.state.isActive || $0.state == .stalled })
     }
 }
 
@@ -188,10 +202,13 @@ package enum ControlPlanner {
             out[job.id] = reasons
         }
         if settings.turns {
-            // Oldest first; a job held by hand is not waited for.
-            let queue = inPlay.filter { !(held[$0.id]?.reasons.contains(.manual) ?? false) }
+            // Oldest first; a job held by hand is not waited for. A job that is going but has no process at this
+            // moment (between two shots) keeps its place: it has not ended, and the one after it does not get to
+            // start for the length of that gap. There is nothing of it to stop, so it is only counted.
+            let between = jobs.filter { $0.going && $0.processes.isEmpty && held[$0.id] == nil && !freed.contains($0.id) }
+            let queue = (inPlay.filter { !(held[$0.id]?.reasons.contains(.manual) ?? false) } + between)
                 .sorted { ($0.startedAt, $0.id) < ($1.startedAt, $1.id) }
-            for job in queue.dropFirst() { out[job.id, default: []].insert(.turns) }
+            for job in queue.dropFirst() where !job.processes.isEmpty { out[job.id, default: []].insert(.turns) }
         }
         return out
     }
@@ -295,8 +312,12 @@ package final class ControlEngine {
             note("forgot \(name(id)): its processes have ended")
             changed = true
         }
-        for (id, moved) in yielding where moved.allSatisfy({ ProcessControl.problem(with: $0) != nil }) && byId[id]?.processes.isEmpty != false {
+        // A job moved out of the way stays so for as long as it is going: between two of its shots it has no
+        // process, and that is not its end.
+        for (id, moved) in yielding where moved.allSatisfy({ ProcessControl.problem(with: $0) != nil }) && byId[id]?.processes.isEmpty != false
+            && byId[id]?.going != true {
             yielding[id] = nil
+            note("forgot that \(name(id)) was out of the way: it has ended")
             changed = true
         }
         freed = freed.filter { byId[$0] != nil }
@@ -325,9 +346,33 @@ package final class ControlEngine {
             if var hold = held[job.id] {
                 let fresh = job.processes.filter { !hold.processes.contains($0) }
                 if job.active, !fresh.isEmpty {
-                    for process in fresh where actuator.pause(process) == nil { hold.processes.append(process) }
+                    var stopped = 0
+                    for process in fresh {
+                        if let failure = actuator.pause(process) {
+                            note("could not pause a new process of \(name(job.id)): \(failure)")
+                        } else {
+                            hold.processes.append(process)
+                            stopped += 1
+                        }
+                    }
+                    if stopped > 0 { note("\(name(job.id)) started \(stopped) more process\(stopped == 1 ? "" : "es") while held: paused too") }
                     held[job.id] = hold
                     changed = true
+                }
+            }
+            // A job that is out of the way and has started another process (the next shot of its queue) has
+            // that one moved too: "out of the way" is said of the job, not of the process it had at the click.
+            if settings.yield, var moved = yielding[job.id] {
+                let fresh = job.processes.filter { !moved.contains($0) }
+                if !fresh.isEmpty {
+                    let before = moved.count
+                    for process in fresh where actuator.yield(process, true) == nil { moved.append(process) }
+                    moved.removeAll { ProcessControl.problem(with: $0) != nil && !fresh.contains($0) }
+                    if moved.count != before || !fresh.isEmpty {
+                        yielding[job.id] = moved
+                        note("\(name(job.id)) started another process while out of the way: moved too")
+                        changed = true
+                    }
                 }
             }
         }

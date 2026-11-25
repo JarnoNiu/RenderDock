@@ -137,6 +137,7 @@ final class Store {
                 self.requests = pending
                 self.now = Date()
                 self.sendToDevice()
+                self.publishForWiFi(now: Date())   // a display reading over Wi-Fi hears of it now, not at the next scan
                 self.onChange?()
             }
             controlFailed = !broker.start()
@@ -183,6 +184,7 @@ final class Store {
                 self.inbox = view
                 self.now = Date()
                 self.sendToDevice()
+                self.publishForWiFi(now: Date())
                 self.onChange?()
             }
             // A new notice or question is announced on this Mac (if notifications here are on), never further.
@@ -236,12 +238,16 @@ final class Store {
                                         pauseWhenHot: UserDefaults.standard.bool(forKey: "handsWhenHot")) {
         didSet {
             guard handsSettings != oldValue else { return }
-            let d = UserDefaults.standard
-            d.set(handsSettings.manual, forKey: "handsPause")
-            d.set(handsSettings.yield, forKey: "handsYield")
-            d.set(handsSettings.turns, forKey: "handsTurns")
-            d.set(handsSettings.pauseOnBattery, forKey: "handsOnBattery")
-            d.set(handsSettings.pauseWhenHot, forKey: "handsWhenHot")
+            // What is tried in a demo stays in the demo. A demo of the installed app shares its settings, and a
+            // switch left on there would be live on real renders at the app's next start.
+            if !demo && !passive {
+                let d = UserDefaults.standard
+                d.set(handsSettings.manual, forKey: "handsPause")
+                d.set(handsSettings.yield, forKey: "handsYield")
+                d.set(handsSettings.turns, forKey: "handsTurns")
+                d.set(handsSettings.pauseOnBattery, forKey: "handsOnBattery")
+                d.set(handsSettings.pauseWhenHot, forKey: "handsWhenHot")
+            }
             hands.settings = handsSettings
             tickHands()
             onChange?()
@@ -268,12 +274,12 @@ final class Store {
         let actuator: ControlEngine.Actuator
         if demo {
             actuator = ControlEngine.Actuator(pause: { _ in nil }, resume: { _ in nil }, yield: { _, _ in nil })
-        } else if Bundle.main.bundlePath.hasSuffix(".app") {
+        } else if Bundle.main.bundlePath.hasSuffix(".app") && !passive {
             actuator = .system
         } else {
             actuator = ControlEngine.Actuator(pause: { _ in .refused(0) }, resume: { _ in .refused(0) }, yield: { _, _ in .refused(0) })
         }
-        let keep = demo ? nil : Self.handsFolder.appendingPathComponent("controls.json")
+        let keep = demo || passive ? nil : Self.handsFolder.appendingPathComponent("controls.json")
         return ControlEngine(settings: handsSettings, actuator: actuator, stateFile: keep, log: { [weak self] line in self?.noteHands(line) })
     }
 
@@ -281,7 +287,7 @@ final class Store {
     private func noteHands(_ line: String) {
         handsLines.append(line)
         if handsLines.count > 50 { handsLines.removeFirst(handsLines.count - 50) }
-        guard !demo || ProcessInfo.processInfo.environment["RENDERDOCK_HANDS"] != nil else { return }
+        guard !passive, !demo || ProcessInfo.processInfo.environment["RENDERDOCK_HANDS"] != nil else { return }
         let stamp = DateFormatter()
         stamp.dateFormat = "yyyy-MM-dd HH:mm:ss"
         let url = Self.handsLog
@@ -301,12 +307,16 @@ final class Store {
             let working = g.items.filter { $0.pid != nil }
             let stopped = hands.held[g.id] != nil
             return ControlJob(id: g.id, title: g.title, startedAt: g.startedAt.timeIntervalSince1970,
-                              active: !stopped && working.contains { $0.state.isActive }, processes: working.compactMap { $0.pid }.map { ProcessRef(pid: $0, startedAt: 1) })
+                              active: !stopped && working.contains { $0.state.isActive }, processes: working.compactMap { $0.pid }.map { ProcessRef(pid: $0, startedAt: 1) },
+                              going: g.state != .waiting)
         }
     }
 
     /// Applies the rules that are on. With every switch off and nothing held, it does not so much as look.
     func tickHands() {
+        // A store that only draws a picture is no place to act from. And not before the first look at the Mac:
+        // with no job known yet, everything remembered from before a restart would be taken for ended and let go.
+        guard !passive, scanned || demo else { return }
         guard handsSettings.any || !hands.isIdle else { return }
         let before = (hands.held, hands.yielding)
         hands.tick(jobs: handsJobs, onBattery: debugOnBattery ?? (metrics.onAC == false),
@@ -400,25 +410,35 @@ final class Store {
     func giveDeviceWiFi(ssid: String, password: String, done: @escaping (WiFiProblem?) -> Void) {
         guard !demo, device.secure else { return done(.notLinked) }
         guard let address = LocalAPIServer.networkAddresses().first else { return done(.noNetwork) }
+        // The two switches are turned on for this. If the handing over then fails, they go back to what they
+        // were: a display that was given nothing is no reason to leave the API open to the network.
+        let hadAPI = apiEnabled, hadLAN = lanEnabled
+        func failed(_ problem: WiFiProblem) {
+            if !hadLAN { lanEnabled = false }
+            if !hadAPI { apiEnabled = false }
+            done(problem)
+        }
         if !apiEnabled { apiEnabled = true }
         if !lanEnabled { lanEnabled = true }
-        // The port is known a moment after the API starts listening.
+        // The port is known a moment after the API starts listening; "open to the network" is said of the
+        // listener that is up, not of the switch.
         var tries = 0
         func send() {
             guard let port = apiPort, api.lanOpen else {
                 tries += 1
-                guard tries < 25 else { return done(.noAPI) }
+                guard tries < 25 else { return failed(.noAPI) }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { send() }
                 return
             }
-            let host = Self.nameOnTheNetwork(or: address)
+            let host = nameOnTheNetwork(or: address)
             let line = BuddyProtocol.wifi(ssid: ssid, password: password, host: host, ip: address, port: port, token: apiToken)
-            guard device.sendSettings(line) else { return done(.notLinked) }
+            guard device.sendSettings(line) else { return failed(.notLinked) }
             UserDefaults.standard.set(device.identifier, forKey: Self.wifiGivenKey)
             placeTold = Self.place(host: host, address: address, port: port, token: apiToken)
             done(nil)
         }
-        send()
+        // This Mac's name on the network is asked of the resolver, which can take its time: not on the main thread.
+        learnHostName { send() }
     }
 
     /// Asks the display which networks it can see from where it stands. Answers once: the list as the display
@@ -451,9 +471,25 @@ final class Store {
     /// Where the display was last told this Mac is, on this connection: said again only when it has changed.
     @ObservationIgnored private var placeTold: String?
     private static func place(host: String, address: String, port: UInt16, token: String) -> String { "\(host) \(address) \(port) \(token)" }
-    private static func nameOnTheNetwork(or address: String) -> String {
-        let name = ProcessInfo.processInfo.hostName
-        return name.hasSuffix(".local") ? name : address
+    /// This Mac's name on the local network ("….local"), as last learnt; the address when it has none or it is
+    /// not known yet. Asking for it is a call to the resolver that can take seconds, so it is asked off the
+    /// main thread (`learnHostName`) and kept.
+    @ObservationIgnored private var hostName: String?
+    @ObservationIgnored private var hostNameAt = Date.distantPast
+    private func nameOnTheNetwork(or address: String) -> String {
+        if Date().timeIntervalSince(hostNameAt) > 600 { learnHostName {} }
+        guard let name = hostName, name.hasSuffix(".local") else { return address }
+        return name
+    }
+    private func learnHostName(then: @escaping () -> Void) {
+        hostNameAt = Date()
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let name = ProcessInfo.processInfo.hostName
+            DispatchQueue.main.async {
+                self?.hostName = name
+                then()
+            }
+        }
     }
 
     /// A display that reads over Wi-Fi was told where this Mac is when it was set up. The address, the port and
@@ -466,7 +502,8 @@ final class Store {
         guard (device.wifi ?? 0) > 0, apiEnabled, lanEnabled, api.lanOpen, let port = apiPort,
               let given = UserDefaults.standard.string(forKey: Self.wifiGivenKey), given == device.identifier,
               let address = LocalAPIServer.networkAddresses().first else { return }
-        let host = Self.nameOnTheNetwork(or: address)
+        guard hostName != nil else { return learnHostName { [weak self] in self?.refreshDevicePlace() } }
+        let host = nameOnTheNetwork(or: address)
         let place = Self.place(host: host, address: address, port: port, token: apiToken)
         guard place != placeTold else { return }
         if device.sendSettings(BuddyProtocol.wifiPlace(host: host, ip: address, port: port, token: apiToken)) { placeTold = place }
@@ -685,8 +722,13 @@ final class Store {
     }
 
     /// Release the port and the discovery file before the app exits.
+    /// A store made only to draw a picture from (`--snapshot`, the reel): it acts on nothing and leaves nothing
+    /// behind. No hand on a process, no record of holds read or written, no file for the widget. (It used to be
+    /// an ordinary store, and drawing a picture with made-up jobs let go of what the running app was holding.)
+    @ObservationIgnored var passive = false
+
     /// The desktop widget's file, and the word to the system that it changed (see WidgetFeed.swift).
-    @ObservationIgnored private lazy var widgetFeed = WidgetFeed(demo: demo)
+    @ObservationIgnored private lazy var widgetFeed = WidgetFeed(demo: demo || passive)
 
     func shutdown() {
         var gone = widgetData(now: Date())
@@ -743,6 +785,7 @@ final class Store {
 
     func startDemo() {
         demo = true
+        handsSettings = ControlSettings()   // a demo starts with every switch off, whatever the real app has on
         if apiEnabled { applyAPI() }
         let began = Date()
         loadDemo(0)
@@ -768,7 +811,7 @@ final class Store {
         timers.append(Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             guard let self else { return }
             // …and every 3 s while something is listening on the event stream
-            let lively = self.expanded || (self.apiEnabled && self.api.streamCount > 0)
+            let lively = self.expanded || (self.apiEnabled && (self.api.streamCount > 0 || self.api.deviceCount > 0))
             if Date().timeIntervalSince(self.now) >= (lively ? 2.9 : 5.9) { self.scanTasks() }
             if Date().timeIntervalSince(self.lastAgentScan) >= (lively ? 2.9 : 5.9) { self.scanAgents() }
             if Date().timeIntervalSince(self.mqttChecked) >= 5 { self.applyMQTT() }

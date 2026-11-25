@@ -626,10 +626,14 @@ package enum BuddyProtocol {
         /// How the device's Wi-Fi is doing, if it has any: 0 not set, 1 set and resting (Bluetooth is up),
         /// 2 joining, 3 reading the stream, 4 could not join, 5 the token was refused, 6 this Mac did not answer.
         package var wifi: Int?
+        /// How its last use of Wi-Fi went (3 reading, 4 could not join, 5 refused, 6 no answer), if it says. By
+        /// the time a computer is back on Bluetooth to ask, `wifi` itself is "set, not in use" again.
+        package var wifiWas: Int?
 
         package init(name: String?, secure: Bool, batteryPercent: Int?, onUSB: Bool?, extended: Bool = false, unicode: Bool = false, inbox: Bool = false,
-                     pages: Bool = false, wifi: Int? = nil) {
+                     pages: Bool = false, wifi: Int? = nil, wifiWas: Int? = nil) {
             self.wifi = wifi
+            self.wifiWas = wifiWas
             self.name = name
             self.secure = secure
             self.batteryPercent = batteryPercent
@@ -675,7 +679,8 @@ package enum BuddyProtocol {
                 return .status(DeviceStatus(name: data["name"] as? String, secure: data["sec"] as? Bool ?? false,
                                             batteryPercent: battery?["pct"] as? Int, onUSB: battery?["usb"] as? Bool,
                                             extended: (data["rd"] as? Int ?? 0) >= 1, unicode: data["utf8"] as? Bool ?? false,
-                                            inbox: (data["rd"] as? Int ?? 0) >= 2, pages: (data["rd"] as? Int ?? 0) >= 3, wifi: data["wifi"] as? Int))
+                                            inbox: (data["rd"] as? Int ?? 0) >= 2, pages: (data["rd"] as? Int ?? 0) >= 3, wifi: data["wifi"] as? Int,
+                                            wifiWas: data["wifiWas"] as? Int))
             }
             if ack == "wifi", ok, let nets = o["nets"] as? [Any] {
                 // Names as the device gives them, each once, none empty and none longer than a network's name can be.

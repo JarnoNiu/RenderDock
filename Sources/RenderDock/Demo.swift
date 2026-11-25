@@ -470,6 +470,7 @@ private struct PointerShape: Shape {
 func renderReel(to dir: String, fps: Int = 15, seconds: Double = 11.6, scale: CGFloat = 1.5) -> Int {
     try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
     let store = Store()
+    store.passive = true
     store.listMaxHeight = 372
     store.loadDemo(0)
     func measure<V: View>(_ v: V) -> CGSize {

@@ -240,7 +240,17 @@ package struct MCPServer {
     // MARK: Lines out
 
     private static func line(_ object: [String: Any]) -> Data {
-        (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])) ?? Data("{}".utf8)
+        // What cannot be written as JSON must not be handed to the writer: it does not fail, it raises. An id
+        // can be such a thing (a number too large to be one parses, on this system, as minus infinity). The
+        // answer then goes out without the id it cannot repeat.
+        var object = object
+        if !JSONSerialization.isValidJSONObject(object) {
+            object["id"] = NSNull()
+            guard JSONSerialization.isValidJSONObject(object) else {
+                return Data("{\"error\":{\"code\":-32603,\"message\":\"internal error\"},\"id\":null,\"jsonrpc\":\"2.0\"}".utf8)
+            }
+        }
+        return (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])) ?? Data("{}".utf8)
     }
 
     private static func success(id: Any, _ result: [String: Any]) -> Data {

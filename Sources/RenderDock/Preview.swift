@@ -35,11 +35,31 @@ final class PreviewModel {
         reload()
     }
 
+    /// Lists the folder again without holding the window up for it: a folder on a slow volume can take seconds
+    /// to list, and this is asked every few seconds for as long as the window is open.
+    func reloadQuietly() {
+        guard !dir.isEmpty, !listing else { return }
+        listing = true
+        let dir = self.dir
+        loading.async { [weak self] in
+            let listed = TaskScanner.frameFiles(in: dir)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.listing = false
+                if dir == self.dir { self.take(listed) }
+            }
+        }
+    }
+    @ObservationIgnored private var listing = false
+
     /// Lists the folder again. The frame being looked at stays the one on the screen, unless the newest is followed.
     func reload() {
         guard !dir.isEmpty else { return }
+        take(TaskScanner.frameFiles(in: dir))
+    }
+
+    private func take(_ listed: [TaskScanner.FrameFile]) {
         let looking = current?.number
-        let listed = TaskScanner.frameFiles(in: dir)
         guard listed != frames else { return }
         frames = listed
         if follow || looking == nil {
@@ -151,7 +171,7 @@ final class PreviewController: NSObject, NSWindowDelegate {
         window?.makeKeyAndOrderFront(nil)
         // New frames keep arriving while the shot renders: look at the folder again every few seconds while the window is open.
         timer?.invalidate()
-        let t = Timer(timeInterval: 3, repeats: true) { [weak self] _ in self?.model.reload() }
+        let t = Timer(timeInterval: 3, repeats: true) { [weak self] _ in self?.model.reloadQuietly() }
         RunLoop.main.add(t, forMode: .common)
         timer = t
     }

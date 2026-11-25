@@ -561,7 +561,10 @@ do {
     check("a job the user let go on by hand is held by no rule", wanted([a, b], freed: ["b"], ControlSettings(turns: true, pauseOnBattery: true), battery: true) == ["a": [.battery]])
     check("a job stopped by somebody else (not at work, not held here) is nobody's to hold or let go",
           wanted([job("a", at: 100, active: false), b], ControlSettings(turns: true, pauseOnBattery: true), battery: true) == ["b": [.battery]])
-    check("a job with no process of its own is left out", wanted([job("a", at: 100, pids: []), b], ControlSettings(turns: true)).isEmpty)
+    check("a job with no process of its own that is not going either (it only waits in a queue) is left out",
+          wanted([ControlJob(id: "a", title: "a", startedAt: 100, active: false, processes: [], going: false), b], ControlSettings(turns: true)).isEmpty)
+    check("one that is going with no process at this moment (between two shots) keeps its turn, and is not itself held",
+          wanted([job("a", at: 100, pids: []), b], ControlSettings(turns: true)) == ["b": [.turns]])
 }
 
 section("controls: doing it, undoing it, and remembering")
@@ -674,6 +677,44 @@ do {
     turns.releaseEverything(why: "RenderDock is quitting")
     check("quitting lets go of everything it stopped", q.stopped.isEmpty && turns.isIdle)
 
+    // Between two shots a queue has no process for a few seconds. It has not ended for that, and the job after
+    // it does not get to start for the length of the gap. (It used to: the next job was let go at every shot
+    // boundary a look happened to catch, and stopped again when the first job's next process appeared.)
+    func job(_ id: String, _ start: Double, _ pids: [Int32], going: Bool) -> ControlJob {
+        ControlJob(id: id, title: id, startedAt: start, active: !pids.isEmpty, processes: pids.map { ProcessRef(pid: $0, startedAt: 1) }, going: going)
+    }
+    let none = ControlSettings(turns: true)
+    func waits(_ jobs: [ControlJob], held: [String: Hold] = [:], freed: Set<String> = []) -> [String] {
+        ControlPlanner.wanted(jobs: jobs, held: held, freed: freed, settings: none, onBattery: false, hot: false).filter { $0.value.contains(.turns) }.keys.sorted()
+    }
+    check("a queue between two of its shots keeps its turn", waits([job("a", 100, [], going: true), job("b", 200, [21], going: true)]) == ["b"])
+    check("and with it gone the next one goes", waits([job("b", 200, [21], going: true)]).isEmpty
+          && waits([job("a", 100, [], going: false), job("b", 200, [21], going: true)]).isEmpty)
+    check("a later queue that is between shots is not first for that, and there is nothing of it to stop",
+          waits([job("a", 100, [11], going: true), job("b", 200, [], going: true), job("c", 300, [31], going: true)]) == ["c"])
+    check("one the user let go by hand holds no turn while it has no process", waits([job("a", 100, [], going: true), job("b", 200, [21], going: true)], freed: ["a"]).isEmpty)
+
+    // Which process is meant: the number and the start the scanner read together, not a start read again now.
+    do {
+        let me = ProcessInfo.processInfo.processIdentifier
+        var shot = RenderItem(id: "s", name: "s", state: .rendering)
+        shot.pid = me
+        shot.startedAt = Date(timeIntervalSince1970: 1_000_000)   // not when this process started
+        let found = ControlJob.from(RenderGroup(id: "g", title: "G", script: nil, scriptPath: nil, note: nil, project: "p", cwd: "/", startedAt: Date(),
+                                               keepAwake: false, state: .running, items: [shot]))
+        check("a process is named by the start the scanner recorded with its number",
+              found.processes == [ProcessRef(pid: me, startedAt: 1_000_000)] && ProcessControl.problem(with: found.processes[0]) == .notTheSame)
+        shot.startedAt = nil
+        let fallback = ControlJob.from(RenderGroup(id: "g", title: "G", script: nil, scriptPath: nil, note: nil, project: "p", cwd: "/", startedAt: Date(),
+                                                  keepAwake: false, state: .running, items: [shot]))
+        check("with none recorded it is read, and that process may be acted on", fallback.processes.count == 1 && ProcessControl.problem(with: fallback.processes[0]) == nil)
+        shot.pid = nil
+        shot.state = .finishing
+        let gap = ControlJob.from(RenderGroup(id: "g", title: "G", script: nil, scriptPath: nil, note: nil, project: "p", cwd: "/", startedAt: Date(),
+                                             keepAwake: false, state: .running, items: [shot]))
+        check("a job whose shot has no process at this moment is still going", gap.processes.isEmpty && gap.going && !gap.active)
+    }
+
     // Out of the way.
     let y = World()
     y.jobs = [("a", 100, [11, 12])]
@@ -684,6 +725,19 @@ do {
     yielding.settings.yield = false
     yielding.tick(jobs: y.view, onBattery: false, hot: false, now: at(0))
     check("the switch going off moves it back", y.background.isEmpty && yielding.isIdle)
+    // "Out of the way" is said of the job. Its queue's next shot is another process, and that one is moved too.
+    let y2 = World()
+    y2.jobs = [("a", 100, [11])]
+    var moves: [String] = []
+    let follows = ControlEngine(settings: ControlSettings(yield: true), actuator: y2.actuator, log: { moves.append($0) })
+    _ = follows.setYielding(y2.job("a"), true)
+    y2.jobs = [("a", 100, [12])]
+    follows.tick(jobs: y2.view, onBattery: false, hot: false, now: at(5))
+    check("a job that is out of the way and starts its next process has that one moved too, and it is written down",
+          y2.background.contains(12) && follows.isYielding("a") && moves.contains { $0.contains("another process") })
+    follows.tick(jobs: [ControlJob(id: "a", title: "Job A", startedAt: 100, active: false, processes: [], going: true)], onBattery: false, hot: false, now: at(8))
+    check("between two shots it is still out of the way", follows.isYielding("a"))
+    follows.tick(jobs: [], onBattery: false, hot: false, now: at(9))
 
     // A process that will not be stopped.
     let r = World()
@@ -796,7 +850,7 @@ do {
         store.record([group([shot("a", .rendering, done: 40), shot("b", .rendering, done: 20)])], powerW: 360, now: at(40))
         store.record([group([shot("a", .done), shot("b", .rendering, done: 30)])], powerW: 180, now: at(50))
         store.record([group([shot("a", .done), shot("b", .rendering, done: 40)])], powerW: 180, now: at(60))
-        // A long silence (the Mac slept): only the first quarter of a minute of it is counted.
+        // A long silence (the Mac slept): none of it is counted. What the Mac drew meanwhile is not known.
         store.record([group([shot("a", .done), shot("b", .rendering, done: 50)])], powerW: 180, now: at(3660))
         store.record([], powerW: 180, now: at(3670))
         let runs = store.recent(limit: 10)
@@ -804,8 +858,9 @@ do {
         // a: 10 s at 180 alone, 10 s at 180 alone (b had not been seen rendering before that look), 10 s and 10 s
         // at 360 shared in two = 0.5 + 0.5 + 0.5 + 0.5 = 2.0 Wh. It was done by the look at 50 s, which adds nothing.
         check("a shot alone gets all the Mac drew; two together share it equally", abs(a - 2.0) < 0.0001)
-        // b: from the look at 30 s: 0.5 + 0.5 shared; 10 s at 180 alone = 0.5, twice... 50 s and 60 s; then 15 s of the hour = 0.75.
-        check("the other shot's share, and no more than a quarter of a minute of a long silence", abs(b - (0.5 + 0.5 + 0.5 + 0.5 + 0.75)) < 0.0001)
+        // b: from the look at 30 s: 0.5 + 0.5 shared; 10 s at 180 alone = 0.5, twice (the looks at 50 s and 60 s);
+        // then the hour without a look, which adds nothing.
+        check("the other shot's share, and nothing for a long silence", abs(b - (0.5 + 0.5 + 0.5 + 0.5)) < 0.0001)
         check("a look with no reading adds nothing", {
             let before = store.recent(limit: 10).compactMap(\.energyWh).reduce(0, +)
             store.record([group([shot("c", .rendering, done: 0)])], powerW: nil, now: at(4000))
@@ -2189,6 +2244,11 @@ do {
             && BuddyProtocol.parse(Data("{\"ack\":\"wifi\",\"ok\":true}".utf8)) == .ack("wifi", ok: true)
     }())
     check("forgetting them is one short line", String(decoding: BuddyProtocol.wifiOff, as: UTF8.self) == "{\"cmd\":\"wifi\",\"off\":true}\n")
+    check("and how its last use of Wi-Fi went, which is all that is left to ask over Bluetooth", {
+        guard case .status(let told) = BuddyProtocol.parse(Data("{\"ack\":\"status\",\"ok\":true,\"data\":{\"sec\":true,\"rd\":3,\"wifi\":1,\"wifiWas\":5}}".utf8)),
+              case .status(let silent) = BuddyProtocol.parse(Data("{\"ack\":\"status\",\"ok\":true,\"data\":{\"sec\":true,\"rd\":3,\"wifi\":1}}".utf8)) else { return false }
+        return told.wifi == 1 && told.wifiWas == 5 && silent.wifiWas == nil
+    }())
     check("a device says how its Wi-Fi is doing, or nothing if it has none", {
         guard case .status(let withWiFi) = BuddyProtocol.parse(Data("{\"ack\":\"status\",\"ok\":true,\"data\":{\"sec\":true,\"rd\":3,\"wifi\":3}}".utf8)),
               case .status(let without) = BuddyProtocol.parse(Data("{\"ack\":\"status\",\"ok\":true,\"data\":{\"sec\":true,\"rd\":3}}".utf8)) else { return false }
@@ -2678,6 +2738,14 @@ do {
           hello?["protocolVersion"] as? String == "2025-03-26" && (hello?["capabilities"] as? [String: Any])?["tools"] != nil
           && (hello?["serverInfo"] as? [String: Any])?["name"] as? String == "renderdock")
     var other = MCPServer(backend: MCPServer.Backend(notify: { _, _, _, _ in .unavailable }, progress: { _, _, _, _, _, _ in .unavailable }, ask: { _, _, _, _ in .unavailable }, status: { "" }))
+    // An id that parses to something JSON cannot write back (a number too large to be one). Writing it used to
+    // raise, and the whole server went down with it.
+    do {
+        var fragile = MCPServer(backend: MCPServer.Backend(notify: { _, _, _, _ in .unavailable }, progress: { _, _, _, _, _, _ in .unavailable }, ask: { _, _, _, _ in .unavailable }, status: { "" }))
+        let reply = fragile.handle(Data("{\"jsonrpc\":\"2.0\",\"id\":-1e999,\"method\":\"ping\"}".utf8))
+        let object = reply.flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] }
+        check("an id that cannot be written back is answered without it, not with a crash", object != nil && object?["id"] is NSNull)
+    }
     let newest = other.handle(Data(#"{"jsonrpc":"2.0","id":"a","method":"initialize","params":{"protocolVersion":"1999-01-01"}}"#.utf8))
         .flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] }
     check("a version this does not speak is answered with the newest it does, and the id comes back as it was sent",
@@ -2872,6 +2940,65 @@ if let port {
         let again = readStream(host: "127.0.0.1", token: nil, for: 0.8) { server.publish(deviceSnapshot: beat); server.publish(deviceSnapshot: beat) }
         return again.components(separatedBy: "\n").filter { $0 == "data: " + String(decoding: beat.dropLast(), as: UTF8.self) }.count <= 1
     }())
+    // A new token shuts out whoever holds a stream the old one opened; a reader on this Mac itself is left alone.
+    if let address = LocalAPIServer.networkAddresses().first {
+        let first = LocalAPIServer.newToken(), second = LocalAPIServer.newToken()
+        server.setLAN(true, token: first)
+        var up = false
+        for _ in 0..<100 where !up { Thread.sleep(forTimeInterval: 0.03); up = server.lanOpen }
+        Thread.sleep(forTimeInterval: 0.2)
+        var began = Date()
+        let cut = readStream(host: address, token: first, for: 3) { server.setLAN(true, token: second) }
+        let cutAfter = Date().timeIntervalSince(began)
+        check("a new token closes a stream that the old one opened", cut.hasPrefix("HTTP/1.1 200 OK") && cutAfter < 2)
+        began = Date()
+        let local = readStream(host: "127.0.0.1", token: nil, for: 1.2) { server.setLAN(true, token: first) }
+        check("and leaves a reader on this Mac alone", local.hasPrefix("HTTP/1.1 200 OK") && Date().timeIntervalSince(began) >= 1.1)
+        check("the old token no longer opens one, the new one does",
+              readStream(host: address, token: second, for: 0.5).hasPrefix("HTTP/1.1 401") && readStream(host: address, token: first, for: 0.5).hasPrefix("HTTP/1.1 200 OK"))
+        server.setLAN(false, token: nil)
+        Thread.sleep(forTimeInterval: 0.3)
+
+        // Asked to open to the network right after being started, as the two switches are when the Wi-Fi sheet
+        // turns both on: the second asking used to be lost while the first listener was still coming up.
+        let hasty = LocalAPIServer()
+        let hastyToken = LocalAPIServer.newToken()
+        hasty.start(preferredPort: 47700, discovery: nil)
+        hasty.setLAN(true, token: hastyToken)
+        var reached = false
+        for _ in 0..<100 where !reached {
+            Thread.sleep(forTimeInterval: 0.05)
+            guard hasty.lanOpen, let p = hasty.port else { continue }
+            var status = 0
+            let done = DispatchSemaphore(value: 0)
+            var request = URLRequest(url: URL(string: "http://\(address):\(p)/v1/state")!, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 2)
+            request.setValue("Bearer \(hastyToken)", forHTTPHeaderField: "Authorization")
+            URLSession.shared.dataTask(with: request) { _, response, _ in status = (response as? HTTPURLResponse)?.statusCode ?? 0; done.signal() }.resume()
+            _ = done.wait(timeout: .now() + 3)
+            reached = status == 200
+        }
+        check("started and opened to the network in one breath, it is reachable from the network", reached)
+        hasty.stop()
+    }
+    // More connections than it will hold at once: the rest are turned away, and it still answers afterwards.
+    do {
+        var sockets: [Int32] = []
+        for _ in 0..<90 {
+            let fd = socket(AF_INET, SOCK_STREAM, 0)
+            var address = sockaddr_in()
+            address.sin_family = sa_family_t(AF_INET)
+            address.sin_port = in_port_t(port).bigEndian
+            inet_pton(AF_INET, "127.0.0.1", &address.sin_addr)
+            _ = withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
+            sockets.append(fd)
+        }
+        Thread.sleep(forTimeInterval: 0.4)
+        let held = server.connectionCount
+        sockets.forEach { close($0) }
+        Thread.sleep(forTimeInterval: 0.4)
+        check("no more than 64 connections are held at once, whoever opens them", held <= 64 && held >= 32)
+        check("and once they have gone it answers as before", server.connectionCount < 8 && get("/v1/state").0 == 200)
+    }
     // A connection that asks for nothing is dropped after a while; a stream that was opened is not. (A display
     // reading over Wi-Fi was: the first real one was cut off every ten seconds.)
     server.requestDeadline = 0.4
@@ -2930,6 +3057,13 @@ do {
     let file = FileManager.default.temporaryDirectory.appendingPathComponent("rd-widget-\(UUID().uuidString).json")
     defer { try? FileManager.default.removeItem(at: file) }
     check("what the app writes is what the widget reads", going.write(to: file) && WidgetData.read(from: file) == going)
+    check("counts in the file are taken as counts: none negative, none absurd", {
+        let odd = FileManager.default.temporaryDirectory.appendingPathComponent("rd-widget-odd-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: odd) }
+        try? Data("{\"at\":1795000000,\"state\":\"rendering\",\"active\":-3,\"paused\":0,\"stalled\":0,\"queued\":99999999,\"agentsWaiting\":0,\"agentsWorking\":0,\"agentsFailed\":0,\"chinese\":false,\"shotsDone\":-1,\"shotsTotal\":123456789,\"focus\":{\"name\":\"s\",\"job\":\"j\",\"estimate\":false,\"fraction\":7.5,\"framesDone\":-9}}".utf8).write(to: odd)
+        guard let read = WidgetData.read(from: odd) else { return false }
+        return read.active == 0 && read.queued == 9_999 && read.shotsDone == 0 && read.shotsTotal == 9_999 && read.focus?.framesDone == 0
+    }())
     check("no file, or one that is not this: nothing to show, not a crash",
           WidgetData.read(from: file.appendingPathExtension("none")) == nil && { try? Data("{}".utf8).write(to: file); return WidgetData.read(from: file) == nil }())
     let later = going.carried(to: t0.addingTimeInterval(300))

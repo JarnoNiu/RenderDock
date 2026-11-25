@@ -564,6 +564,11 @@ func mcp(_ arguments: [String]) -> Never {
         status: { statusLines(statusSnapshot()).joined(separator: "\n") }), from: sender(parsed.values))
     while let line = readLine(strippingNewline: true) {
         guard !line.trimmingCharacters(in: .whitespaces).isEmpty else { continue }
+        // Nothing this server is asked comes near a megabyte: a longer line is not read as a message.
+        guard line.utf8.count <= 1_048_576 else {
+            FileHandle.standardOutput.write(Data("{\"error\":{\"code\":-32600,\"message\":\"invalid request: the line is too long\"},\"id\":null,\"jsonrpc\":\"2.0\"}\n".utf8))
+            continue
+        }
         if var reply = server.handle(Data(line.utf8)) {
             reply.append(0x0A)
             FileHandle.standardOutput.write(reply)

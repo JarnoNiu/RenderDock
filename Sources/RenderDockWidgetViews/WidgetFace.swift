@@ -51,7 +51,8 @@ package struct WidgetFace: View {
     // MARK: Pieces
 
     private func ring(_ data: WidgetData, size: CGFloat, line: CGFloat) -> some View {
-        let fraction = data.focus?.fraction
+        // From a file: a fraction is drawn only if it is one.
+        let fraction = data.focus?.fraction.flatMap { $0.isFinite ? min(1, max(0, $0)) : nil }
         return ZStack {
             Circle().stroke(Color.primary.opacity(0.12), lineWidth: line)
             if let f = fraction {
@@ -86,7 +87,7 @@ package struct WidgetFace: View {
 
     /// "25 分" / "1 时 24 分": how long is left, in the dock's own words.
     private func span(_ seconds: Double) -> String {
-        let minutes = max(1, Int((seconds / 60).rounded()))
+        let minutes = max(1, Int(((seconds.isFinite ? min(max(seconds, 0), 8_640_000) : 0) / 60).rounded()))
         if minutes < 60 { return L("\(minutes) 分", "\(minutes) min") }
         let h = minutes / 60, m = minutes % 60
         return m == 0 ? L("\(h) 时", "\(h) h") : L("\(h) 时 \(m) 分", "\(h) h \(m) min")

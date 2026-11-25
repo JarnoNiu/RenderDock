@@ -187,8 +187,10 @@ package final class HistoryStore {
         exec("BEGIN")
         // What was drawn since the last scan goes to the shots that were rendering then and still are: shared
         // equally, because nothing says which of them the machine was working for.
-        if hasEnergy, let watts = powerW, watts > 0, let last = lastRecordAt, t > last {
-            let hours = min(t - last, Self.energyGap) / 3600
+        // A stretch longer than `energyGap` without a look (the Mac slept, the app was quit) is left out whole:
+        // what the Mac drew meanwhile is not known, and a piece of it would be a guess.
+        if hasEnergy, let watts = powerW, watts > 0, let last = lastRecordAt, t > last, t - last <= Self.energyGap {
+            let hours = (t - last) / 3600
             let rendering = groups.flatMap { g in g.items.filter { $0.state.isActive } }.compactMap { open[$0.id]?.row }
             for row in rendering { energy[row, default: 0] += watts * hours / Double(rendering.count) }
         }

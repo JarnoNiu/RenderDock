@@ -111,6 +111,7 @@ static void debugConsole() {
     else if (input == "key user") hwDebugKey(KEY_USER_SHORT);
     else if (input == "key user long") hwDebugKey(KEY_USER_LONG);
     else if (input == "key boot") hwDebugKey(KEY_BOOT_SHORT);
+    else if (input == "key boot long") hwDebugKey(KEY_BOOT_LONG);
     else if (input.startsWith("quiet ")) s_quietUntil = millis() + (uint32_t)max(0L, atol(input.c_str() + 6)) * 1000;
     else if (input == "stall") {
       uint32_t draw = 0, push = 0;

@@ -662,11 +662,13 @@ static void handleTouch() {
   }
 }
 
+static void calibrateStart();
+
 // The keys never answer a request or a question, and while a request is on the screen they do not turn the page
 // away from it.
 //   power: a press switches the screen off or on; held a second and a half, "do not disturb" on or off
 //   KEY3:  a press turns the page; held a second and a half, sound off or on
-//   BOOT:  a press goes back to the main screen
+//   BOOT:  a press goes back to the main screen; held three seconds, it starts measuring the touch
 // With a question from another program on the screen, a press of KEY3 or BOOT puts it aside on this device: it
 // is not answered, and stays on the computer. With a notice on the screen, the press takes the notice away.
 // A press on a dark screen lights it, and that is all it does (the power key included).
@@ -675,7 +677,7 @@ static void handleKeys(uint32_t now) {
   if (event == KEY_NONE) return;
   bool dark = s_screenDark;
 #if RD_DEBUG_SERIAL
-  static const char* const NAMES[] = {"", "power, short", "power, long", "KEY3, short", "KEY3, long", "BOOT, short"};
+  static const char* const NAMES[] = {"", "power, short", "power, long", "KEY3, short", "KEY3, long", "BOOT, short", "BOOT, long"};
   Serial.printf("keys: %s%s\n", NAMES[event], dark ? " (the screen was dark)" : "");
 #endif
   s_lastTouchAt = now;
@@ -713,14 +715,22 @@ static void handleKeys(uint32_t now) {
       else if (s_noteShowing && !requestOnScreen()) s_noteShowing = false;
       else if (!requestOnScreen()) s_showList = false;
       break;
+    case KEY_BOOT_LONG:
+      // Measuring the touch. Not while something waits for an answer or six digits are up, and only with the
+      // screens that can say what to do.
+      wake();
+      if (screensReady() && !requestOnScreen() && !askOnScreen() && passkeyToShow() == 0) calibrateStart();
+      break;
     default:
       break;
   }
 }
 
-#if RD_DEBUG_SERIAL
-// MARK: measuring the touch (bring-up)
+// MARK: measuring the touch
 
+// Where a finger is read is not quite where it aims (hw.h). BOOT held for three seconds starts this: nine crosses,
+// a finger held on each, and from the nine pairs of "aimed here, read there" the correction is worked out and kept.
+// Any key ends it without changing anything; so does a request or a question arriving, which matter more.
 static bool s_cal = false;
 static int s_calIndex = 0;
 static bool s_calDown = false, s_calTaken = false, s_calDrawn = false;
@@ -729,14 +739,98 @@ static long s_calSumX = 0, s_calSumY = 0;
 static int s_calCount = 0;
 static const int CAL_POINTS = 9;
 static const int CAL_AT[3] = {84, 240, 396};
+static float s_calReadX[CAL_POINTS], s_calReadY[CAL_POINTS];
+static char s_calPrompt[sizeof(g_state.promptId)] = "", s_calAsk[sizeof(g_state.askId)] = "";
+// How it went, shown for a few seconds after the last cross. 0: nothing to show.
+static uint32_t s_calResultUntil = 0;
+static bool s_calKept = false;
+static int s_calBefore = 0, s_calAfter = 0;
 
-void uiDebugCalibrate(bool on) {
-  s_cal = on;
+static void calibrateStart() {
+  s_cal = true;
   s_calIndex = 0;
   s_calDown = s_calTaken = s_calDrawn = false;
+  s_calResultUntil = 0;
   s_calSeenAt = millis();
+  strlcpy(s_calPrompt, g_state.prompt ? g_state.promptId : "", sizeof(s_calPrompt));
+  strlcpy(s_calAsk, g_state.ask ? g_state.askId : "", sizeof(s_calAsk));
   s_dirty = true;
-  Serial.printf(on ? "cal start %d\n" : "cal stopped\n", CAL_POINTS);
+#if RD_DEBUG_SERIAL
+  Serial.printf("cal start %d\n", CAL_POINTS);
+#endif
+}
+
+static void calibrateStop(const char* why) {
+  s_cal = false;
+  s_calResultUntil = 0;
+  s_lastTouchAt = millis();
+  s_dirty = true;
+#if RD_DEBUG_SERIAL
+  Serial.printf("cal stopped: %s\n", why);
+#else
+  (void)why;
+#endif
+}
+
+#if RD_DEBUG_SERIAL
+void uiDebugCalibrate(bool on) {
+  if (on) calibrateStart();
+  else calibrateStop("asked to");
+}
+#endif
+
+// One axis: the straight line through the nine pairs (aimed, read) that misses them by the least, squares summed.
+// read = scale * aimed + offset.
+static bool fitAxis(const float* read, bool across, float& scale, float& offset) {
+  float meanAimed = 0, meanRead = 0;
+  for (int i = 0; i < CAL_POINTS; i++) {
+    meanAimed += CAL_AT[across ? i % 3 : i / 3];
+    meanRead += read[i];
+  }
+  meanAimed /= CAL_POINTS;
+  meanRead /= CAL_POINTS;
+  float both = 0, spread = 0;
+  for (int i = 0; i < CAL_POINTS; i++) {
+    float aimed = CAL_AT[across ? i % 3 : i / 3] - meanAimed;
+    both += aimed * (read[i] - meanRead);
+    spread += aimed * aimed;
+  }
+  if (spread < 1) return false;
+  scale = both / spread;
+  offset = meanRead - scale * meanAimed;
+  return scale > 0.1f;
+}
+
+// All nine are in: work the correction out, and keep it if the nine readings agree with it.
+static void calibrateFinish() {
+  TouchFix was = hwTouchFix(), fix = was;
+  bool kept = fitAxis(s_calReadX, true, fix.scaleX, fix.offsetX) && fitAxis(s_calReadY, false, fix.scaleY, fix.offsetY);
+  float before = 0, after = 0, worst = 0;
+  if (kept) {
+    for (int i = 0; i < CAL_POINTS; i++) {
+      float tx = CAL_AT[i % 3], ty = CAL_AT[i / 3];
+      before += hypotf((s_calReadX[i] - was.offsetX) / was.scaleX - tx, (s_calReadY[i] - was.offsetY) / was.scaleY - ty);
+      float miss = hypotf((s_calReadX[i] - fix.offsetX) / fix.scaleX - tx, (s_calReadY[i] - fix.offsetY) / fix.scaleY - ty);
+      after += miss;
+      if (miss > worst) worst = miss;
+    }
+    before /= CAL_POINTS;
+    after /= CAL_POINTS;
+    // A finger held still on a cross is read to within a few pixels of where the line says. Nine readings that the
+    // best line still misses by much more were not nine steady presses on nine crosses: nothing is changed then.
+    kept = after <= 10 && worst <= 24 && hwSetTouchFix(fix, true);
+  }
+  s_cal = false;
+  s_calKept = kept;
+  s_calBefore = (int)lroundf(before);
+  s_calAfter = (int)lroundf(after);
+  s_calResultUntil = millis() + 4000;
+  if (s_calResultUntil == 0) s_calResultUntil = 1;
+  s_calDrawn = false;
+#if RD_DEBUG_SERIAL
+  Serial.printf("cal done: %s, scale %.4f %.4f offset %.2f %.2f, off by %.1f before, %.1f after, worst %.1f\n", kept ? "kept" : "not kept",
+                fix.scaleX, fix.scaleY, fix.offsetX, fix.offsetY, before, after, worst);
+#endif
 }
 
 // One pass of the measurement. The finger's place is read as often as the loop comes round and nothing shows
@@ -744,11 +838,37 @@ void uiDebugCalibrate(bool on) {
 static void calibrateTick() {
   uint32_t now = millis();
   Touch raw = hwTouchRaw();
+#if RD_DEBUG_SERIAL
   if (s_fakeTouch.down) raw = s_fakeTouch;   // a finger from the console, for trying the sequence out
+#endif
+  KeyEvent key = hwKeyEvent();
+  if (!s_cal) {
+    // The result stays for a few seconds; a key or a touch takes it away sooner.
+    if (key != KEY_NONE || raw.down || (int32_t)(now - s_calResultUntil) >= 0) {
+      s_calResultUntil = 0;
+      s_lastTouchAt = now;
+      s_dirty = true;
+      return;
+    }
+    if (!s_calDrawn) {
+      s_calDrawn = true;
+      g->fillScreen(BLACK);
+      screenCalibrateResult((uint16_t*)g->getFramebuffer(), s_calKept, s_calBefore, s_calAfter);
+      hwPush();
+    }
+    return;
+  }
+  if (key != KEY_NONE) {
+    calibrateStop("a key");
+    return;
+  }
+  if ((g_state.prompt && strcmp(g_state.promptId, s_calPrompt) != 0) || (g_state.ask && strcmp(g_state.askId, s_calAsk) != 0)) {
+    calibrateStop("something to answer arrived");
+    return;
+  }
   if (raw.down) s_calSeenAt = now;
   if (now - s_calSeenAt > 90000) {
-    Serial.printf("cal gave up: no touch for a minute and a half\n");
-    uiDebugCalibrate(false);
+    calibrateStop("no touch for a minute and a half");
     return;
   }
   if (s_calTaken) {
@@ -756,9 +876,7 @@ static void calibrateTick() {
       s_calTaken = false;
       s_calDrawn = false;
       if (++s_calIndex >= CAL_POINTS) {
-        s_cal = false;
-        s_dirty = true;
-        Serial.printf("cal done\n");
+        calibrateFinish();
         return;
       }
     }
@@ -776,18 +894,23 @@ static void calibrateTick() {
       s_calCount++;
     }
     if (now - s_calDownAt >= 800 && s_calCount >= 3) {
-      int tx = CAL_AT[s_calIndex % 3], ty = CAL_AT[s_calIndex / 3];
-      float rx = (float)s_calSumX / s_calCount, ry = (float)s_calSumY / s_calCount;
+      s_calReadX[s_calIndex] = (float)s_calSumX / s_calCount;
+      s_calReadY[s_calIndex] = (float)s_calSumY / s_calCount;
+#if RD_DEBUG_SERIAL
       TouchFix fix = hwTouchFix();
-      Serial.printf("cal %d target %d %d read %.1f %.1f corrected %.1f %.1f samples %d\n", s_calIndex, tx, ty, rx, ry,
-                    (rx - fix.offsetX) / fix.scaleX, (ry - fix.offsetY) / fix.scaleY, s_calCount);
+      Serial.printf("cal %d target %d %d read %.1f %.1f corrected %.1f %.1f samples %d\n", s_calIndex, CAL_AT[s_calIndex % 3], CAL_AT[s_calIndex / 3],
+                    s_calReadX[s_calIndex], s_calReadY[s_calIndex], (s_calReadX[s_calIndex] - fix.offsetX) / fix.scaleX,
+                    (s_calReadY[s_calIndex] - fix.offsetY) / fix.scaleY, s_calCount);
+#endif
       s_calTaken = true;
       s_calDown = false;
       s_calDrawn = false;
     }
   } else if (s_calDown) {
     s_calDown = false;
+#if RD_DEBUG_SERIAL
     Serial.printf("cal %d lifted too soon\n", s_calIndex);
+#endif
   }
   if (!s_calDrawn) {
     s_calDrawn = true;
@@ -800,7 +923,6 @@ static void calibrateTick() {
     hwPush();
   }
 }
-#endif
 
 // MARK: the loop
 
@@ -819,12 +941,10 @@ void uiBegin() {
 
 void uiTick() {
   bool modern = screensReady();
-#if RD_DEBUG_SERIAL
-  if (s_cal && modern) {
+  if (s_cal || s_calResultUntil != 0) {
     calibrateTick();
     return;
   }
-#endif
   DENY_X = modern ? SCREEN_DENY_X : 34;
   ALLOW_X = modern ? SCREEN_ALLOW_X : 250;
   BTN_Y = modern ? SCREEN_BUTTON_Y : 330;

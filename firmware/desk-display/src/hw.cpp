@@ -41,7 +41,7 @@ struct Switch {
 };
 static Switch s_bootKey = {PIN_KEY_BOOT, false, 0, false, false, 0, 0};
 static Switch s_userKey = {PIN_KEY_USER, false, 0, false, false, 0, 0};
-static const uint32_t LONG_PRESS_MS = 1500;
+static const uint32_t LONG_PRESS_MS = 1500, BOOT_LONG_PRESS_MS = 3000;
 
 static void IRAM_ATTR bootKeyDown() {
   if (!s_bootKey.hit) {
@@ -61,7 +61,7 @@ static void keysBegin() {
   attachInterrupt(digitalPinToInterrupt(PIN_KEY_USER), userKeyDown, FALLING);
 }
 
-static KeyEvent pollSwitch(Switch& key, KeyEvent brief, KeyEvent held, uint32_t now) {
+static KeyEvent pollSwitch(Switch& key, KeyEvent brief, KeyEvent held, uint32_t longMs, uint32_t now) {
   bool down = digitalRead(key.pin) == LOW;
   if (!key.tracking) {
     bool hit = key.hit;
@@ -77,7 +77,7 @@ static KeyEvent pollSwitch(Switch& key, KeyEvent brief, KeyEvent held, uint32_t 
   }
   if (down) {
     // Signed: a press noted by the interrupt a moment after `now` was read is not a press that has lasted for ever.
-    if (held != KEY_NONE && !key.longFired && (int32_t)(now - key.pressedAt) >= (int32_t)LONG_PRESS_MS) {
+    if (held != KEY_NONE && !key.longFired && (int32_t)(now - key.pressedAt) >= (int32_t)longMs) {
       key.longFired = true;
       return held;
     }
@@ -116,9 +116,9 @@ KeyEvent hwKeyEvent() {
       if (brief) return KEY_POWER_SHORT;
     }
   }
-  KeyEvent event = pollSwitch(s_userKey, KEY_USER_SHORT, KEY_USER_LONG, now);
+  KeyEvent event = pollSwitch(s_userKey, KEY_USER_SHORT, KEY_USER_LONG, LONG_PRESS_MS, now);
   if (event != KEY_NONE) return event;
-  return pollSwitch(s_bootKey, KEY_BOOT_SHORT, KEY_NONE, now);
+  return pollSwitch(s_bootKey, KEY_BOOT_SHORT, KEY_BOOT_LONG, BOOT_LONG_PRESS_MS, now);
 }
 
 bool hwBegin() {
@@ -241,8 +241,8 @@ static void loadTouchFix() {
 
 TouchFix hwTouchFix() { return s_touchFix; }
 
-void hwSetTouchFix(const TouchFix& fix, bool keep) {
-  if (!sane(fix)) return;
+bool hwSetTouchFix(const TouchFix& fix, bool keep) {
+  if (!sane(fix)) return false;
   s_touchFix = fix;
   if (keep) {
     s_touchKept.putFloat("sx", fix.scaleX);
@@ -250,6 +250,7 @@ void hwSetTouchFix(const TouchFix& fix, bool keep) {
     s_touchKept.putFloat("sy", fix.scaleY);
     s_touchKept.putFloat("oy", fix.offsetY);
   }
+  return true;
 }
 
 Touch hwTouchRaw() {

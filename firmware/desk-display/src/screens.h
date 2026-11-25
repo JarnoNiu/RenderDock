@@ -43,10 +43,14 @@ void screenBadge(uint16_t* frame, const char* text);
 // A short notice over whatever is on the screen, for the moment after a key changed something.
 void screenToast(uint16_t* frame, const char* text);
 
-#if RD_DEBUG_SERIAL
-// Bring-up only: one target of the touch measurement. A cross to hold a finger on, which one of how many it is,
-// and whether its reading has been taken (then the finger may be lifted).
+// Measuring the touch: one target. A cross to hold a finger on, which one of how many it is, and whether its
+// reading has been taken (then the finger may be lifted).
 void screenCalibrate(uint16_t* frame, int x, int y, int index, int total, bool taken);
+// How the measuring went: taken and kept (with how far off a finger was read before and is read now, in pixels),
+// or not good enough to keep.
+void screenCalibrateResult(uint16_t* frame, bool kept, int before, int after);
+
+#if RD_DEBUG_SERIAL
 // Bring-up only. Which rounded face the numerals use (2: Nunito, 3: M PLUS Rounded), and whether the redesigned
 // screens are used at all.
 void screensDebugRounded(int family);

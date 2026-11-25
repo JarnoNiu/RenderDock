@@ -874,8 +874,7 @@ void screenNote(uint16_t* frame) {
 }
 
 
-#if RD_DEBUG_SERIAL
-// MARK: measuring the touch (bring-up)
+// MARK: measuring the touch
 
 void screenCalibrate(uint16_t* frame, int x, int y, int index, int total, bool taken) {
   uint16_t color = taken ? MINT : WHITE;
@@ -889,5 +888,21 @@ void screenCalibrate(uint16_t* frame, int x, int y, int index, int total, bool t
   int words = y > 300 ? 150 : 372;
   fontDrawCentred(frame, text30(), CX, words, WHITE, taken ? "好了，松手" : "按住十字的中心");
   fontDrawCentred(frame, name26(), CX, words + 42, SOFT, (String("像平时那样按 · ") + (index + 1) + "/" + total).c_str());
+  fontDrawCentred(frame, text26(), CX, words + 80, DIM, "按任意键取消");
 }
-#endif
+
+void screenCalibrateResult(uint16_t* frame, bool kept, int before, int after) {
+  if (kept) {
+    ring(frame, RING_WHOLE, 100, MINT, AQUA, TRACK);
+    shapeLine(frame, CX - 52.5f, CY + 4, CX - 15.5f, CY + 41, 23, TEAL);
+    shapeLine(frame, CX - 15.5f, CY + 41, CX + 54.5f, CY - 37, 23, TEAL);
+    fontDrawCentred(frame, text38(), CX, TITLE_Y, WHITE, "触摸校正好了");
+    fontDrawCentred(frame, name26(), CX, LINE_Y, SOFT, (String("偏差 ") + before + " → " + after + " 像素").c_str());
+  } else {
+    ring(frame, RING_WHOLE, 100, AMBER, AMBER, TRACK);
+    shapeLine(frame, CX, CY - 46, CX, CY + 14, 23, AMBER);
+    shapeDisc(frame, CX, CY + 46, 12.5f, AMBER);
+    fontDrawCentred(frame, text38(), CX, TITLE_Y, WHITE, "这次没有校成");
+    fontDrawCentred(frame, name26(), CX, LINE_Y, SOFT, "读数不稳，保持原来的");
+  }
+}

@@ -39,12 +39,22 @@ Swipe up for the list of what is going on, down to go back. The page turns once 
 |---|---|---|
 | Power | Screen off, or on again. The link stays up, and news still lights the screen | "Do not disturb" on or off: no sound, and the screen lights up only for a request |
 | KEY3 | Turns the page: main screen, list, main screen | Sound off or on |
-| BOOT | Back to the main screen | Nothing. (Held while the board is powered up, this key puts the chip into its flashing mode; that is the chip's doing) |
+| BOOT | Back to the main screen | Held for **three** seconds: measures the touch (see "Where a finger is read"). (Held while the board is powered up, this key puts the chip into its flashing mode; that is the chip's doing) |
 
 - **No key answers a request**, and while a request is on the screen no key turns the page away from it.
 - A press, or a touch, on a dark screen lights it and does nothing else.
 - Held for four seconds, the power key cuts the power. The power chip does that by itself, whatever the firmware is doing.
 - "Do not disturb" and "sound off" are remembered across restarts, and show as a word in the corner of the main screen.
+
+### Where a finger is read (from 0.3.1)
+
+A finger is read a little away from where it aims: the part that meets the glass is not the tip one aims with, and how far off depends on the hand and on how the board stands. The board can measure this itself:
+
+1. Hold **BOOT for three seconds**. A cross appears.
+2. Put a finger on the centre of the cross, the way you normally would, and keep it there until the cross turns green (under a second). Lift. The next cross appears: nine in all.
+3. The board works out the correction from the nine readings, keeps it, and says how far off a finger was read before and is read now.
+
+Any key ends it without changing anything. So does a request or a question arriving. If the nine readings do not agree with one another (a finger that slid, a cross that was missed), nothing is changed and the screen says so. The correction survives restarts and flashing the program; writing the whole ready-made image over the board removes it.
 
 ## The sounds
 
@@ -160,7 +170,7 @@ It logs what the board does as it starts, where a finger lands, when a key goes 
 | `shot` | Sends back the frame as the firmware drew it |
 | a line of JSON | Is shown as if a paired computer had sent it, without the sounds that would go with it |
 | `feed loud`, `feed quiet` | Lets fed snapshots make their sounds, and stops them again |
-| `calibrate`, `calibrate off` | Measures the touch: nine crosses come up one after another, each to be held with a finger for a second, and for each the console gets where the cross is and where the finger was read. Nothing marks the reading on the screen, so the hand does not correct for it |
+| `calibrate`, `calibrate off` | Measures the touch: nine crosses come up one after another, each to be held with a finger for a second, and for each the console gets where the cross is and where the finger was read; after the ninth the board works the correction out and keeps it. The same thing BOOT held for three seconds starts. Nothing marks the reading on the screen, so the hand does not correct for it |
 | `touchfix`, `touchfix SX OX SY OY`, `touchfix reset` | Prints the touch correction in use; sets and keeps one (read = scale × aimed + offset, for X and then for Y); removes it |
 | `feed off` | Goes back to showing only what arrives over Bluetooth |
 | `down X Y`, `up` | Puts a finger on the screen at a point, and lifts it |
@@ -214,7 +224,7 @@ The touch controller's axes are a quarter turn from the picture's on this board:
 
 The measuring screen had a mistake of its own the first time: each cross after the first was drawn where the one before it had been, so the readings were paired with the wrong targets. The numbers still told the story once they were shifted back by one, but a look at the frames from the dry run would have caught it before a person was asked to press anything.
 
-With the axes right, a finger is still read a little away from where it aims: on this board, in this hand, about 19 pixels to the right and 9 below (1.6 mm and 0.7 mm). That is the hand as much as the glass, so it is not built in: `touchfix` keeps a correction on the board itself, and a board without one uses the readings as they are. After the correction the nine points were within 5 pixels on average.
+With the axes right, a finger is still read a little away from where it aims: on this board, in this hand, about 19 pixels to the right and 9 below (1.6 mm and 0.7 mm). That is the hand as much as the glass, so it is not built in: a correction is kept on the board itself, and a board without one uses the readings as they are. After the correction the nine points were within 5 pixels on average. That first correction was worked out on a computer from the console's lines and typed back in with `touchfix`; from 0.3.1 the board works it out itself (BOOT held for three seconds).
 
 The first sounds could not be heard at all, though the playback chip started and took every sample. The amplifier needs about 200 ms after it is switched on before anything comes out, and it was given 12; the sounds are short and loudest at their start, so they were over before it woke. What found this was the board listening to itself: the schematic has the playback chip's output wired back into the microphone chip (for echo cancelling), and the microphones sit beside the speaker. `listen` and `hear` on the console are that test. A board that cannot be heard can still say what it hears.
 
@@ -230,6 +240,7 @@ Measured on the board: one whole frame takes about 60 ms to reach the panel, so 
 - **Not yet tried**: answering a *request for permission* from the device over Bluetooth (those buttons have only been worked from the console, with nothing on the other end); the Claude desktop app as the other end; switching the panel off and waking it again; running from a battery.
 - On the glass, one person has used the screens, answered a question with a finger and gone through the touch calibration. Nobody has judged the rest by eye yet: whether the small text is large enough at arm's length, and whether the corners of the panel cut anything.
 - The released image was compared, part by part and byte for byte, with a board running those parts. That board kept its memory, so **a first start from an empty flash and a first pairing have not been run again on the released build**; they were last run on an earlier one.
+- **Measuring the touch on the board (0.3.1)** has been gone through with a finger put down from the console, read with a known bend: the board found the bend and kept it; unsteady readings, a key and a request arriving each left the old correction alone. Not tried: the BOOT key's own three-second hold (the event was put in from the console), and a real finger on the nine crosses.
 - The everyday build has been on the board only long enough to see it start, find its fonts and go back to its computer over Bluetooth. Every screen was checked on the build with the console, which draws with the same code.
 - There is next to no motion: the mark on the "needs you" screen breathes, and the hold on Allow shows as it goes.
 - On the first screens (a board without the font file): a character the bitmap font does not have is left out without a trace.

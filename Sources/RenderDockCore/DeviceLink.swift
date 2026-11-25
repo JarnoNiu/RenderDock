@@ -19,6 +19,21 @@ package enum BuddyProtocol {
     /// A snapshot goes out when something changes, and at least this often. A device treats 30 s of silence as a dead link.
     package static let keepalive: TimeInterval = 10
 
+    // MARK: A connection that is refused
+
+    /// CoreBluetooth's "the peer removed pairing information" (`CBErrorDomain` 14): this Mac still holds a pairing
+    /// with the device, and the device no longer has its half. That is what a device looks like after its whole
+    /// flash was written again or its memory was cleared. macOS does not pair a second time on its own; the user
+    /// has to forget the device in System Settings → Bluetooth first.
+    package static func pairingGone(domain: String?, code: Int?) -> Bool {
+        domain == "CBErrorDomain" && code == 14
+    }
+
+    /// How long to wait between tries while the pairing is gone on the device's side. Each try is refused within
+    /// a second, so trying often gains nothing; and once the user does forget the device, macOS takes about half
+    /// a minute to let go of the pairing, which goes better when it is not being asked to connect all the while.
+    package static let retryWhilePairingGone: TimeInterval = 15
+
     /// What the reference firmware has room for. Longer text is cut by the device, or worse.
     package enum Limit {
         package static let id = 39

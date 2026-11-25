@@ -102,9 +102,19 @@ A device talks to one computer program at a time. While RenderDock is connected 
 
 If the link will not come up, `~/Library/Application Support/RenderDock/device-link.log` says how far it got: the last hundred or so events (scanning, connecting, a write refused, what the device said about itself), with times. It holds no content: not what was sent, not a session's name, not the pairing code.
 
+### When the device has lost the pairing and the Mac has not
+
+A device whose whole flash was written again, or whose memory was cleared, no longer has its half of the pairing. The Mac still has the other half, and macOS will not pair a second time on its own: every connection is refused before it starts (`CBErrorDomain 14` in the log), and no six digits appear. Up to 0.3.0 RenderDock tried again every three seconds and said nothing but "Connecting". From 0.3.1:
+
+- the menu says ***name* no longer has its pairing with this Mac**, and under it what to do: forget the device in System Settings → Bluetooth (the ⓘ beside it → **Forget This Device**) and wait half a minute;
+- it tries again every fifteen seconds instead of every three. Each try is refused within a second anyway, and macOS takes about half a minute to let go of a pairing once the device is forgotten, which goes better when nothing is asking it to connect all the while.
+
+The first connection after that pairs afresh. **Forget This Device** in RenderDock's own menu is another matter (which device RenderDock goes back to); it should not be needed here, since the device keeps the identifier macOS knows it by, though that has not been run both ways. If a minute after forgetting the device is still listed under My Devices, forget it again. A connection that hangs although the device is plainly there is cleared by turning the Mac's Bluetooth off and on.
+
 ## What has and has not been checked
 
 - **Checked**: the protocol half. What goes into a snapshot, the limits, what is held back, which requests are offered, how the device's lines are put back together and read. These are covered by checks that need no device.
 - **Checked with one device** (the desk display in [`firmware/desk-display`](../firmware/desk-display/README.md), on a Waveshare ESP32-S3-Touch-AMOLED-2.16): finding it, connecting, pairing by typing the six digits from its screen, the encrypted link, the snapshot with RenderDock's own fields and Chinese text arriving and being drawn, and going back to it without pairing again after the device restarts.
 - **Checked once with the same device**: a notice, a task and a question from another program ([AGENT-ENTRY.md](AGENT-ENTRY.md)) arriving over Bluetooth, and a pick made on the device coming back and reaching the program that asked.
-- **Not checked**: an answer to a *request for permission* coming back from the device over Bluetooth; the reference firmware and other ports; a device that does not ask for pairing.
+- **Checked once with the same device (2026-11-25)**: a board whose whole flash had been erased and written with the released image, pairing again with a Mac that had forgotten it, and coming back after a restart without pairing.
+- **Not checked**: an answer to a *request for permission* coming back from the device over Bluetooth; the reference firmware and other ports; a device that does not ask for pairing; the "no longer has its pairing" line on a live link (what it recognises was seen in the log before the line existed, and the recognising has its own checks, but the pairing was not broken a second time to watch it).

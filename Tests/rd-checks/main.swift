@@ -1560,6 +1560,19 @@ do {
           BuddyProtocol.chunks(Data(repeating: 1, count: 50), size: 20).map(\.count) == [20, 20, 10] && BuddyProtocol.chunks(Data(), size: 20).isEmpty)
 }
 
+section("a connection the device refuses")
+do {
+    check("the peer removed its pairing: CBErrorDomain 14", BuddyProtocol.pairingGone(domain: "CBErrorDomain", code: 14))
+    check("no other Bluetooth error is taken for it",
+          !BuddyProtocol.pairingGone(domain: "CBErrorDomain", code: 6) && !BuddyProtocol.pairingGone(domain: "CBErrorDomain", code: 7)
+          && !BuddyProtocol.pairingGone(domain: "CBErrorDomain", code: 15))
+    check("nor the same number from somewhere else, nor no error at all",
+          !BuddyProtocol.pairingGone(domain: "CBATTErrorDomain", code: 14) && !BuddyProtocol.pairingGone(domain: nil, code: nil)
+          && !BuddyProtocol.pairingGone(domain: "CBErrorDomain", code: nil))
+    check("while it lasts the tries are far apart, yet come round within the half minute macOS needs",
+          BuddyProtocol.retryWhilePairingGone >= 10 && BuddyProtocol.retryWhilePairingGone <= 30)
+}
+
 section("what a device sends back")
 do {
     func parse(_ text: String) -> BuddyProtocol.Incoming { BuddyProtocol.parse(Data(text.utf8)) }

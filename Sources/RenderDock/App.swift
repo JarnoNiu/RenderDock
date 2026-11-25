@@ -35,6 +35,20 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         item.button?.toolTip = L("渲染坞：\(store.summary)\(agentLine)", "RenderDock: \(store.summary)\(agentLine)")
     }
 
+    /// For the debug hook: the menu as it would open now, as titles (submenus nested), without opening it.
+    func debugMenu() -> [[String: Any]] {
+        guard let menu = item.menu else { return [] }
+        menuNeedsUpdate(menu)
+        func rows(_ menu: NSMenu) -> [[String: Any]] {
+            menu.items.filter { !$0.isSeparatorItem }.map { item in
+                var row: [String: Any] = ["title": item.title, "enabled": item.isEnabled, "on": item.state == .on]
+                if let sub = item.submenu { row["items"] = rows(sub) }
+                return row
+            }
+        }
+        return rows(menu)
+    }
+
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         let head = NSMenuItem(title: store.summary, action: nil, keyEquivalent: "")
@@ -88,6 +102,12 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             let line = NSMenuItem(title: store.deviceStatus.text, action: nil, keyEquivalent: "")
             line.isEnabled = false
             deviceMenu.addItem(line)
+            // Where the status alone would leave the user stuck, a second line says what to do.
+            if let hint = store.deviceStatus.hint {
+                let more = NSMenuItem(title: hint, action: nil, keyEquivalent: "")
+                more.isEnabled = false
+                deviceMenu.addItem(more)
+            }
             add(deviceMenu, L("可以在设备上答复 agent 的请求", "Agents' Requests May Be Answered on the Device"), #selector(toggleDeviceAnswers), on: store.deviceAnswers)
             add(deviceMenu, L("设备能显示中文", "The Device Can Show Chinese"), #selector(toggleDeviceUnicode), on: store.deviceUnicode)
             add(deviceMenu, L("忘记这台设备", "Forget This Device"), #selector(forgetDevice))
@@ -252,7 +272,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Debug commands (`RenderDock --send "<command>"`): expand, collapse, reset, pin, stress on|off, shot <path>, state <path>,
-    /// mouse x1,y1 [x2,y2 …] (screen coordinates; one point is a click, several points are a drag).
+    /// mouse x1,y1 [x2,y2 …] (screen coordinates; one point is a click, several points are a drag),
+    /// menu <path> (the menu bar item's menu as titles), device-status pairing-gone|connecting|looking <name>
+    /// (what the menu would say about the Bluetooth link in that state; no Bluetooth is touched).
     private func handle(command: String) {
         let parts = command.split(separator: " ", maxSplits: 1).map(String.init)
         guard let verb = parts.first else { return }
@@ -270,6 +292,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case "requests":   // write the waiting requests to a file: id, action, approvable
             let list = store.requests.map { ["id": $0.id, "action": $0.action, "project": $0.project, "approvable": $0.approvable] as [String: Any] }
             if let data = try? JSONSerialization.data(withJSONObject: list, options: [.sortedKeys]) { try? data.write(to: URL(fileURLWithPath: arg)) }
+        case "menu":
+            if let data = try? JSONSerialization.data(withJSONObject: status.debugMenu(), options: [.prettyPrinted, .sortedKeys]) {
+                try? data.write(to: URL(fileURLWithPath: arg))
+            }
+        case "device-status":
+            let words = arg.split(separator: " ", maxSplits: 1).map(String.init)
+            let name = words.count > 1 ? words[1] : BuddyProtocol.namePrefix
+            switch words.first {
+            case "pairing-gone": store.deviceStatus = .pairingGone(name)
+            case "connecting": store.deviceStatus = .connecting(name)
+            case "looking": store.deviceStatus = .looking
+            default: break
+            }
         case "shot": panel.debugShot(arg)
         case "state":
             if let data = try? JSONSerialization.data(withJSONObject: panel.debugState(), options: [.prettyPrinted, .sortedKeys]) {

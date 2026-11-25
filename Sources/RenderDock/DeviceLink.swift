@@ -17,6 +17,10 @@ final class DeviceLink: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         case notAllowed
         case looking
         case connecting(String)
+        /// This Mac still holds a pairing with the device, and the device no longer has its half (its whole flash
+        /// was written again, or its memory was cleared). Nothing connects until the user forgets the device in
+        /// System Settings → Bluetooth; see `hint`.
+        case pairingGone(String)
         case connected(name: String, secure: Bool, battery: Int?)
 
         var text: String {
@@ -27,10 +31,21 @@ final class DeviceLink: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
             case .notAllowed: return L("没有蓝牙权限：到 系统设置 → 隐私与安全性 → 蓝牙 里允许", "No Bluetooth permission: allow it in System Settings → Privacy & Security → Bluetooth")
             case .looking: return L("正在找设备…", "Looking for a device…")
             case .connecting(let name): return L("正在连接 \(name)…", "Connecting to \(name)…")
+            case .pairingGone(let name): return L("\(name) 已经没有和这台电脑的配对了", "\(name) no longer has its pairing with this Mac")
             case .connected(let name, let secure, let battery):
                 let power = battery.map { L(" · 电量 \($0)%", " · battery \($0)%") } ?? ""
                 return secure ? L("已连接 \(name)\(power)", "Connected to \(name)\(power)")
                               : L("已连接 \(name)\(power) · 连接未加密，只发计数", "Connected to \(name)\(power) · not encrypted, counts only")
+            }
+        }
+
+        /// What the user can do about it, where there is something to do. A second line under the status.
+        var hint: String? {
+            switch self {
+            case .pairingGone:
+                return L("到 系统设置 → 蓝牙 里忽略这台设备，等半分钟，会重新配对",
+                         "Forget it in System Settings → Bluetooth and wait half a minute: it pairs again")
+            default: return nil
             }
         }
     }
@@ -63,6 +78,11 @@ final class DeviceLink: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     /// Connections in a row that ended before the link was encrypted. Each one waits longer before the next try,
     /// so a pairing the user dismissed does not come back every two seconds.
     private var failures = 0
+    /// The name of the device that refused this Mac because it no longer has the pairing. While it is set the
+    /// status says so (the tries in between do not take that line away) and the tries are far apart.
+    private var gone: String?
+    /// The name the connection under way was started with.
+    private var attempting = ""
     /// What happened on the link lately: events and sizes only, never what a line said. Kept in a small file
     /// (`logURL`), because a link that will not come up can only be diagnosed from what each side saw.
     private var trace: [String] = []
@@ -122,6 +142,7 @@ final class DeviceLink: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
             self.central = nil
             self.reset()
             self.failures = 0
+            self.gone = nil
             self.note("switched off")
             self.set(.off)
         }
@@ -134,6 +155,7 @@ final class DeviceLink: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
             if let p = self.peripheral { self.central?.cancelPeripheralConnection(p) }
             self.reset()
             self.failures = 0
+            self.gone = nil
             self.note("forgot the device")
             if self.central?.state == .poweredOn { self.look() }
         }
@@ -157,6 +179,12 @@ final class DeviceLink: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     // MARK: on `queue`
 
     private func set(_ new: Status) {
+        if gone != nil {
+            switch new {
+            case .looking, .connecting: return
+            default: break
+            }
+        }
         guard new != state else { return }
         state = new
         DispatchQueue.main.async { self.onStatus?() }
@@ -195,11 +223,11 @@ final class DeviceLink: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         // A device that was chosen before is the only one this Mac goes back to.
         if let text = UserDefaults.standard.string(forKey: Self.rememberedKey), let id = UUID(uuidString: text),
            let known = central.retrievePeripherals(withIdentifiers: [id]).first {
-            note("going back to the remembered device")
+            if gone == nil { note("going back to the remembered device") }
             connect(known, name: known.name ?? BuddyProtocol.namePrefix)
             return
         }
-        note(UserDefaults.standard.string(forKey: Self.rememberedKey) == nil ? "scanning" : "scanning for the remembered device")
+        if gone == nil { note(UserDefaults.standard.string(forKey: Self.rememberedKey) == nil ? "scanning" : "scanning for the remembered device") }
         // A device's name may arrive in a second packet, after the first sighting. Asking to be told of every
         // sighting is what makes sure the one that carries the name is seen.
         central.scanForPeripherals(withServices: [Self.service], options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
@@ -209,7 +237,8 @@ final class DeviceLink: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         peripheral = p
         p.delegate = self
         central?.stopScan()
-        note("connecting to \(name)")
+        attempting = name
+        if gone == nil { note("connecting to \(name)") }
         set(.connecting(name))
         central?.connect(p, options: nil)
     }
@@ -248,10 +277,10 @@ final class DeviceLink: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         switch central.state {
         case .poweredOn: note("Bluetooth is on"); look()
-        case .resetting: note("Bluetooth is resetting"); reset(); set(.looking)
-        case .poweredOff: note("Bluetooth is off"); reset(); set(.bluetoothOff)
-        case .unauthorized: note("no Bluetooth permission"); reset(); set(.notAllowed)
-        case .unsupported: note("Bluetooth is not supported here"); reset(); set(.unavailable)
+        case .resetting: note("Bluetooth is resetting"); reset(); gone = nil; set(.looking)
+        case .poweredOff: note("Bluetooth is off"); reset(); gone = nil; set(.bluetoothOff)
+        case .unauthorized: note("no Bluetooth permission"); reset(); gone = nil; set(.notAllowed)
+        case .unsupported: note("Bluetooth is not supported here"); reset(); gone = nil; set(.unavailable)
         default: break
         }
     }
@@ -270,11 +299,17 @@ final class DeviceLink: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        if gone != nil {
+            // The refusal comes before this point, so getting here means the old pairing is out of the way.
+            gone = nil
+            set(.connecting(attempting))
+        }
         note("connected")
         peripheral.discoverServices([Self.service])
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+        if pairingIsGone(error) { return }
         note("could not connect\(Self.brief(error))")
         reset()
         set(.looking)
@@ -282,6 +317,7 @@ final class DeviceLink: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        if pairingIsGone(error) { return }
         let wasSecure = isSecure
         failures = wasSecure ? 0 : failures + 1
         // 2, 4, 8 … 60 seconds after a connection that never got as far as an encrypted link.
@@ -292,6 +328,27 @@ final class DeviceLink: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate
         reset()
         set(.looking)   // not "connected" a moment longer: nothing may be sent, offered or taken until the next link is up
         queue.asyncAfter(deadline: .now() + wait) { [weak self] in self?.look() }
+    }
+
+    /// The device refused this Mac because it no longer has the pairing (see `BuddyProtocol.pairingGone`): say so,
+    /// and try again only now and then. Nothing this app can do brings the link back; forgetting the device in
+    /// System Settings is the user's to do, and macOS pairs afresh on the first connection after that.
+    /// False for any other error, which is then handled as before.
+    private func pairingIsGone(_ error: Error?) -> Bool {
+        let e = error as NSError?
+        guard BuddyProtocol.pairingGone(domain: e?.domain, code: e?.code) else { return false }
+        let wait = BuddyProtocol.retryWhilePairingGone
+        if gone == nil {
+            note("the device no longer has this Mac's pairing\(Self.brief(error)): it has to be forgotten in Bluetooth settings; trying every \(Int(wait)) s until then")
+        }
+        let name = attempting.isEmpty ? BuddyProtocol.namePrefix : attempting
+        keepalive?.cancel()
+        keepalive = nil
+        reset()
+        gone = name
+        set(.pairingGone(name))
+        queue.asyncAfter(deadline: .now() + wait) { [weak self] in self?.look() }
+        return true
     }
 
     /// An error as a short tail for the trace: its domain and number, which is all that is needed to look it up.

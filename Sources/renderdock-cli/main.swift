@@ -3,6 +3,7 @@
 //   renderdock run [--name NAME] [--total N] -- <command…>   run a command unchanged and report its progress
 //   renderdock status [--json]                               what is rendering on this Mac right now
 //   renderdock history [--json] [--limit N]                  the shots that ended most recently
+//   renderdock estimates [--json] [--days N]                 how close the time-left estimates were
 //   renderdock agents [--json]                               what coding agents' sessions are doing right now
 //   renderdock hook                                          an agent's permission hook: asks the app, prints its answer
 //   renderdock hooks status|install|uninstall …              put that hook into a Claude Code settings file, or take it out
@@ -29,6 +30,7 @@ usage:
   renderdock run [--name NAME] [--total N] -- <command> [arguments…]
   renderdock status [--json]
   renderdock history [--json] [--limit N]
+  renderdock estimates [--json] [--days N]
   renderdock agents [--json]
   renderdock hooks status|install|uninstall (--project DIR | --global) [--yes]
   renderdock notify TEXT [--title TITLE] [--level info|done|error] [--from NAME]
@@ -247,6 +249,52 @@ func history(json: Bool, limit: Int) -> Never {
         let outcome = (r.outcome ?? "-") + (r.outcome == "failed" ? " (\(r.exitCode.map(String.init) ?? "?"))" : "")
         print("\(ended)  \(outcome.padding(toLength: 12, withPad: " ", startingAt: 0))  \(took.padding(toLength: 8, withPad: " ", startingAt: 0))  \(frames.padding(toLength: 12, withPad: " ", startingAt: 0))  \(r.shot)  ·  \(r.jobTitle)")
     }
+    exit(0)
+}
+
+// MARK: estimates
+
+/// The time-left estimates RenderDock showed, held against what happened. Read-only.
+func estimates(json: Bool, days: Double) -> Never {
+    let report = HistoryStore(readOnly: true)?.estimateReport(days: days) ?? EstimateReport.nothing
+    if json {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        print(String(decoding: (try? encoder.encode(report)) ?? Data("{}".utf8), as: UTF8.self))
+        exit(0)
+    }
+    func span(_ seconds: Double) -> String {
+        let s = Int(abs(seconds).rounded())
+        return s >= 3600 ? "\(s / 3600)h \(s % 3600 / 60)m" : (s >= 60 ? "\(s / 60)m \(s % 60)s" : "\(s)s")
+    }
+    let waiting = report.leftOut.sorted { $0.key < $1.key }.map { "\($0.value) \($0.key)" }.joined(separator: ", ")
+    guard let from = report.from, let to = report.to, !report.lines.isEmpty else {
+        print("no estimate has met its end yet" + (waiting.isEmpty ? "" : " (left out: \(waiting))"))
+        print("Estimates are written down from RenderDock 0.3.1 on, once a minute while something renders.")
+        exit(0)
+    }
+    let clock = DateFormatter()
+    clock.dateFormat = "MM-dd HH:mm"
+    print("time-left estimates held against what happened, \(clock.string(from: Date(timeIntervalSince1970: from))) to \(clock.string(from: Date(timeIntervalSince1970: to)))")
+    for kind in ["shot", "queue"] {
+        let lines = report.lines.filter { $0.kind == kind }
+        guard !lines.isEmpty else { continue }
+        print("")
+        for line in lines {
+            let name = line.horizon == "all" ? "\(kind)s" : "  \(line.horizon) left"
+            var lean = "no lean"
+            if line.medianBias >= 1 { lean = "said \(span(line.medianBias)) too long" }
+            if line.medianBias <= -1 { lean = "said \(span(line.medianBias)) too short" }
+            let count = "\(line.estimates) estimate\(line.estimates == 1 ? "" : "s"), \(line.targets) \(kind)\(line.targets == 1 ? "" : "s")"
+            let off = "off by \(span(line.medianOff)) (\(Int(line.medianOffPercent.rounded()))%)"
+            let close = "\(Int((line.withinFifth * 100).rounded()))% within a fifth"
+            let columns: [(String, Int)] = [(name, 22), (count, 28), (off, 26), (lean, 26), (close, 0)]
+            print(columns.map { $0.1 > 0 ? $0.0.padding(toLength: $0.1, withPad: " ", startingAt: 0) : $0.0 }.joined())
+        }
+    }
+    print("")
+    print("\"off by\" and the lean are the middle value of all estimates in the line.")
+    if !waiting.isEmpty { print("left out: \(waiting)") }
     exit(0)
 }
 
@@ -491,6 +539,9 @@ case "status": status(json: arguments.contains("--json"))
 case "history":
     let limit = arguments.firstIndex(of: "--limit").flatMap { $0 + 1 < arguments.count ? Int(arguments[$0 + 1]) : nil } ?? 20
     history(json: arguments.contains("--json"), limit: max(1, min(limit, 500)))
+case "estimates":
+    let days = arguments.firstIndex(of: "--days").flatMap { $0 + 1 < arguments.count ? Double(arguments[$0 + 1]) : nil } ?? 30
+    estimates(json: arguments.contains("--json"), days: max(1, min(days, 365)))
 case "agents": agents(json: arguments.contains("--json"))
 case "hook": hook()
 case "hooks": hooks(Array(arguments.dropFirst()))

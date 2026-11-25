@@ -490,6 +490,81 @@ if let store = HistoryStore(file: parallelFile) {
     check("streams are summed separately and the longest counts", eta?.seconds == 500 + 1000)
 }
 for suffix in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: parallelFile.path + suffix) }
+// what the estimates said, against what happened
+section("history: estimates against what happened")
+let estimatesFile = FileManager.default.temporaryDirectory.appendingPathComponent("rd-checks-estimates-\(ProcessInfo.processInfo.processIdentifier).sqlite")
+try? FileManager.default.removeItem(at: estimatesFile)
+if let store = HistoryStore(file: estimatesFile) {
+    func shot(_ queue: String, _ name: String, _ state: ItemState, done: Int? = nil, total: Int? = nil, spf: Double? = nil) -> RenderItem {
+        var item = RenderItem(id: "\(queue)/stream/\(name)", name: name, state: state)
+        item.framesDone = done
+        item.framesTotal = total
+        item.secPerFrame = spf
+        return item
+    }
+    func group(_ id: String, _ shots: [RenderItem]) -> RenderGroup {
+        RenderGroup(id: id, title: "Queue", script: "queue.sh", scriptPath: nil, note: nil, project: "est", cwd: "/", startedAt: t0,
+                    keepAwake: false, state: .running, items: shots)
+    }
+    // Two shots of 100 frames. The first really takes 10 s a frame, and is said to take 12 at first, then 10.
+    func at(_ seconds: Double) -> Date { t0.addingTimeInterval(seconds) }
+    store.record([group("e1", [shot("e1", "a", .rendering, done: 0, total: 100), shot("e1", "b", .pending)])], now: at(0))
+    store.record([group("e1", [shot("e1", "a", .rendering, done: 10, total: 100, spf: 12), shot("e1", "b", .pending)])], now: at(100))
+    store.record([group("e1", [shot("e1", "a", .rendering, done: 11, total: 100, spf: 12), shot("e1", "b", .pending)])], now: at(110))
+    store.record([group("e1", [shot("e1", "a", .rendering, done: 50, total: 100, spf: 10), shot("e1", "b", .pending)])], now: at(500))
+    let early = store.estimateReport(days: 1, now: at(600))
+    check("an estimate whose shot is still going is not judged", early.lines.isEmpty && early.leftOut["still running"] == 4)
+    store.record([group("e1", [shot("e1", "a", .rendering, done: 100, total: 100, spf: 10), shot("e1", "b", .pending)])], now: at(1000))
+    store.record([group("e1", [shot("e1", "a", .done), shot("e1", "b", .rendering, done: 0, total: 100)])], now: at(1010))
+    store.record([group("e1", [shot("e1", "a", .done), shot("e1", "b", .rendering, done: 50, total: 100, spf: 10)])], now: at(1500))
+    store.record([group("e1", [shot("e1", "a", .done), shot("e1", "b", .rendering, done: 100, total: 100, spf: 10)])], now: at(2000))
+    store.record([], now: at(2010))
+    let report = store.estimateReport(days: 1, now: at(3000))
+    let shots = report.lines.first { $0.kind == "shot" && $0.horizon == "all" }
+    // Shot a: at 100 s it said 90 x 12 = 1080 and 900 were left (off by 180, 20%); the look at 110 s came too soon
+    // after to be written down; at 500 s it said 500 and 500 were left. Shot b: at 1500 s it said 500, and 500 were left.
+    check("estimates are written down once a minute, not at every look", shots?.estimates == 3 && shots?.targets == 2)
+    check("a shot's estimate is held against the moment its last frame was counted", shots?.medianOff == 0 && shots?.medianBias == 0 && shots?.withinFifth == 1)
+    let queues = report.lines.first { $0.kind == "queue" && $0.horizon == "all" }
+    // The queue ends at 2010 s. At 100 s it said 1080 for a plus 1180 for b (a projected to its end stands in):
+    // 2260 against 1910 left, 350 too long. At 500 s: 500 + 1000 against 1510, 10 short. At 1000 s a has all its
+    // frames and nothing says how long is left: no estimate. At 1010 s nothing is known of b yet, a's 1010 stands
+    // in, against 1000: 10 long. At 1500 s: 500 against 510. At 2000 s: 20 against 10.
+    check("a queue's estimate is held against the end of its last shot", queues?.estimates == 5 && queues?.targets == 1 && queues?.medianOff == 10 && queues?.medianBias == 10)
+    check("how many came within a fifth of the time that was left", queues?.withinFifth == 0.8)
+    check("the lines are split by how much time really was left", report.lines.contains { $0.kind == "queue" && $0.horizon == "10 to 60 min" && $0.estimates == 3 }
+          && report.lines.contains { $0.kind == "queue" && $0.horizon == "under 10 min" && $0.estimates == 2 && $0.medianBias == 0 })
+    check("the report says which stretch of time it covers", report.from == at(100).timeIntervalSince1970 && report.to == at(2000).timeIntervalSince1970)
+    // A queue that is stopped with a shot still to come says nothing about its estimate.
+    store.record([group("e2", [shot("e2", "c", .rendering, done: 50, total: 100, spf: 10), shot("e2", "d", .pending)])], now: at(5000))
+    store.record([], now: at(5100))
+    let stopped = store.estimateReport(days: 1, now: at(6000))
+    check("a queue stopped half-way is left out, not counted as a wrong estimate", stopped.leftOut["did not finish"] == 2
+          && stopped.lines.first { $0.kind == "queue" && $0.horizon == "all" }?.estimates == 5)
+    // A shot that is simply gone, with all but its last frames counted, did come to its end; one gone at half did not.
+    store.record([group("e3", [shot("e3", "f", .rendering, done: 50, total: 100, spf: 10)])], now: at(7000))
+    store.record([group("e3", [shot("e3", "f", .rendering, done: 98, total: 100, spf: 10)])], now: at(7480))
+    store.record([], now: at(7500))
+    let gone = store.estimateReport(days: 1, now: at(8000))
+    check("a shot gone with nearly all its frames counted is taken to have ended then", gone.lines.first { $0.kind == "shot" && $0.horizon == "all" }?.estimates == 5
+          && gone.leftOut["did not finish"] == 2)
+    // A shot that counts its frames twice: rendered to 100 at 9300 s, then composited from 0 again to 100 at 9700 s.
+    store.record([group("e4", [shot("e4", "h", .rendering, done: 50, total: 100, spf: 6)])], now: at(9000))
+    store.record([group("e4", [shot("e4", "h", .rendering, done: 100, total: 100, spf: 6)])], now: at(9300))
+    store.record([group("e4", [shot("e4", "h", .compositing, done: 20, total: 100, spf: 4)])], now: at(9380))
+    store.record([group("e4", [shot("e4", "h", .compositing, done: 100, total: 100, spf: 4)])], now: at(9700))
+    store.record([], now: at(9710))
+    let twice = store.estimateReport(days: 1, now: at(9800))
+    // At 9000 s it said 300 and the count was full 300 s later; at 9380 s it said 320, and the count was full again 320 s later.
+    check("each estimate is held against the next time the count is full, not the first", twice.lines.first { $0.kind == "shot" && $0.horizon == "all" }?.estimates == 7
+          && twice.lines.first { $0.kind == "shot" && $0.horizon == "all" }?.medianOff == 0 && twice.leftOut["already over"] == nil)
+    check("the report carries no names and no paths", !String(decoding: (try? JSONEncoder().encode(stopped)) ?? Data(), as: UTF8.self).contains("Queue"))
+    store.prune(olderThanDays: 1, now: at(10 * 86_400))
+    check("old estimates are pruned with the rest", store.estimateReport(days: 365, now: at(10 * 86_400)).lines.isEmpty)
+} else {
+    check("the estimates file opens", false)
+}
+for suffix in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: estimatesFile.path + suffix) }
 let neverCreated = FileManager.default.temporaryDirectory.appendingPathComponent("rd-checks-readonly-\(ProcessInfo.processInfo.processIdentifier).sqlite")
 check("looking things up does not create a history file", HistoryStore(file: neverCreated, readOnly: true) == nil && !FileManager.default.fileExists(atPath: neverCreated.path))
 

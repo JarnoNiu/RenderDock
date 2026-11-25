@@ -18,6 +18,7 @@ It lives in one SQLite file:
 - Nothing leaves the Mac. The file is yours; delete it and RenderDock starts again from nothing.
 - Shots that ended more than 90 days ago are dropped.
 - Only the app records. The command line only reads, and never creates the file.
+- From 0.3.1: the time-left estimates it showed, once a minute, as seconds. See "How close the estimates were" below.
 
 How a shot ended is one of:
 
@@ -45,6 +46,48 @@ There is no estimate when the queue is paused or waiting, for a single job (its 
 
 The first time a queue runs, the estimate is rough. The second time, it is based on what each shot really took.
 
+## How close the estimates were (from 0.3.1)
+
+An estimate is only worth showing if it turns out roughly right, so RenderDock writes down what it said and holds it against what happened.
+
+While something renders, once a minute, it notes the time left it is showing: for the shot in progress, and for the whole queue. Only the number of seconds, when, and which shot or queue (by its row, not by its name). Later:
+
+```bash
+renderdock estimates
+renderdock estimates --days 7 --json
+```
+
+```
+time-left estimates held against what happened, 12-01 21:04 to 12-02 06:40
+
+shots                 412 estimates, 9 shots      off by 2m 10s (6%)        said 1m 5s too long       88% within a fifth
+  under 10 min left   61 estimates, 9 shots       off by 20s (9%)           said 12s too short        77% within a fifth
+  10 to 60 min left   351 estimates, 9 shots      off by 2m 40s (6%)        said 1m 30s too long      90% within a fifth
+
+queues                530 estimates, 1 queue      off by 14m 0s (9%)        said 14m 0s too short     81% within a fifth
+  ...
+```
+
+(The numbers above are made up, to show the shape.)
+
+- **Off by**: how far the estimates were from the time that really was left, the middle value of all of them, and the same as a percentage.
+- **The lean**: whether they tended to say too long or too short.
+- **Within a fifth**: the share of estimates that came within 20% of the time that really was left.
+- The lines are split by how much time really was left, because an estimate ten minutes from the end is a different thing from one five hours out.
+
+What an estimate is held against:
+
+- A shot's estimate is of its frames, so it is held against the next moment the frame count was full. A shot that counts its frames twice (rendering, then compositing) has two such moments. When the last frames were written between two looks, the moment the shot was no longer in progress is used.
+- A queue's estimate is held against the end of its last shot.
+
+What is left out, and said so at the end of the report:
+
+- **still running**: the shot or queue has not come to its end.
+- **did not finish**: the shot failed or was stopped, or the queue ended with fewer shots than the estimate was counting on. A queue stopped half-way says nothing about how good the estimate was. A shot that is simply gone (`ended`, above) counts as finished if at least 98 in 100 of an exact number of frames had been counted.
+- **queue changed**: more shots ended than the estimate was counting on.
+
+Estimates are written down from 0.3.1 on; there is nothing to hold against what happened before that. They are dropped after 90 days with the rest.
+
 ## Odd frames
 
 Under a shot, RenderDock may show a hint:
@@ -66,5 +109,7 @@ On the command line:
 renderdock history
 renderdock history --limit 50 --json
 ```
+
+`renderdock estimates` is described above, under "How close the estimates were".
 
 Through the API: `GET /v1/history` (see [API.md](API.md)).
